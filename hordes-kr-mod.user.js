@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.7
+// @version      0.6.8
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.7";
+  const MOD_VERSION = "0.6.8";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3649,6 +3649,7 @@
             </div>
             <div class="actions">
               <button id="toggle" class="action" type="button"></button>
+              <button id="toggleHighlight" class="action" type="button"></button>
             </div>
           </div>
         </div>
@@ -3674,6 +3675,11 @@
         } else {
           pageWindow.HordesKrMod.enable();
         }
+      });
+
+      shadow.getElementById("toggleHighlight").addEventListener("click", () => {
+        pageWindow.HordesKrMod.toggleNameHighlight();
+        renderStatusUi();
       });
 
       installUiDragging(shadow);
@@ -3823,6 +3829,7 @@
     shadow.getElementById("version").textContent = `v${MOD_VERSION}`;
     shadow.getElementById("badgeState").textContent = badgeState;
     shadow.getElementById("toggle").textContent = enabled ? "번역 끄기" : "번역 켜기";
+    shadow.getElementById("toggleHighlight").textContent = HIGHLIGHT_CONFIG.enabled ? "강조 끄기" : "강조 켜기";
     renderEventUi(shadow);
   }
 
