@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.8
+// @version      0.6.9
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.8";
+  const MOD_VERSION = "0.6.9";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2527,24 +2527,17 @@
     style.id = "hordes-kr-name-highlight-style";
     style.textContent = `
       .hordes-kr-name-highlight {
-        color: #ffffff !important;
-        background: #10131d !important;
-        border: 2px solid #ff2d2d !important;
-        outline: 2px solid #ffe600 !important;
-        outline-offset: 1px !important;
-        border-radius: 4px !important;
-        padding: 1px 5px !important;
-        font-size: 1.18em !important;
-        line-height: 1.15 !important;
+        background: transparent !important;
+        border: 0 !important;
+        outline: 0 !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        opacity: 1 !important;
         font-weight: 900 !important;
         position: relative !important;
         z-index: 2147483647 !important;
-        display: inline-block !important;
-        text-shadow: 0 1px 2px #000000 !important;
-        box-shadow:
-          0 0 0 2px rgba(255, 230, 0, 0.85),
-          0 0 16px rgba(255, 45, 45, 0.95),
-          0 0 24px rgba(245, 194, 71, 0.75) !important;
+        display: inline !important;
+        text-shadow: none !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -2746,70 +2739,6 @@
     HIGHLIGHT_STATE.lastCanvasDrawAt = now;
     HIGHLIGHT_STATE.canvasHits++;
     HIGHLIGHT_STATE.lastCanvasText = rawText.slice(0, 80);
-
-    let metrics;
-    try {
-      metrics = ctx.measureText(rawText);
-    } catch {
-      return;
-    }
-
-    const fontSize = getCanvasFontSize(ctx.font);
-    const measuredWidth = Math.max(
-      metrics.width || 0,
-      (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
-      rawText.length * fontSize * 0.45
-    );
-    const widthLimit = Number(maxWidth);
-    const width = Number.isFinite(widthLimit) && widthLimit > 0
-      ? Math.min(measuredWidth, widthLimit)
-      : measuredWidth;
-    const boostedFontSize = getBoostedCanvasFontSize(fontSize);
-    const sizeRatio = boostedFontSize / fontSize;
-    const displayWidth = Math.max(width * sizeRatio, width + fontSize * 0.6);
-    const height = Math.max(
-      (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
-      boostedFontSize
-    );
-    const padX = Math.max(8, Math.round(boostedFontSize * 0.48));
-    const padY = Math.max(5, Math.round(boostedFontSize * 0.3));
-    const left = numberX - getCanvasAlignOffset(ctx.textAlign, displayWidth);
-    const top = numberY - getCanvasBaselineOffset(ctx.textBaseline, height, metrics, boostedFontSize);
-    const rectLeft = left - padX;
-    const rectTop = top - padY;
-    const rectWidth = displayWidth + padX * 2;
-    const rectHeight = height + padY * 2;
-    const outerLineWidth = Math.max(2, Math.round(boostedFontSize * 0.16));
-    const innerLineWidth = Math.max(1, Math.round(boostedFontSize * 0.08));
-
-    try {
-      ctx.save();
-      ctx.shadowColor = "rgba(255, 45, 45, 0.95)";
-      ctx.shadowBlur = Math.max(10, Math.round(fontSize * 0.8));
-      ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
-      ctx.fillRect(rectLeft, rectTop, rectWidth, rectHeight);
-
-      ctx.shadowBlur = 0;
-      ctx.lineWidth = outerLineWidth;
-      ctx.strokeStyle = "rgba(255, 45, 45, 0.98)";
-      ctx.strokeRect(rectLeft, rectTop, rectWidth, rectHeight);
-
-      ctx.lineWidth = innerLineWidth;
-      ctx.strokeStyle = "rgba(255, 230, 0, 1)";
-      ctx.strokeRect(
-        rectLeft + outerLineWidth,
-        rectTop + outerLineWidth,
-        Math.max(1, rectWidth - outerLineWidth * 2),
-        Math.max(1, rectHeight - outerLineWidth * 2)
-      );
-      ctx.restore();
-    } catch {
-      try {
-        ctx.restore();
-      } catch {
-        // Ignore canvas state recovery failures from third-party contexts.
-      }
-    }
   }
 
   function getCanvasFontSize(font) {
@@ -2818,7 +2747,7 @@
   }
 
   function getBoostedCanvasFontSize(fontSize) {
-    return Math.max(fontSize + 1, Math.round(fontSize * 1.1));
+    return fontSize;
   }
 
   function getBoostedCanvasFont(font, fontSize) {
@@ -2859,35 +2788,17 @@
     HIGHLIGHT_STATE.lastCanvasTextOverlayAt = now;
 
     const fontSize = getCanvasFontSize(ctx.font);
-    const boostedFontSize = getBoostedCanvasFontSize(fontSize);
     const widthLimit = Number(maxWidth);
     const overlayMaxWidth = Number.isFinite(widthLimit) && widthLimit > 0 ? widthLimit : undefined;
 
     try {
       ctx.save();
       ctx.font = getBoostedCanvasFont(ctx.font, fontSize);
-      ctx.lineJoin = "round";
-      ctx.miterLimit = 2;
-      ctx.shadowColor = "rgba(255, 230, 0, 0.95)";
-      ctx.shadowBlur = Math.max(6, Math.round(boostedFontSize * 0.35));
-
-      if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(5, Math.round(boostedFontSize * 0.34));
-        ctx.strokeStyle = "rgba(0, 0, 0, 1)";
-        drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-
-        ctx.lineWidth = Math.max(2, Math.round(boostedFontSize * 0.16));
-        ctx.strokeStyle = "rgba(255, 45, 45, 0.95)";
-        drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-      }
-
-      ctx.shadowBlur = Math.max(4, Math.round(boostedFontSize * 0.2));
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
       ctx.fillStyle = "#ffffff";
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.8, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.8, numberY, overlayMaxWidth);
-      ctx.fillStyle = "rgba(255, 246, 165, 0.95)";
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY - 0.8, overlayMaxWidth);
       ctx.restore();
     } catch {
       try {
