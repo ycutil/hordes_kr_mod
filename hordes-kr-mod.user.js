@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.9
+// @version      0.7.0
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.9";
+  const MOD_VERSION = "0.7.0";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2537,7 +2537,11 @@
         position: relative !important;
         z-index: 2147483647 !important;
         display: inline !important;
-        text-shadow: none !important;
+        text-shadow:
+          1px 0 0 #10131d,
+          -1px 0 0 #10131d,
+          0 1px 0 #10131d,
+          0 -1px 0 #10131d !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -2747,7 +2751,7 @@
   }
 
   function getBoostedCanvasFontSize(fontSize) {
-    return fontSize;
+    return Math.max(fontSize + 2, Math.round(fontSize * 1.14));
   }
 
   function getBoostedCanvasFont(font, fontSize) {
@@ -2795,10 +2799,21 @@
       ctx.save();
       ctx.font = getBoostedCanvasFont(ctx.font, fontSize);
       ctx.globalAlpha = 1;
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
       ctx.shadowBlur = 0;
       ctx.shadowColor = "transparent";
+
+      if (typeof originalStrokeText === "function") {
+        ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.24));
+        ctx.strokeStyle = "rgba(8, 15, 29, 0.98)";
+        drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
+      }
+
       ctx.fillStyle = "#ffffff";
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY, overlayMaxWidth);
+      drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.45, numberY, overlayMaxWidth);
+      drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.45, numberY, overlayMaxWidth);
       ctx.restore();
     } catch {
       try {
