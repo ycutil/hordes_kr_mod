@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.0";
+  const MOD_VERSION = "0.6.1";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -76,9 +76,11 @@
   const HIGHLIGHT_CONFIG = loadJsonConfig(HIGHLIGHT_CONFIG_KEY, {
     names: [],
     enabled: true,
+    canvasEnabled: true,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
+  HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
   const CACHE = new Map();
   const MOD_STATUS = {
     loadedAt: new Date(),
@@ -108,6 +110,11 @@
   const HIGHLIGHT_STATE = {
     observer: null,
     pending: false,
+    canvasInstalled: false,
+    canvasHits: 0,
+    lastCanvasText: "",
+    lastCanvasDrawKey: "",
+    lastCanvasDrawAt: 0,
   };
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -1872,6 +1879,7 @@
   installXhrInterceptor();
   initDomTranslator();
   initNameHighlighter();
+  initCanvasTextHighlighter();
   initEventScheduler();
 
   pageWindow.fetch = async function hordesKrFetch(input, init) {
@@ -2008,6 +2016,20 @@
       saveHighlightConfig();
       refreshNameHighlights();
       return HIGHLIGHT_CONFIG.enabled;
+    },
+    toggleCanvasNameHighlight() {
+      HIGHLIGHT_CONFIG.canvasEnabled = !HIGHLIGHT_CONFIG.canvasEnabled;
+      saveHighlightConfig();
+      return HIGHLIGHT_CONFIG.canvasEnabled;
+    },
+    highlightStatus() {
+      return getHighlightStatus();
+    },
+    inspectRuntime(name) {
+      return inspectRuntimeForNameplates(name);
+    },
+    findNameplateCandidates(name) {
+      return findRuntimeNameCandidates(name);
     },
   };
 
@@ -2601,6 +2623,486 @@
 
   function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function initCanvasTextHighlighter() {
+    const CanvasContext = pageWindow.CanvasRenderingContext2D;
+    if (!CanvasContext || !CanvasContext.prototype) return;
+
+    const proto = CanvasContext.prototype;
+    if (proto.__hordesKrNameHighlightPatched) {
+      HIGHLIGHT_STATE.canvasInstalled = true;
+      return;
+    }
+
+    const originalFillText = proto.fillText;
+    const originalStrokeText = proto.strokeText;
+
+    if (typeof originalFillText === "function") {
+      proto.fillText = function hordesKrFillText(text, x, y, maxWidth) {
+        drawCanvasNameHighlight(this, text, x, y, maxWidth);
+        return originalFillText.apply(this, arguments);
+      };
+    }
+
+    if (typeof originalStrokeText === "function") {
+      proto.strokeText = function hordesKrStrokeText(text, x, y, maxWidth) {
+        drawCanvasNameHighlight(this, text, x, y, maxWidth);
+        return originalStrokeText.apply(this, arguments);
+      };
+    }
+
+    Object.defineProperty(proto, "__hordesKrNameHighlightPatched", {
+      configurable: true,
+      value: true,
+    });
+    HIGHLIGHT_STATE.canvasInstalled = true;
+  }
+
+  function drawCanvasNameHighlight(ctx, text, x, y, maxWidth) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
+
+    const rawText = String(text ?? "");
+    if (!getMatchingHighlightName(rawText)) return;
+
+    const numberX = Number(x);
+    const numberY = Number(y);
+    if (!Number.isFinite(numberX) || !Number.isFinite(numberY)) return;
+
+    const now = pageWindow.performance && pageWindow.performance.now
+      ? pageWindow.performance.now()
+      : Date.now();
+    const drawKey = [
+      rawText,
+      Math.round(numberX),
+      Math.round(numberY),
+      ctx.font,
+      ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
+    ].join("|");
+    if (HIGHLIGHT_STATE.lastCanvasDrawKey === drawKey && now - HIGHLIGHT_STATE.lastCanvasDrawAt < 40) {
+      return;
+    }
+
+    HIGHLIGHT_STATE.lastCanvasDrawKey = drawKey;
+    HIGHLIGHT_STATE.lastCanvasDrawAt = now;
+    HIGHLIGHT_STATE.canvasHits++;
+    HIGHLIGHT_STATE.lastCanvasText = rawText.slice(0, 80);
+
+    let metrics;
+    try {
+      metrics = ctx.measureText(rawText);
+    } catch {
+      return;
+    }
+
+    const fontSize = getCanvasFontSize(ctx.font);
+    const measuredWidth = Math.max(
+      metrics.width || 0,
+      (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0),
+      rawText.length * fontSize * 0.45
+    );
+    const widthLimit = Number(maxWidth);
+    const width = Number.isFinite(widthLimit) && widthLimit > 0
+      ? Math.min(measuredWidth, widthLimit)
+      : measuredWidth;
+    const height = Math.max(
+      (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
+      fontSize
+    );
+    const padX = Math.max(3, Math.round(fontSize * 0.25));
+    const padY = Math.max(2, Math.round(fontSize * 0.16));
+    const left = numberX - getCanvasAlignOffset(ctx.textAlign, width);
+    const top = numberY - getCanvasBaselineOffset(ctx.textBaseline, height, metrics, fontSize);
+
+    try {
+      ctx.save();
+      ctx.fillStyle = "rgba(245, 194, 71, 0.88)";
+      ctx.shadowColor = "rgba(245, 194, 71, 0.75)";
+      ctx.shadowBlur = Math.max(4, Math.round(fontSize * 0.35));
+      ctx.fillRect(left - padX, top - padY, width + padX * 2, height + padY * 2);
+      ctx.restore();
+    } catch {
+      try {
+        ctx.restore();
+      } catch {
+        // Ignore canvas state recovery failures from third-party contexts.
+      }
+    }
+  }
+
+  function getCanvasFontSize(font) {
+    const match = String(font || "").match(/(\d+(?:\.\d+)?)px/);
+    return match ? Math.max(8, Number(match[1])) : 14;
+  }
+
+  function getCanvasAlignOffset(textAlign, width) {
+    if (textAlign === "center") return width / 2;
+    if (textAlign === "right" || textAlign === "end") return width;
+    return 0;
+  }
+
+  function getCanvasBaselineOffset(textBaseline, height, metrics, fontSize) {
+    if (textBaseline === "top") return 0;
+    if (textBaseline === "hanging") return fontSize * 0.2;
+    if (textBaseline === "middle") return height / 2;
+    if (textBaseline === "bottom" || textBaseline === "ideographic") return height;
+    return metrics.actualBoundingBoxAscent || fontSize * 0.78;
+  }
+
+  function getMatchingHighlightName(text) {
+    const haystack = String(text || "").toLowerCase();
+    if (!haystack) return "";
+
+    return HIGHLIGHT_CONFIG.names.find((name) => {
+      const normalized = normalizeHighlightName(name).toLowerCase();
+      return normalized && haystack.includes(normalized);
+    }) || "";
+  }
+
+  function getHighlightStatus() {
+    return {
+      enabled: HIGHLIGHT_CONFIG.enabled,
+      canvasEnabled: HIGHLIGHT_CONFIG.canvasEnabled,
+      names: [...HIGHLIGHT_CONFIG.names],
+      domHighlights: countDomHighlightElements(),
+      canvasInstalled: HIGHLIGHT_STATE.canvasInstalled,
+      canvasHits: HIGHLIGHT_STATE.canvasHits,
+      lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
+    };
+  }
+
+  function countDomHighlightElements() {
+    try {
+      return document.querySelectorAll(".hordes-kr-name-highlight").length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function inspectRuntimeForNameplates(name) {
+    const names = getInspectionNames(name);
+    const report = {
+      version: MOD_VERSION,
+      url: location.href,
+      readyState: document.readyState,
+      names,
+      highlight: getHighlightStatus(),
+      canvases: getCanvasReport(),
+      domMatches: collectDomNameMatches(names, 20),
+      windowKeys: collectInterestingWindowKeys(120),
+      candidates: findRuntimeNameCandidates(name, { limit: 40, maxDepth: 3, maxObjects: 3500 }),
+    };
+
+    console.info("[Hordes KR Mod] Runtime inspection", report);
+    if (report.candidates.length > 0) {
+      console.table(report.candidates.map((candidate) => ({
+        path: candidate.path,
+        name: candidate.name,
+        position: candidate.position,
+        shape: candidate.shape,
+      })));
+    }
+    return report;
+  }
+
+  function getInspectionNames(name) {
+    const explicit = normalizeHighlightName(name);
+    const names = explicit ? [explicit] : HIGHLIGHT_CONFIG.names.map(normalizeHighlightName);
+    return [...new Set(names.filter(Boolean))];
+  }
+
+  function getCanvasReport() {
+    return Array.from(document.querySelectorAll("canvas")).map((canvas, index) => ({
+      index,
+      selector: getElementSelector(canvas),
+      parent: canvas.parentElement ? getElementSelector(canvas.parentElement) : "",
+      width: canvas.width,
+      height: canvas.height,
+      clientWidth: Math.round(canvas.getBoundingClientRect().width),
+      clientHeight: Math.round(canvas.getBoundingClientRect().height),
+      className: String(canvas.className || ""),
+      id: canvas.id || "",
+    }));
+  }
+
+  function collectDomNameMatches(names, limit) {
+    const matcher = buildNameMatcherForNames(names);
+    if (!matcher || !document.body) return [];
+
+    const matches = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (matches.length >= limit) return NodeFilter.FILTER_REJECT;
+        if (!node.nodeValue || !matcher.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        matcher.lastIndex = 0;
+        return shouldSkipHighlightNode(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let node = walker.nextNode();
+    while (node && matches.length < limit) {
+      matches.push({
+        selector: getElementSelector(node.parentElement),
+        text: normalizeText(node.nodeValue).slice(0, 120),
+      });
+      node = walker.nextNode();
+    }
+
+    return matches;
+  }
+
+  function buildNameMatcherForNames(names) {
+    const normalized = names.map(normalizeHighlightName).filter(Boolean).sort((a, b) => b.length - a.length);
+    return normalized.length > 0 ? new RegExp(normalized.map(escapeRegExp).join("|"), "gi") : null;
+  }
+
+  function collectInterestingWindowKeys(limit) {
+    const keyPattern = /horde|game|world|scene|render|entity|entities|player|players|nameplate|unit|camera|engine|client|network|socket|target/i;
+    const keys = safeOwnKeys(pageWindow).filter((key) => keyPattern.test(key));
+    const result = [];
+
+    for (const key of keys) {
+      if (result.length >= limit) break;
+      const descriptor = safeGetDescriptor(pageWindow, key);
+      if (!descriptor) continue;
+
+      if ("value" in descriptor) {
+        result.push({
+          key,
+          summary: describeRuntimeValue(descriptor.value),
+        });
+      } else {
+        result.push({
+          key,
+          summary: "[getter]",
+        });
+      }
+    }
+
+    return result;
+  }
+
+  function findRuntimeNameCandidates(name, options = {}) {
+    const names = getInspectionNames(name).map((value) => value.toLowerCase());
+    const limit = options.limit || 50;
+    const maxDepth = options.maxDepth || 3;
+    const maxObjects = options.maxObjects || 3000;
+    const candidates = [];
+    const queue = [{ value: pageWindow, path: "window", depth: 0 }];
+    const seen = new WeakSet();
+    let visited = 0;
+
+    while (queue.length > 0 && visited < maxObjects && candidates.length < limit) {
+      const item = queue.shift();
+      const value = item.value;
+      if (!isRuntimeObject(value) || seen.has(value)) continue;
+
+      seen.add(value);
+      visited++;
+
+      if (item.depth > 0) {
+        const candidate = summarizeRuntimeCandidate(value, item.path, names);
+        if (candidate) candidates.push(candidate);
+      }
+
+      if (item.depth >= maxDepth) continue;
+      const children = getRuntimeChildren(value, item.path, item.depth === 0 ? 500 : 80);
+      children.forEach((child) => queue.push({ ...child, depth: item.depth + 1 }));
+    }
+
+    return candidates;
+  }
+
+  function summarizeRuntimeCandidate(value, path, names) {
+    const name = getRuntimeNameValue(value);
+    if (!name) return null;
+
+    const lowerName = name.toLowerCase();
+    const matched = names.length === 0 || names.some((target) => lowerName.includes(target));
+    const position = getRuntimePositionSummary(value);
+    const keys = safeOwnKeys(value).slice(0, 30);
+    const shape = keys.filter((key) => /id|entity|player|target|faction|class|level|health|hp|mana|pos|position|x|y|z/i.test(key)).slice(0, 12);
+
+    if (!matched && !position && shape.length === 0) return null;
+
+    return {
+      path,
+      name,
+      matched,
+      position,
+      shape,
+      keys,
+      summary: describeRuntimeValue(value),
+    };
+  }
+
+  function getRuntimeNameValue(value) {
+    const keys = ["name", "playerName", "charName", "characterName", "displayName", "username", "nick", "nickname"];
+    for (const key of keys) {
+      const candidate = safeReadOwnValue(value, key);
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    }
+    return "";
+  }
+
+  function getRuntimePositionSummary(value) {
+    const directX = safeReadOwnValue(value, "x");
+    const directY = safeReadOwnValue(value, "y");
+    const directZ = safeReadOwnValue(value, "z");
+    if (Number.isFinite(directX) && Number.isFinite(directY)) {
+      return `x:${roundCoord(directX)} y:${roundCoord(directY)}${Number.isFinite(directZ) ? ` z:${roundCoord(directZ)}` : ""}`;
+    }
+
+    for (const key of ["pos", "position", "worldPosition", "coords"]) {
+      const position = safeReadOwnValue(value, key);
+      const summary = summarizePositionValue(position);
+      if (summary) return `${key} ${summary}`;
+    }
+
+    return "";
+  }
+
+  function summarizePositionValue(position) {
+    if (!position) return "";
+    if (Array.isArray(position) && position.length >= 2) {
+      return `[${position.slice(0, 3).map(roundCoord).join(", ")}]`;
+    }
+
+    if (typeof position === "object") {
+      const x = safeReadOwnValue(position, "x");
+      const y = safeReadOwnValue(position, "y");
+      const z = safeReadOwnValue(position, "z");
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return `{x:${roundCoord(x)} y:${roundCoord(y)}${Number.isFinite(z) ? ` z:${roundCoord(z)}` : ""}}`;
+      }
+    }
+
+    return "";
+  }
+
+  function roundCoord(value) {
+    return Number.isFinite(value) ? Math.round(value * 100) / 100 : value;
+  }
+
+  function getRuntimeChildren(value, path, limit) {
+    const children = [];
+    if (!isRuntimeTraversable(value, path)) return children;
+
+    if (Array.isArray(value)) {
+      const length = Math.min(value.length, limit);
+      for (let index = 0; index < length; index++) {
+        const child = value[index];
+        if (isRuntimeObject(child)) children.push({ value: child, path: `${path}[${index}]` });
+      }
+      return children;
+    }
+
+    if (value instanceof Map || value instanceof Set) {
+      let index = 0;
+      for (const entry of value.values()) {
+        if (index >= limit) break;
+        if (isRuntimeObject(entry)) children.push({ value: entry, path: `${path}.${value instanceof Map ? "map" : "set"}[${index}]` });
+        index++;
+      }
+      return children;
+    }
+
+    for (const key of safeOwnKeys(value)) {
+      if (children.length >= limit) break;
+      if (shouldSkipRuntimeKey(key)) continue;
+
+      const child = safeReadOwnValue(value, key);
+      if (isRuntimeObject(child) && isRuntimeTraversable(child, `${path}.${key}`)) {
+        children.push({ value: child, path: `${path}.${key}` });
+      }
+    }
+
+    return children;
+  }
+
+  function shouldSkipRuntimeKey(key) {
+    return (
+      key === "window" ||
+      key === "self" ||
+      key === "top" ||
+      key === "parent" ||
+      key === "frames" ||
+      key === "document" ||
+      key === "localStorage" ||
+      key === "sessionStorage" ||
+      key === "navigator" ||
+      key === "location" ||
+      key === "history" ||
+      key === "performance" ||
+      key === "console" ||
+      key.startsWith("on")
+    );
+  }
+
+  function isRuntimeObject(value) {
+    return value !== null && (typeof value === "object" || typeof value === "function");
+  }
+
+  function isRuntimeTraversable(value, path) {
+    if (!isRuntimeObject(value)) return false;
+    if (value === pageWindow) return path === "window";
+    if (value === document) return false;
+
+    const NodeCtor = pageWindow.Node;
+    if (NodeCtor && value instanceof NodeCtor) return false;
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return false;
+
+    const tag = Object.prototype.toString.call(value);
+    return !/\b(Date|RegExp|Error|Promise|WeakMap|WeakSet|Storage|Location|Navigator|History|Screen|Performance|CSSStyleDeclaration|CanvasRenderingContext2D|WebGLRenderingContext|WebGL2RenderingContext)\b/.test(tag);
+  }
+
+  function describeRuntimeValue(value) {
+    if (value === null) return "null";
+    const type = typeof value;
+    if (type !== "object" && type !== "function") return type;
+
+    const tag = Object.prototype.toString.call(value).replace(/^\[object |\]$/g, "");
+    if (Array.isArray(value)) return `Array(${value.length})`;
+    if (value instanceof Map) return `Map(${value.size})`;
+    if (value instanceof Set) return `Set(${value.size})`;
+    const keys = safeOwnKeys(value).slice(0, 8);
+    return `${tag}${keys.length ? ` {${keys.join(", ")}}` : ""}`;
+  }
+
+  function safeOwnKeys(value) {
+    try {
+      return Object.getOwnPropertyNames(value);
+    } catch {
+      return [];
+    }
+  }
+
+  function safeGetDescriptor(value, key) {
+    try {
+      return Object.getOwnPropertyDescriptor(value, key);
+    } catch {
+      return null;
+    }
+  }
+
+  function safeReadOwnValue(value, key) {
+    const descriptor = safeGetDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor)) return undefined;
+    return descriptor.value;
+  }
+
+  function getElementSelector(element) {
+    if (!element || !element.tagName) return "";
+
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${element.id}` : "";
+    const classes = String(element.className || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((className) => `.${className}`)
+      .join("");
+    return `${tag}${id}${classes}`;
   }
 
   function initEventScheduler() {

@@ -36,6 +36,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.5.4`부터는 패널에서 남은 시간과 다음 이벤트만 표시합니다.
 `v0.5.5`부터는 가까운 이벤트 3회 일정표를 짧게 다시 표시합니다.
 `v0.6.0`부터는 콘솔 명령으로 특정 닉네임을 화면에서 강조 표시할 수 있습니다.
+`v0.6.1`부터는 2D 캔버스 텍스트 강조와 런타임 진단 명령을 추가했습니다.
 
 적용 확인:
 
@@ -75,11 +76,15 @@ HordesKrMod.removeHighlightName("닉네임")
 HordesKrMod.clearHighlightNames()
 HordesKrMod.highlightNames()
 HordesKrMod.toggleNameHighlight()
+HordesKrMod.toggleCanvasNameHighlight()
+HordesKrMod.highlightStatus()
+HordesKrMod.inspectRuntime("닉네임")
+HordesKrMod.findNameplateCandidates("닉네임")
 ```
 
 비활성화 후에는 페이지를 새로고침해야 게임 기본 언어 요청으로 돌아갑니다.
 
-닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역에 적용됩니다. 게임 화면 위에 WebGL/canvas로 직접 그려지는 닉네임은 브라우저 DOM에서 찾을 수 없어 강조되지 않을 수 있습니다.
+닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역에 적용됩니다. 2D 캔버스에 `fillText`/`strokeText`로 그려지는 닉네임은 실험적으로 배경 강조를 시도합니다. WebGL에서 직접 그려지는 머리 위 닉네임은 `inspectRuntime("닉네임")` 결과를 보고 별도 훅을 찾아야 합니다.
 
 ## 다음 작업
 
