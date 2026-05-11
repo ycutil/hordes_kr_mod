@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.5.2
+// @version      0.5.3
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.5.2";
+  const MOD_VERSION = "0.5.3";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2759,14 +2759,6 @@
             <span id="version" class="version"></span>
           </div>
           <div class="body">
-            <div class="row"><span class="label">번역</span><span id="enabled" class="value"></span></div>
-            <div class="row"><span class="label">상태</span><span id="state" class="value"></span></div>
-            <div class="row"><span class="label">요청</span><span id="request" class="value"></span></div>
-            <div class="row"><span class="label">방식</span><span id="transport" class="value"></span></div>
-            <div class="row"><span class="label">소스</span><span id="source" class="value"></span></div>
-            <div class="row"><span class="label">횟수</span><span id="count" class="value"></span></div>
-            <div class="row"><span class="label">DOM</span><span id="domCount" class="value"></span></div>
-            <div class="row"><span class="label">오류</span><span id="error" class="value"></span></div>
             <div class="section">
               <div class="section-title">이벤트 일정</div>
               <div class="row"><span class="label">현재</span><span id="eventCurrent" class="value"></span></div>
@@ -2774,26 +2766,10 @@
               <div class="row"><span class="label">다음</span><span id="eventNext" class="value"></span></div>
               <div class="row"><span class="label">알림</span><span id="eventAlarm" class="value"></span></div>
               <div id="eventSchedule" class="schedule"></div>
-              <div class="actions three">
-                <button id="toggleAlarms" class="action" type="button"></button>
-                <button id="toggleSound" class="action" type="button"></button>
-                <button id="testAlarm" class="action" type="button">알림 테스트</button>
-              </div>
-            </div>
-            <div class="section">
-              <div class="section-title">UI 조정</div>
-              <div class="actions three">
-                <button id="smaller" class="action" type="button">작게</button>
-                <button id="bigger" class="action" type="button">크게</button>
-                <button id="resetPosition" class="action" type="button">위치 초기화</button>
-              </div>
             </div>
             <div class="actions">
               <button id="toggle" class="action" type="button"></button>
-              <button id="test" class="action" type="button">모드 테스트</button>
-              <button id="reload" class="action" type="button">새로고침</button>
             </div>
-            <div class="note">패널 머리글을 드래그하면 위치가 저장됩니다. 오른쪽 아래 핸들 또는 크기 버튼으로 크기를 조정할 수 있습니다.</div>
           </div>
         </div>
         <button id="badge" class="badge" type="button">
@@ -2818,45 +2794,6 @@
         } else {
           pageWindow.HordesKrMod.enable();
         }
-      });
-
-      shadow.getElementById("reload").addEventListener("click", () => {
-        location.reload();
-      });
-
-      shadow.getElementById("test").addEventListener("click", () => {
-        pageWindow.HordesKrMod.testRequest().catch((error) => {
-          setStatus({
-            lastState: "모드 테스트 오류",
-            lastError: error && error.message ? error.message : String(error),
-          });
-        });
-      });
-
-      shadow.getElementById("toggleAlarms").addEventListener("click", () => {
-        pageWindow.HordesKrMod.toggleEventAlarms();
-      });
-
-      shadow.getElementById("toggleSound").addEventListener("click", () => {
-        pageWindow.HordesKrMod.toggleEventSound();
-      });
-
-      shadow.getElementById("testAlarm").addEventListener("click", () => {
-        updateEventState();
-        const event = EVENT_STATE.next || EVENT_STATE.schedule[0];
-        if (event) fireEventAlarm(event, 0);
-      });
-
-      shadow.getElementById("smaller").addEventListener("click", () => {
-        setUiScale(-0.05);
-      });
-
-      shadow.getElementById("bigger").addEventListener("click", () => {
-        setUiScale(0.05);
-      });
-
-      shadow.getElementById("resetPosition").addEventListener("click", () => {
-        resetUiConfig();
       });
 
       installUiDragging(shadow);
@@ -3005,17 +2942,7 @@
     shadow.getElementById("panel").hidden = !STATUS_UI.panelOpen;
     shadow.getElementById("version").textContent = `v${MOD_VERSION}`;
     shadow.getElementById("badgeState").textContent = badgeState;
-    shadow.getElementById("enabled").textContent = enabled ? "켜짐" : "꺼짐";
-    shadow.getElementById("state").textContent = MOD_STATUS.lastState || "-";
-    shadow.getElementById("request").textContent = MOD_STATUS.lastRequest || "아직 없음";
-    shadow.getElementById("transport").textContent = MOD_STATUS.lastTransport || "아직 없음";
-    shadow.getElementById("source").textContent = MOD_STATUS.source || "아직 없음";
-    shadow.getElementById("count").textContent = String(MOD_STATUS.interceptedCount);
-    shadow.getElementById("domCount").textContent = `${MOD_STATUS.domReplacedCount}개`;
-    shadow.getElementById("error").textContent = MOD_STATUS.lastError || "없음";
     shadow.getElementById("toggle").textContent = enabled ? "번역 끄기" : "번역 켜기";
-    shadow.getElementById("toggleAlarms").textContent = getAlarmButtonText();
-    shadow.getElementById("toggleSound").textContent = EVENT_CONFIG.soundEnabled ? "소리 켜짐" : "소리 꺼짐";
     renderEventUi(shadow);
   }
 
