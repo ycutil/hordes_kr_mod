@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.5.5
+// @version      0.6.0
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,10 +36,11 @@
     return;
   }
 
-  const MOD_VERSION = "0.5.5";
+  const MOD_VERSION = "0.6.0";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
+  const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
   const HOUR_MS = 60 * 60 * 1000;
   const MINUTE_MS = 60 * 1000;
   const EVENT_PHASES = {
@@ -72,6 +73,12 @@
     browserNotification: false,
     alarmMinutes: [10, 5, 1],
   });
+  const HIGHLIGHT_CONFIG = loadJsonConfig(HIGHLIGHT_CONFIG_KEY, {
+    names: [],
+    enabled: true,
+  });
+  if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
+  HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   const CACHE = new Map();
   const MOD_STATUS = {
     loadedAt: new Date(),
@@ -97,6 +104,10 @@
     schedule: [],
     firedAlarms: new Set(),
     timer: null,
+  };
+  const HIGHLIGHT_STATE = {
+    observer: null,
+    pending: false,
   };
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -1860,6 +1871,7 @@
   initStatusUi();
   installXhrInterceptor();
   initDomTranslator();
+  initNameHighlighter();
   initEventScheduler();
 
   pageWindow.fetch = async function hordesKrFetch(input, init) {
@@ -1957,6 +1969,45 @@
     resetUi() {
       resetUiConfig();
       renderStatusUi();
+    },
+    highlightNames() {
+      return [...HIGHLIGHT_CONFIG.names];
+    },
+    addHighlightName(name) {
+      const normalized = normalizeHighlightName(name);
+      if (!normalized) return [...HIGHLIGHT_CONFIG.names];
+
+      const exists = HIGHLIGHT_CONFIG.names.some(
+        (current) => current.toLowerCase() === normalized.toLowerCase()
+      );
+      if (!exists) {
+        HIGHLIGHT_CONFIG.names.push(normalized);
+        saveHighlightConfig();
+      }
+
+      refreshNameHighlights();
+      return [...HIGHLIGHT_CONFIG.names];
+    },
+    removeHighlightName(name) {
+      const normalized = normalizeHighlightName(name);
+      HIGHLIGHT_CONFIG.names = HIGHLIGHT_CONFIG.names.filter(
+        (current) => current.toLowerCase() !== normalized.toLowerCase()
+      );
+      saveHighlightConfig();
+      refreshNameHighlights();
+      return [...HIGHLIGHT_CONFIG.names];
+    },
+    clearHighlightNames() {
+      HIGHLIGHT_CONFIG.names = [];
+      saveHighlightConfig();
+      refreshNameHighlights();
+      return [];
+    },
+    toggleNameHighlight() {
+      HIGHLIGHT_CONFIG.enabled = !HIGHLIGHT_CONFIG.enabled;
+      saveHighlightConfig();
+      refreshNameHighlights();
+      return HIGHLIGHT_CONFIG.enabled;
     },
   };
 
@@ -2383,8 +2434,173 @@
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return false;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
+    if (element.closest(".hordes-kr-name-highlight")) return true;
     if (element.closest("#chat, #chatinput, .chat, [class*='chat']")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
+  }
+
+  function initNameHighlighter() {
+    const start = () => {
+      if (!document.body) return;
+
+      HIGHLIGHT_STATE.observer = new MutationObserver(() => {
+        scheduleNameHighlightRefresh();
+      });
+      installNameHighlightStyle();
+      observeNameHighlights();
+      refreshNameHighlights();
+    };
+
+    if (document.body) {
+      start();
+    } else {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    }
+  }
+
+  function scheduleNameHighlightRefresh() {
+    if (HIGHLIGHT_STATE.pending) return;
+    HIGHLIGHT_STATE.pending = true;
+
+    setTimeout(() => {
+      HIGHLIGHT_STATE.pending = false;
+      refreshNameHighlights();
+    }, 80);
+  }
+
+  function refreshNameHighlights() {
+    if (!document.body) return;
+
+    disconnectNameHighlights();
+    unwrapNameHighlights(document.body);
+    if (HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0) {
+      highlightNamesInTree(document.body);
+    }
+    observeNameHighlights();
+  }
+
+  function observeNameHighlights() {
+    if (!HIGHLIGHT_STATE.observer || !document.body) return;
+    HIGHLIGHT_STATE.observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
+
+  function disconnectNameHighlights() {
+    if (HIGHLIGHT_STATE.observer) HIGHLIGHT_STATE.observer.disconnect();
+  }
+
+  function installNameHighlightStyle() {
+    if (document.getElementById("hordes-kr-name-highlight-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "hordes-kr-name-highlight-style";
+    style.textContent = `
+      .hordes-kr-name-highlight {
+        color: #10131d !important;
+        background: #f5c247 !important;
+        border: 1px solid rgba(255, 238, 150, 0.95) !important;
+        border-radius: 3px !important;
+        padding: 0 3px !important;
+        font-weight: 900 !important;
+        text-shadow: none !important;
+        box-shadow: 0 0 8px rgba(245, 194, 71, 0.75) !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function highlightNamesInTree(root) {
+    const matcher = buildHighlightMatcher();
+    if (!matcher) return;
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !matcher.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        matcher.lastIndex = 0;
+        return shouldSkipHighlightNode(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    const nodes = [];
+    let node = walker.nextNode();
+    while (node) {
+      nodes.push(node);
+      node = walker.nextNode();
+    }
+
+    nodes.forEach((textNode) => highlightTextNode(textNode, matcher));
+  }
+
+  function highlightTextNode(textNode, matcher) {
+    const text = textNode.nodeValue;
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match;
+
+    matcher.lastIndex = 0;
+    while ((match = matcher.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        fragment.append(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+
+      const mark = document.createElement("span");
+      mark.className = "hordes-kr-name-highlight";
+      mark.dataset.hordesKrHighlight = "true";
+      mark.textContent = match[0];
+      fragment.append(mark);
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      fragment.append(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    textNode.parentNode.replaceChild(fragment, textNode);
+  }
+
+  function unwrapNameHighlights(root) {
+    root.querySelectorAll(".hordes-kr-name-highlight").forEach((element) => {
+      const parent = element.parentNode;
+      if (!parent) return;
+
+      parent.replaceChild(document.createTextNode(element.textContent), element);
+    });
+  }
+
+  function shouldSkipHighlightNode(node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (!element) return true;
+    if (element.closest("#hordes-kr-mod-status-root")) return true;
+    if (element.closest(".hordes-kr-name-highlight")) return true;
+    return !!element.closest("script, style, textarea, input, canvas, code, pre");
+  }
+
+  function buildHighlightMatcher() {
+    const names = HIGHLIGHT_CONFIG.names
+      .map(normalizeHighlightName)
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+
+    if (names.length === 0) return null;
+    return new RegExp(names.map(escapeRegExp).join("|"), "gi");
+  }
+
+  function normalizeHighlightName(name) {
+    return String(name || "").trim();
+  }
+
+  function saveHighlightConfig() {
+    HIGHLIGHT_CONFIG.names = HIGHLIGHT_CONFIG.names
+      .map(normalizeHighlightName)
+      .filter(Boolean);
+    saveJsonConfig(HIGHLIGHT_CONFIG_KEY, HIGHLIGHT_CONFIG);
+  }
+
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function initEventScheduler() {
