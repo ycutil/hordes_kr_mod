@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.5
+// @version      0.6.6
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.5";
+  const MOD_VERSION = "0.6.6";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -119,6 +119,8 @@
     lastCanvasText: "",
     lastCanvasDrawKey: "",
     lastCanvasDrawAt: 0,
+    lastCanvasTextOverlayKey: "",
+    lastCanvasTextOverlayAt: 0,
   };
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -2532,6 +2534,8 @@
         outline-offset: 1px !important;
         border-radius: 4px !important;
         padding: 1px 5px !important;
+        font-size: 1.18em !important;
+        line-height: 1.15 !important;
         font-weight: 900 !important;
         text-shadow: 0 1px 2px #000000 !important;
         box-shadow:
@@ -2689,14 +2693,18 @@
     if (typeof originalFillText === "function") {
       proto.fillText = function hordesKrFillText(text, x, y, maxWidth) {
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
-        return originalFillText.apply(this, arguments);
+        const result = originalFillText.apply(this, arguments);
+        drawCanvasNameTextOverlay(this, text, x, y, originalFillText, originalStrokeText);
+        return result;
       };
     }
 
     if (typeof originalStrokeText === "function") {
       proto.strokeText = function hordesKrStrokeText(text, x, y, maxWidth) {
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
-        return originalStrokeText.apply(this, arguments);
+        const result = originalStrokeText.apply(this, arguments);
+        drawCanvasNameTextOverlay(this, text, x, y, originalFillText, originalStrokeText);
+        return result;
       };
     }
 
@@ -2753,20 +2761,23 @@
     const width = Number.isFinite(widthLimit) && widthLimit > 0
       ? Math.min(measuredWidth, widthLimit)
       : measuredWidth;
+    const boostedFontSize = getBoostedCanvasFontSize(fontSize);
+    const sizeRatio = boostedFontSize / fontSize;
+    const displayWidth = Math.max(width * sizeRatio, width + fontSize * 0.6);
     const height = Math.max(
       (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
-      fontSize
+      boostedFontSize
     );
-    const padX = Math.max(6, Math.round(fontSize * 0.42));
-    const padY = Math.max(4, Math.round(fontSize * 0.26));
-    const left = numberX - getCanvasAlignOffset(ctx.textAlign, width);
-    const top = numberY - getCanvasBaselineOffset(ctx.textBaseline, height, metrics, fontSize);
+    const padX = Math.max(8, Math.round(boostedFontSize * 0.48));
+    const padY = Math.max(5, Math.round(boostedFontSize * 0.3));
+    const left = numberX - getCanvasAlignOffset(ctx.textAlign, displayWidth);
+    const top = numberY - getCanvasBaselineOffset(ctx.textBaseline, height, metrics, boostedFontSize);
     const rectLeft = left - padX;
     const rectTop = top - padY;
-    const rectWidth = width + padX * 2;
+    const rectWidth = displayWidth + padX * 2;
     const rectHeight = height + padY * 2;
-    const outerLineWidth = Math.max(2, Math.round(fontSize * 0.16));
-    const innerLineWidth = Math.max(1, Math.round(fontSize * 0.08));
+    const outerLineWidth = Math.max(2, Math.round(boostedFontSize * 0.16));
+    const innerLineWidth = Math.max(1, Math.round(boostedFontSize * 0.08));
 
     try {
       ctx.save();
@@ -2801,6 +2812,83 @@
   function getCanvasFontSize(font) {
     const match = String(font || "").match(/(\d+(?:\.\d+)?)px/);
     return match ? Math.max(8, Number(match[1])) : 14;
+  }
+
+  function getBoostedCanvasFontSize(fontSize) {
+    return Math.max(fontSize + 4, Math.round(fontSize * 1.35));
+  }
+
+  function getBoostedCanvasFont(font, fontSize) {
+    const family = String(font || "")
+      .replace(/^.*?(\d+(?:\.\d+)?px(?:\/[^\s]+)?\s*)/, "")
+      .trim() || "sans-serif";
+    return `900 ${getBoostedCanvasFontSize(fontSize)}px ${family}`;
+  }
+
+  function drawCanvasNameTextOverlay(ctx, text, x, y, originalFillText, originalStrokeText) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
+    if (typeof originalFillText !== "function") return;
+
+    const rawText = String(text ?? "");
+    if (!getMatchingHighlightName(rawText)) return;
+
+    const numberX = Number(x);
+    const numberY = Number(y);
+    if (!Number.isFinite(numberX) || !Number.isFinite(numberY)) return;
+
+    const now = pageWindow.performance && pageWindow.performance.now
+      ? pageWindow.performance.now()
+      : Date.now();
+    const overlayKey = [
+      rawText,
+      Math.round(numberX),
+      Math.round(numberY),
+      ctx.font,
+      ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
+    ].join("|");
+    if (
+      HIGHLIGHT_STATE.lastCanvasTextOverlayKey === overlayKey &&
+      now - HIGHLIGHT_STATE.lastCanvasTextOverlayAt < 12
+    ) {
+      return;
+    }
+    HIGHLIGHT_STATE.lastCanvasTextOverlayKey = overlayKey;
+    HIGHLIGHT_STATE.lastCanvasTextOverlayAt = now;
+
+    const fontSize = getCanvasFontSize(ctx.font);
+    const boostedFontSize = getBoostedCanvasFontSize(fontSize);
+
+    try {
+      ctx.save();
+      ctx.font = getBoostedCanvasFont(ctx.font, fontSize);
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+      ctx.shadowColor = "rgba(255, 230, 0, 0.95)";
+      ctx.shadowBlur = Math.max(6, Math.round(boostedFontSize * 0.35));
+
+      if (typeof originalStrokeText === "function") {
+        ctx.lineWidth = Math.max(4, Math.round(boostedFontSize * 0.28));
+        ctx.strokeStyle = "rgba(0, 0, 0, 1)";
+        originalStrokeText.call(ctx, rawText, numberX, numberY);
+
+        ctx.lineWidth = Math.max(2, Math.round(boostedFontSize * 0.12));
+        ctx.strokeStyle = "rgba(255, 45, 45, 0.95)";
+        originalStrokeText.call(ctx, rawText, numberX, numberY);
+      }
+
+      ctx.shadowBlur = Math.max(4, Math.round(boostedFontSize * 0.2));
+      ctx.fillStyle = "#ffffff";
+      originalFillText.call(ctx, rawText, numberX, numberY);
+      ctx.fillStyle = "rgba(255, 246, 165, 0.95)";
+      originalFillText.call(ctx, rawText, numberX, numberY - 1);
+      ctx.restore();
+    } catch {
+      try {
+        ctx.restore();
+      } catch {
+        // Ignore canvas state recovery failures from third-party contexts.
+      }
+    }
   }
 
   function getCanvasAlignOffset(textAlign, width) {
