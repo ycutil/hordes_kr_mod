@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.5.4
+// @version      0.5.5
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.5.4";
+  const MOD_VERSION = "0.5.5";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2729,6 +2729,22 @@
             padding-top: 9px;
             margin-top: 2px;
           }
+          .schedule {
+            display: grid;
+            gap: 5px;
+            padding-top: 2px;
+          }
+          .schedule-row {
+            display: grid;
+            grid-template-columns: 82px 1fr;
+            gap: 8px;
+            color: #dff8f5;
+            line-height: 1.3;
+          }
+          .schedule-time {
+            color: #a6dcd5;
+            font-weight: 800;
+          }
         </style>
         <div id="panel" class="panel" hidden>
           <div class="header">
@@ -2739,6 +2755,7 @@
             <div class="section">
               <div class="row"><span class="label">남은 시간</span><span id="eventRemaining" class="value"></span></div>
               <div class="row"><span class="label">다음</span><span id="eventNext" class="value"></span></div>
+              <div id="eventSchedule" class="schedule"></div>
             </div>
             <div class="actions">
               <button id="toggle" class="action" type="button"></button>
@@ -2930,6 +2947,25 @@
     shadow.getElementById("eventNext").textContent = next
       ? `${next.label} ${formatKstTime(next.startAt)} KST`
       : "-";
+
+    const schedule = shadow.getElementById("eventSchedule");
+    if (!schedule) return;
+
+    schedule.replaceChildren(
+      ...EVENT_STATE.schedule.slice(0, 3).map((event) => {
+        const row = document.createElement("div");
+        const time = document.createElement("span");
+        const value = document.createElement("span");
+
+        row.className = "schedule-row";
+        time.className = "schedule-time";
+        value.className = "value";
+        time.textContent = `${formatKstTime(event.startAt)} KST`;
+        value.textContent = event.label;
+        row.append(time, value);
+        return row;
+      })
+    );
   }
 
   function getAlarmButtonText() {
