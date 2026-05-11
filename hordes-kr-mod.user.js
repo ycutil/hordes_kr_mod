@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.3
+// @version      0.6.4
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.3";
+  const MOD_VERSION = "0.6.4";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2525,14 +2525,19 @@
     style.id = "hordes-kr-name-highlight-style";
     style.textContent = `
       .hordes-kr-name-highlight {
-        color: #10131d !important;
-        background: #f5c247 !important;
-        border: 1px solid rgba(255, 238, 150, 0.95) !important;
-        border-radius: 3px !important;
-        padding: 0 3px !important;
+        color: #ffffff !important;
+        background: #10131d !important;
+        border: 2px solid #ff2d2d !important;
+        outline: 2px solid #ffe600 !important;
+        outline-offset: 1px !important;
+        border-radius: 4px !important;
+        padding: 1px 5px !important;
         font-weight: 900 !important;
-        text-shadow: none !important;
-        box-shadow: 0 0 8px rgba(245, 194, 71, 0.75) !important;
+        text-shadow: 0 1px 2px #000000 !important;
+        box-shadow:
+          0 0 0 2px rgba(255, 230, 0, 0.85),
+          0 0 16px rgba(255, 45, 45, 0.95),
+          0 0 24px rgba(245, 194, 71, 0.75) !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -2752,17 +2757,37 @@
       (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0),
       fontSize
     );
-    const padX = Math.max(3, Math.round(fontSize * 0.25));
-    const padY = Math.max(2, Math.round(fontSize * 0.16));
+    const padX = Math.max(6, Math.round(fontSize * 0.42));
+    const padY = Math.max(4, Math.round(fontSize * 0.26));
     const left = numberX - getCanvasAlignOffset(ctx.textAlign, width);
     const top = numberY - getCanvasBaselineOffset(ctx.textBaseline, height, metrics, fontSize);
+    const rectLeft = left - padX;
+    const rectTop = top - padY;
+    const rectWidth = width + padX * 2;
+    const rectHeight = height + padY * 2;
+    const outerLineWidth = Math.max(2, Math.round(fontSize * 0.16));
+    const innerLineWidth = Math.max(1, Math.round(fontSize * 0.08));
 
     try {
       ctx.save();
-      ctx.fillStyle = "rgba(245, 194, 71, 0.88)";
-      ctx.shadowColor = "rgba(245, 194, 71, 0.75)";
-      ctx.shadowBlur = Math.max(4, Math.round(fontSize * 0.35));
-      ctx.fillRect(left - padX, top - padY, width + padX * 2, height + padY * 2);
+      ctx.shadowColor = "rgba(255, 45, 45, 0.95)";
+      ctx.shadowBlur = Math.max(10, Math.round(fontSize * 0.8));
+      ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+      ctx.fillRect(rectLeft, rectTop, rectWidth, rectHeight);
+
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = outerLineWidth;
+      ctx.strokeStyle = "rgba(255, 45, 45, 0.98)";
+      ctx.strokeRect(rectLeft, rectTop, rectWidth, rectHeight);
+
+      ctx.lineWidth = innerLineWidth;
+      ctx.strokeStyle = "rgba(255, 230, 0, 1)";
+      ctx.strokeRect(
+        rectLeft + outerLineWidth,
+        rectTop + outerLineWidth,
+        Math.max(1, rectWidth - outerLineWidth * 2),
+        Math.max(1, rectHeight - outerLineWidth * 2)
+      );
       ctx.restore();
     } catch {
       try {
