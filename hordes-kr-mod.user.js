@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.5.1
+// @version      0.5.2
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.5.1";
+  const MOD_VERSION = "0.5.2";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2488,7 +2488,7 @@
 
   function fireEventAlarm(event, minute) {
     const message = `${event.label} 시작 ${minute}분 전`;
-    EVENT_STATE.lastAlarm = `${message} (${formatLocalTime(event.startAt)} / ${formatUtcTime(event.startAt)})`;
+    EVENT_STATE.lastAlarm = `${message} (${formatKstTime(event.startAt)})`;
     setStatus({
       lastState: `이벤트 알림: ${message}`,
       lastError: "",
@@ -2554,19 +2554,13 @@
     }
   }
 
-  function formatLocalTime(timestamp) {
+  function formatKstTime(timestamp) {
     return new Intl.DateTimeFormat("ko-KR", {
+      timeZone: "Asia/Seoul",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
     }).format(new Date(timestamp));
-  }
-
-  function formatUtcTime(timestamp) {
-    const date = new Date(timestamp);
-    const hour = String(date.getUTCHours()).padStart(2, "0");
-    const minute = String(date.getUTCMinutes()).padStart(2, "0");
-    return `UTC ${hour}:${minute}`;
   }
 
   function formatDuration(ms) {
@@ -2896,8 +2890,8 @@
     } else {
       host.style.left = "auto";
       host.style.top = "auto";
-      host.style.right = "12px";
-      host.style.bottom = "12px";
+      host.style.right = "2px";
+      host.style.bottom = "2px";
     }
   }
 
@@ -3034,10 +3028,10 @@
       ? `${current.label} - ${current.description}`
       : "-";
     shadow.getElementById("eventRemaining").textContent = current
-      ? `${formatDuration(current.remainingMs)} (${formatLocalTime(current.endAt)} 종료)`
+      ? `${formatDuration(current.remainingMs)} (${formatKstTime(current.endAt)} KST 종료)`
       : "-";
     shadow.getElementById("eventNext").textContent = next
-      ? `${next.label} ${formatLocalTime(next.startAt)} / ${formatUtcTime(next.startAt)}`
+      ? `${next.label} ${formatKstTime(next.startAt)} KST`
       : "-";
     shadow.getElementById("eventAlarm").textContent = EVENT_CONFIG.alarmsEnabled
       ? EVENT_STATE.lastAlarm || `${EVENT_CONFIG.alarmMinutes.join(", ")}분 전`
@@ -3055,8 +3049,8 @@
         row.className = "schedule-row";
         time.className = "schedule-time";
         value.className = "value";
-        time.textContent = formatLocalTime(event.startAt);
-        value.textContent = `${event.label} (${formatUtcTime(event.startAt)})`;
+        time.textContent = `${formatKstTime(event.startAt)} KST`;
+        value.textContent = event.label;
         row.append(time, value);
         return row;
       })
