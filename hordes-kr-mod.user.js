@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.2
+// @version      0.6.3
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,14 +36,14 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.2";
+  const MOD_VERSION = "0.6.3";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
   const HIGHLIGHT_DEFAULTS_VERSION_KEY = "hordesKrMod.highlight.defaultsVersion";
-  const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2";
-  const DEFAULT_HIGHLIGHT_NAMES = ["HO2"];
+  const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2-hmage";
+  const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HOUR_MS = 60 * 60 * 1000;
   const MINUTE_MS = 60 * 1000;
   const EVENT_PHASES = {
