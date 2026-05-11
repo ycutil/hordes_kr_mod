@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.6.1
+// @version      0.6.2
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,11 +36,14 @@
     return;
   }
 
-  const MOD_VERSION = "0.6.1";
+  const MOD_VERSION = "0.6.2";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
+  const HIGHLIGHT_DEFAULTS_VERSION_KEY = "hordesKrMod.highlight.defaultsVersion";
+  const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2";
+  const DEFAULT_HIGHLIGHT_NAMES = ["HO2"];
   const HOUR_MS = 60 * 60 * 1000;
   const MINUTE_MS = 60 * 1000;
   const EVENT_PHASES = {
@@ -74,13 +77,14 @@
     alarmMinutes: [10, 5, 1],
   });
   const HIGHLIGHT_CONFIG = loadJsonConfig(HIGHLIGHT_CONFIG_KEY, {
-    names: [],
+    names: DEFAULT_HIGHLIGHT_NAMES,
     enabled: true,
     canvasEnabled: true,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
+  applyDefaultHighlightNames();
   const CACHE = new Map();
   const MOD_STATUS = {
     loadedAt: new Date(),
@@ -2615,10 +2619,49 @@
   }
 
   function saveHighlightConfig() {
-    HIGHLIGHT_CONFIG.names = HIGHLIGHT_CONFIG.names
-      .map(normalizeHighlightName)
-      .filter(Boolean);
+    HIGHLIGHT_CONFIG.names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names);
     saveJsonConfig(HIGHLIGHT_CONFIG_KEY, HIGHLIGHT_CONFIG);
+  }
+
+  function applyDefaultHighlightNames() {
+    let alreadyApplied = false;
+    try {
+      alreadyApplied = localStorage.getItem(HIGHLIGHT_DEFAULTS_VERSION_KEY) === HIGHLIGHT_DEFAULTS_VERSION;
+    } catch {
+      alreadyApplied = true;
+    }
+
+    if (alreadyApplied) {
+      HIGHLIGHT_CONFIG.names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names);
+      return;
+    }
+
+    HIGHLIGHT_CONFIG.names = uniqueHighlightNames([
+      ...HIGHLIGHT_CONFIG.names,
+      ...DEFAULT_HIGHLIGHT_NAMES,
+    ]);
+    saveHighlightConfig();
+
+    try {
+      localStorage.setItem(HIGHLIGHT_DEFAULTS_VERSION_KEY, HIGHLIGHT_DEFAULTS_VERSION);
+    } catch {
+      // Storage can be unavailable in strict browser modes.
+    }
+  }
+
+  function uniqueHighlightNames(names) {
+    const seen = new Set();
+    const result = [];
+
+    names.map(normalizeHighlightName).filter(Boolean).forEach((name) => {
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+
+      seen.add(key);
+      result.push(name);
+    });
+
+    return result;
   }
 
   function escapeRegExp(value) {
