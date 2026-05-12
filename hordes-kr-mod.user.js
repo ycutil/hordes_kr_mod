@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.9
+// @version      0.9.0
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.9";
+  const MOD_VERSION = "0.9.0";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -5008,6 +5008,8 @@
   }
 
   function initStatusUi() {
+    installStatusUiKeyboardGuard();
+
     const mount = () => {
       if (!document.body) {
         setTimeout(mount, 50);
@@ -5295,9 +5297,11 @@
       shadow.getElementById("highlightInput").addEventListener("keydown", (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
+        event.stopPropagation();
         addHighlightNameFromUi();
       });
 
+      installHighlightInputGuards(shadow);
       installUiDragging(shadow);
       installUiResizeObserver(shadow);
       renderStatusUi();
@@ -5307,6 +5311,87 @@
       document.addEventListener("DOMContentLoaded", mount, { once: true });
     }
     mount();
+  }
+
+  function installStatusUiKeyboardGuard() {
+    if (STATUS_UI.keyboardGuardInstalled) return;
+    STATUS_UI.keyboardGuardInstalled = true;
+
+    const guard = (event) => {
+      if (!isStatusUiKeyboardEvent(event)) return;
+
+      if (event.type === "keydown") {
+        handleStatusUiKeydown(event);
+      }
+
+      event.stopImmediatePropagation();
+    };
+
+    [
+      "keydown",
+      "keypress",
+      "keyup",
+      "beforeinput",
+      "input",
+      "compositionstart",
+      "compositionupdate",
+      "compositionend",
+      "paste",
+      "copy",
+      "cut",
+    ].forEach((type) => {
+      pageWindow.addEventListener(type, guard, true);
+      document.addEventListener(type, guard, true);
+    });
+  }
+
+  function isStatusUiKeyboardEvent(event) {
+    const input = STATUS_UI.shadow && STATUS_UI.shadow.getElementById("highlightInput");
+    if (!input) return false;
+
+    if (typeof event.composedPath === "function" && event.composedPath().includes(input)) {
+      return true;
+    }
+
+    return getStatusUiActiveElement() === input;
+  }
+
+  function getStatusUiActiveElement() {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return null;
+
+    return shadow.activeElement || null;
+  }
+
+  function handleStatusUiKeydown(event) {
+    const active = getStatusUiActiveElement();
+    if (!active || active.id !== "highlightInput") return;
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addHighlightNameFromUi();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      active.blur();
+    }
+  }
+
+  function installHighlightInputGuards(shadow) {
+    const input = shadow.getElementById("highlightInput");
+    if (!input) return;
+
+    ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "touchstart", "touchend"].forEach((type) => {
+      input.addEventListener(type, (event) => {
+        event.stopPropagation();
+        pageWindow.requestAnimationFrame(() => input.focus({ preventScroll: true }));
+      });
+    });
+
+    ["keydown", "keypress", "keyup", "beforeinput", "input", "paste", "copy", "cut", "compositionstart", "compositionupdate", "compositionend"].forEach((type) => {
+      input.addEventListener(type, (event) => {
+        event.stopPropagation();
+      });
+    });
   }
 
   function applyUiConfig() {
