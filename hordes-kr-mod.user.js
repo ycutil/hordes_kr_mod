@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.3
+// @version      0.8.4
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.3";
+  const MOD_VERSION = "0.8.4";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -168,7 +168,6 @@
     lastCanvasImageDrawAt: 0,
     canvasHighlightAnchors: [],
     canvasClanSuppression: new Map(),
-    canvasHiddenClanBounds: [],
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
     canvasInternalDraw: false,
@@ -2837,16 +2836,13 @@
 
         const imageText = getCanvasImageText(arguments[0]);
         const dest = getDrawImageDestination(arguments);
-        if (shouldReplaceCanvasImageName(imageText)) {
-          const replaced = drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText, dest);
-          if (replaced) return undefined;
-        }
-
         if (shouldHideCanvasClanImage(this, imageText, dest)) {
           return undefined;
         }
 
-        return originalDrawImage.apply(this, arguments);
+        const result = originalDrawImage.apply(this, arguments);
+        drawCanvasImageNameBoost(this, arguments, imageText, originalDrawImage, dest);
+        return result;
       };
     }
 
@@ -3053,15 +3049,10 @@
     drawText.call(ctx, text, x, y);
   }
 
-  function shouldReplaceCanvasImageName(imageText) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
-    return !!getMatchingHighlightName(String(imageText || "").trim());
-  }
-
-  function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText, knownDest) {
+  function drawCanvasImageNameBoost(ctx, args, imageText, originalDrawImage, knownDest) {
     if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
     if (HIGHLIGHT_STATE.canvasInternalDraw) return false;
-    if (typeof originalFillText !== "function") return false;
+    if (typeof originalDrawImage !== "function") return false;
 
     const rawText = String(imageText || "").trim();
     const matchedName = getMatchingHighlightName(rawText);
@@ -3090,41 +3081,14 @@
       HIGHLIGHT_STATE.canvasImageHits++;
     }
     HIGHLIGHT_STATE.lastCanvasImageText = rawText.slice(0, 80);
+    rememberCanvasHighlightAnchor(ctx, rawText, dest, now);
 
     try {
       HIGHLIGHT_STATE.canvasInternalDraw = true;
       ctx.save();
-      ctx.globalAlpha = 1;
-      ctx.textBaseline = "bottom";
-      ctx.textAlign = "center";
-      ctx.lineJoin = "round";
-      ctx.miterLimit = 2;
-
-      const fontSize = clamp(Math.round(dest.height * 1.16), 18, 30);
-      const fontFamily = getCanvasFontFamily(String(ctx.font || "")) || "hordes, Arial, sans-serif";
-      ctx.font = `900 ${fontSize}px ${fontFamily}`;
-      ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
-      ctx.shadowBlur = Math.max(2, Math.round(fontSize * 0.16));
-      ctx.shadowOffsetX = 1;
-      ctx.shadowOffsetY = 1;
-
-      const x = Math.round(getCanvasNameCenterX(ctx, dest, now));
-      const y = Math.round(dest.y + dest.height + 1);
-
-      if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
-        ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
-        originalStrokeText.call(ctx, rawText, x, y);
-      }
-
-      ctx.fillStyle = "#ffffff";
-      originalFillText.call(ctx, rawText, x, y);
-      originalFillText.call(ctx, rawText, x + 0.35, y);
-      originalFillText.call(ctx, rawText, x - 0.35, y);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      originalFillText.call(ctx, rawText, x, y - 0.35);
+      ctx.globalAlpha = 0.45;
+      originalDrawImage.apply(ctx, args);
       ctx.restore();
-      rememberCanvasHighlightAnchor(ctx, rawText, dest, now);
       return true;
     } catch {
       try {
@@ -3152,10 +3116,10 @@
     const now = getHighlighterTime();
     pruneCanvasHighlightTracking(now);
 
-    const suppressionKey = getCanvasClanSuppressionKey(rawText);
+    const suppressionKey = getCanvasClanSuppressionKey(ctx, dest, rawText);
     const suppressed = HIGHLIGHT_STATE.canvasClanSuppression.get(suppressionKey);
     if (suppressed && suppressed.expiresAt > now) {
-      rememberHiddenCanvasClan(ctx, rawText, dest, now);
+      rememberHiddenCanvasClan(rawText);
       return true;
     }
 
@@ -3167,7 +3131,7 @@
       anchorText: anchor.text,
       expiresAt: now + 1600,
     });
-    rememberHiddenCanvasClan(ctx, rawText, dest, now);
+    rememberHiddenCanvasClan(rawText);
     return true;
   }
 
@@ -3203,8 +3167,8 @@
 
       const anchorCenterX = anchor.x + anchor.width / 2;
       const anchorCenterY = anchor.y + anchor.height / 2;
-      const maxDx = Math.max(220, anchor.width + dest.width + 56);
-      const maxDy = Math.max(54, (anchor.height + dest.height) * 2.4);
+      const maxDx = Math.max(96, (anchor.width + dest.width) / 2 + 32);
+      const maxDy = Math.max(36, (anchor.height + dest.height) * 1.55);
 
       return Math.abs(destCenterX - anchorCenterX) <= maxDx && Math.abs(destCenterY - anchorCenterY) <= maxDy;
     }) || null;
@@ -3214,59 +3178,25 @@
     HIGHLIGHT_STATE.canvasHighlightAnchors = HIGHLIGHT_STATE.canvasHighlightAnchors.filter(
       (anchor) => now - anchor.at <= 1600
     );
-    HIGHLIGHT_STATE.canvasHiddenClanBounds = HIGHLIGHT_STATE.canvasHiddenClanBounds.filter(
-      (bounds) => now - bounds.at <= 1600
-    );
 
     for (const [key, value] of HIGHLIGHT_STATE.canvasClanSuppression.entries()) {
       if (!value || value.expiresAt <= now) HIGHLIGHT_STATE.canvasClanSuppression.delete(key);
     }
   }
 
-  function getCanvasClanSuppressionKey(text) {
-    return normalizeHighlightName(text).toLowerCase();
+  function getCanvasClanSuppressionKey(ctx, dest, text) {
+    const canvas = ctx && ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "";
+    return [
+      normalizeHighlightName(text).toLowerCase(),
+      canvas,
+      Math.round(dest.x / 12),
+      Math.round(dest.y / 12),
+    ].join("|");
   }
 
-  function rememberHiddenCanvasClan(ctx, text, dest, now) {
+  function rememberHiddenCanvasClan(text) {
     HIGHLIGHT_STATE.canvasClanHiddenHits++;
     HIGHLIGHT_STATE.lastCanvasClanText = String(text || "").slice(0, 80);
-
-    HIGHLIGHT_STATE.canvasHiddenClanBounds.push({
-      canvas: ctx && ctx.canvas ? ctx.canvas : null,
-      text: String(text || "").slice(0, 80),
-      x: dest.x,
-      y: dest.y,
-      width: dest.width,
-      height: dest.height,
-      at: now,
-    });
-
-    if (HIGHLIGHT_STATE.canvasHiddenClanBounds.length > 24) {
-      HIGHLIGHT_STATE.canvasHiddenClanBounds.splice(0, HIGHLIGHT_STATE.canvasHiddenClanBounds.length - 24);
-    }
-  }
-
-  function getCanvasNameCenterX(ctx, dest, now) {
-    pruneCanvasHighlightTracking(now);
-
-    const canvas = ctx && ctx.canvas ? ctx.canvas : null;
-    const destCenterY = dest.y + dest.height / 2;
-    const inlineClan = HIGHLIGHT_STATE.canvasHiddenClanBounds.find((bounds) => {
-      if (bounds.canvas && canvas && bounds.canvas !== canvas) return false;
-      if (now - bounds.at > 1400) return false;
-
-      const boundsCenterY = bounds.y + bounds.height / 2;
-      const sameRow = Math.abs(destCenterY - boundsCenterY) <= Math.max(18, Math.max(dest.height, bounds.height) * 0.85);
-      const leftOfName = bounds.x < dest.x + dest.width * 0.35;
-      const closeToName = Math.abs((bounds.x + bounds.width) - dest.x) <= Math.max(140, dest.width + bounds.width);
-      return sameRow && leftOfName && closeToName;
-    });
-
-    if (!inlineClan) return dest.x + dest.width / 2;
-
-    const minX = Math.min(inlineClan.x, dest.x);
-    const maxX = Math.max(inlineClan.x + inlineClan.width, dest.x + dest.width);
-    return minX + (maxX - minX) / 2;
   }
 
   function getHighlighterTime() {
@@ -3305,14 +3235,6 @@
     if (width <= 0 || height <= 0) return null;
 
     return { x, y, width, height };
-  }
-
-  function measureCanvasTextWidth(ctx, text) {
-    try {
-      return ctx.measureText(text).width || 0;
-    } catch {
-      return String(text || "").length * 10;
-    }
   }
 
   function captureSelectedNameStyle(name, durationMs) {
