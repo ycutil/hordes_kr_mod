@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.7
+// @version      0.8.8
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.7";
+  const MOD_VERSION = "0.8.8";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -118,7 +118,6 @@
     canvasEnabled: true,
     runtimeOverlayEnabled: true,
     hideClanNames: true,
-    nameOffsets: {},
     nameplateStyle: null,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
@@ -126,10 +125,6 @@
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
   HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
   HIGHLIGHT_CONFIG.hideClanNames = HIGHLIGHT_CONFIG.hideClanNames !== false;
-  if (!isObject(HIGHLIGHT_CONFIG.nameOffsets) || Array.isArray(HIGHLIGHT_CONFIG.nameOffsets)) {
-    HIGHLIGHT_CONFIG.nameOffsets = {};
-  }
-  HIGHLIGHT_CONFIG.nameOffsets = normalizeNameOffsets(HIGHLIGHT_CONFIG.nameOffsets);
   applyDefaultHighlightNames();
   const CACHE = new Map();
   const MOD_STATUS = {
@@ -171,9 +166,11 @@
     lastCanvasDrawAt: 0,
     lastCanvasImageDrawKey: "",
     lastCanvasImageDrawAt: 0,
-    canvasHighlightAnchors: [],
-    canvasClanSuppression: new Map(),
-    canvasNameOffsetSamples: new Map(),
+    canvasDrawSeq: 0,
+    pendingCanvasNames: [],
+    pendingCanvasNameFlushTimer: null,
+    canvasDynamicAlignHits: 0,
+    canvasDeferredNameHits: 0,
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
     canvasInternalDraw: false,
@@ -2123,30 +2120,6 @@
       saveHighlightConfig();
       return HIGHLIGHT_CONFIG.hideClanNames;
     },
-    nameOffsets() {
-      return { ...HIGHLIGHT_CONFIG.nameOffsets };
-    },
-    setNameOffset(name, offset) {
-      const normalized = normalizeHighlightName(name).toLowerCase();
-      const numberOffset = Number(offset);
-      if (!normalized || !Number.isFinite(numberOffset)) return { ...HIGHLIGHT_CONFIG.nameOffsets };
-
-      HIGHLIGHT_CONFIG.nameOffsets[normalized] = clamp(Math.round(numberOffset), -180, 180);
-      saveHighlightConfig();
-      return { ...HIGHLIGHT_CONFIG.nameOffsets };
-    },
-    clearNameOffset(name) {
-      const normalized = normalizeHighlightName(name).toLowerCase();
-      if (normalized) {
-        delete HIGHLIGHT_CONFIG.nameOffsets[normalized];
-        HIGHLIGHT_STATE.canvasNameOffsetSamples.delete(normalized);
-      } else {
-        HIGHLIGHT_CONFIG.nameOffsets = {};
-        HIGHLIGHT_STATE.canvasNameOffsetSamples.clear();
-      }
-      saveHighlightConfig();
-      return { ...HIGHLIGHT_CONFIG.nameOffsets };
-    },
     highlightStatus() {
       return getHighlightStatus();
     },
@@ -2766,22 +2739,7 @@
 
   function saveHighlightConfig() {
     HIGHLIGHT_CONFIG.names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names);
-    HIGHLIGHT_CONFIG.nameOffsets = normalizeNameOffsets(HIGHLIGHT_CONFIG.nameOffsets);
     saveJsonConfig(HIGHLIGHT_CONFIG_KEY, HIGHLIGHT_CONFIG);
-  }
-
-  function normalizeNameOffsets(offsets) {
-    const result = {};
-    if (!isObject(offsets) || Array.isArray(offsets)) return result;
-
-    Object.entries(offsets).forEach(([name, offset]) => {
-      const normalized = normalizeHighlightName(name).toLowerCase();
-      const numberOffset = Number(offset);
-      if (!normalized || !Number.isFinite(numberOffset)) return;
-      result[normalized] = clamp(Math.round(numberOffset), -180, 180);
-    });
-
-    return result;
   }
 
   function applyDefaultHighlightNames() {
@@ -2879,20 +2837,19 @@
           return originalDrawImage.apply(this, arguments);
         }
 
+        const seq = ++HIGHLIGHT_STATE.canvasDrawSeq;
+        const now = getHighlighterTime();
+        flushStalePendingCanvasNames(now, seq);
+
         const imageText = getCanvasImageText(arguments[0]);
         const dest = getDrawImageDestination(arguments);
         const highlightedName = getCanvasHighlightedName(imageText);
         if (highlightedName) {
-          const now = getHighlighterTime();
-          if (dest) rememberCanvasHighlightAnchor(this, highlightedName, dest, now);
-
-          const alignedDest = getAlignedCanvasNameDest(this, highlightedName, dest, now);
-          const result = drawCanvasImageAt(this, arguments, originalDrawImage, alignedDest);
-          drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText, alignedDest);
-          return result;
+          queuePendingCanvasName(this, arguments, highlightedName, originalDrawImage, originalFillText, originalStrokeText, dest, now, seq);
+          return undefined;
         }
 
-        if (shouldHideCanvasClanImage(this, imageText, dest)) {
+        if (resolvePendingCanvasNameWithClan(this, imageText, dest, now, seq)) {
           return undefined;
         }
 
@@ -3130,6 +3087,84 @@
     return originalDrawImage.apply(ctx, nextArgs);
   }
 
+  function queuePendingCanvasName(ctx, args, name, originalDrawImage, originalFillText, originalStrokeText, dest, now, seq) {
+    if (!dest) {
+      drawCanvasImageAt(ctx, args, originalDrawImage, dest);
+      return;
+    }
+
+    HIGHLIGHT_STATE.pendingCanvasNames.push({
+      ctx,
+      canvas: ctx && ctx.canvas ? ctx.canvas : null,
+      args: Array.prototype.slice.call(args),
+      text: String(name || "").trim(),
+      originalDrawImage,
+      originalFillText,
+      originalStrokeText,
+      dest: { ...dest },
+      at: now,
+      seq,
+    });
+    HIGHLIGHT_STATE.canvasDeferredNameHits++;
+
+    if (HIGHLIGHT_STATE.pendingCanvasNames.length > 12) {
+      flushPendingCanvasName(HIGHLIGHT_STATE.pendingCanvasNames.shift());
+    }
+
+    schedulePendingCanvasNameFlush();
+  }
+
+  function schedulePendingCanvasNameFlush() {
+    if (HIGHLIGHT_STATE.pendingCanvasNameFlushTimer !== null) return;
+
+    HIGHLIGHT_STATE.pendingCanvasNameFlushTimer = pageWindow.setTimeout(() => {
+      HIGHLIGHT_STATE.pendingCanvasNameFlushTimer = null;
+      flushPendingCanvasNames(true);
+    }, 0);
+  }
+
+  function flushStalePendingCanvasNames(now, seq) {
+    const remaining = [];
+    HIGHLIGHT_STATE.pendingCanvasNames.forEach((pending) => {
+      if (!pending || now - pending.at > 50 || seq - pending.seq > 10) {
+        flushPendingCanvasName(pending);
+      } else {
+        remaining.push(pending);
+      }
+    });
+    HIGHLIGHT_STATE.pendingCanvasNames = remaining;
+  }
+
+  function flushPendingCanvasNames(force) {
+    const now = getHighlighterTime();
+    const seq = HIGHLIGHT_STATE.canvasDrawSeq;
+    const remaining = [];
+
+    HIGHLIGHT_STATE.pendingCanvasNames.forEach((pending) => {
+      if (force || !pending || now - pending.at > 50 || seq - pending.seq > 10) {
+        flushPendingCanvasName(pending);
+      } else {
+        remaining.push(pending);
+      }
+    });
+    HIGHLIGHT_STATE.pendingCanvasNames = remaining;
+  }
+
+  function flushPendingCanvasName(pending, nextDest) {
+    if (!pending) return;
+
+    const dest = nextDest || pending.dest;
+    drawCanvasImageAt(pending.ctx, pending.args, pending.originalDrawImage, dest);
+    drawCanvasImageNameOverlay(
+      pending.ctx,
+      pending.args,
+      pending.text,
+      pending.originalFillText,
+      pending.originalStrokeText,
+      dest
+    );
+  }
+
   function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText, knownDest) {
     if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
     if (HIGHLIGHT_STATE.canvasInternalDraw) return false;
@@ -3209,7 +3244,7 @@
     }
   }
 
-  function shouldHideCanvasClanImage(ctx, imageText, dest) {
+  function resolvePendingCanvasNameWithClan(ctx, imageText, dest, now, seq) {
     if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled || !HIGHLIGHT_CONFIG.hideClanNames) {
       return false;
     }
@@ -3220,26 +3255,14 @@
     if (getMatchingHighlightName(rawText)) return false;
     if (!looksLikeCanvasClanText(rawText)) return false;
 
-    const now = getHighlighterTime();
-    pruneCanvasHighlightTracking(now);
+    const match = findPendingCanvasNameForClan(ctx, dest, now, seq);
+    if (!match) return false;
 
-    const suppressionKey = getCanvasClanSuppressionKey(ctx, dest, rawText);
-    const suppressed = HIGHLIGHT_STATE.canvasClanSuppression.get(suppressionKey);
-    if (suppressed && suppressed.expiresAt > now) {
-      rememberHiddenCanvasClan(rawText);
-      return true;
-    }
-
-    const anchor = findNearbyCanvasHighlightAnchor(ctx, dest, now);
-    if (!anchor) return false;
-
-    HIGHLIGHT_STATE.canvasClanSuppression.set(suppressionKey, {
-      text: rawText,
-      anchorText: anchor.text,
-      expiresAt: now + 1600,
-    });
-    observeCanvasNameOffset(anchor, dest);
+    const pending = HIGHLIGHT_STATE.pendingCanvasNames.splice(match.index, 1)[0];
+    const alignedDest = getCenteredCanvasNameDest(pending.dest, dest);
+    flushPendingCanvasName(pending, alignedDest);
     rememberHiddenCanvasClan(rawText);
+    HIGHLIGHT_STATE.canvasDynamicAlignHits++;
     return true;
   }
 
@@ -3247,154 +3270,63 @@
     return /[A-Za-z가-힣]/.test(String(text || ""));
   }
 
-  function rememberCanvasHighlightAnchor(ctx, text, dest, now) {
-    pruneCanvasHighlightTracking(now);
-    HIGHLIGHT_STATE.canvasHighlightAnchors.push({
-      canvas: ctx && ctx.canvas ? ctx.canvas : null,
-      text: String(text || "").slice(0, 80),
-      x: dest.x,
-      y: dest.y,
-      width: dest.width,
-      height: dest.height,
-      at: now,
-    });
-
-    if (HIGHLIGHT_STATE.canvasHighlightAnchors.length > 24) {
-      HIGHLIGHT_STATE.canvasHighlightAnchors.splice(0, HIGHLIGHT_STATE.canvasHighlightAnchors.length - 24);
-    }
-  }
-
-  function findNearbyCanvasHighlightAnchor(ctx, dest, now) {
+  function findPendingCanvasNameForClan(ctx, clanDest, now, seq) {
     const canvas = ctx && ctx.canvas ? ctx.canvas : null;
-    const destCenterX = dest.x + dest.width / 2;
-    const destCenterY = dest.y + dest.height / 2;
+    let best = null;
+    let bestScore = Infinity;
 
-    return HIGHLIGHT_STATE.canvasHighlightAnchors.find((anchor) => {
-      if (anchor.canvas && canvas && anchor.canvas !== canvas) return false;
-      if (now - anchor.at > 1400) return false;
+    for (let index = HIGHLIGHT_STATE.pendingCanvasNames.length - 1; index >= 0; index--) {
+      const pending = HIGHLIGHT_STATE.pendingCanvasNames[index];
+      if (!pending || !pending.dest) continue;
+      if (pending.canvas && canvas && pending.canvas !== canvas) continue;
+      if (now - pending.at > 80 || seq - pending.seq > 10) continue;
+      if (!isLikelyClanForPendingCanvasName(pending.dest, clanDest)) continue;
 
-      const anchorCenterX = anchor.x + anchor.width / 2;
-      const anchorCenterY = anchor.y + anchor.height / 2;
-      const maxDx = Math.max(96, (anchor.width + dest.width) / 2 + 32);
-      const maxDy = Math.max(36, (anchor.height + dest.height) * 1.55);
-
-      return (
-        Math.abs(destCenterX - anchorCenterX) <= maxDx &&
-        Math.abs(destCenterY - anchorCenterY) <= maxDy &&
-        isLikelyClanForCanvasAnchor(anchor, dest)
-      );
-    }) || null;
-  }
-
-  function isLikelyClanForCanvasAnchor(anchor, dest) {
-    const clanRight = dest.x + dest.width;
-    const leftOfName = dest.x < anchor.x + anchor.width * 0.35;
-    const closeToName = Math.abs(clanRight - anchor.x) <= Math.max(72, (anchor.width + dest.width) * 0.85);
-    return leftOfName && closeToName;
-  }
-
-  function pruneCanvasHighlightTracking(now) {
-    HIGHLIGHT_STATE.canvasHighlightAnchors = HIGHLIGHT_STATE.canvasHighlightAnchors.filter(
-      (anchor) => now - anchor.at <= 1600
-    );
-
-    for (const [key, value] of HIGHLIGHT_STATE.canvasClanSuppression.entries()) {
-      if (!value || value.expiresAt <= now) HIGHLIGHT_STATE.canvasClanSuppression.delete(key);
+      const pendingCenterY = pending.dest.y + pending.dest.height / 2;
+      const clanCenterY = clanDest.y + clanDest.height / 2;
+      const score = Math.abs(seq - pending.seq) * 100 + Math.abs(pendingCenterY - clanCenterY);
+      if (score < bestScore) {
+        best = { index, pending };
+        bestScore = score;
+      }
     }
+
+    return best;
   }
 
-  function getCanvasClanSuppressionKey(ctx, dest, text) {
-    const canvas = ctx && ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "";
-    return [
-      normalizeHighlightName(text).toLowerCase(),
-      canvas,
-      Math.round(dest.x / 12),
-      Math.round(dest.y / 12),
-    ].join("|");
+  function isLikelyClanForPendingCanvasName(nameDest, clanDest) {
+    const nameCenterY = nameDest.y + nameDest.height / 2;
+    const clanCenterY = clanDest.y + clanDest.height / 2;
+    const sameRow = Math.abs(nameCenterY - clanCenterY) <= Math.max(24, (nameDest.height + clanDest.height) * 0.8);
+    const clanRight = clanDest.x + clanDest.width;
+    const leftOfName = clanDest.x < nameDest.x + nameDest.width * 0.35;
+    const closeToName = Math.abs(clanRight - nameDest.x) <= Math.max(90, (nameDest.width + clanDest.width) * 0.85);
+    return sameRow && leftOfName && closeToName;
+  }
+
+  function getCenteredCanvasNameDest(nameDest, clanDest) {
+    const minX = Math.min(nameDest.x, clanDest.x);
+    const maxX = Math.max(nameDest.x + nameDest.width, clanDest.x + clanDest.width);
+    const centerX = minX + (maxX - minX) / 2;
+    const nextX = Math.round(centerX - nameDest.width / 2);
+    const shiftX = nextX - nameDest.x;
+    const maxShift = Math.max(16, Math.min(180, clanDest.width + 24));
+
+    if (shiftX >= -2 || Math.abs(shiftX) > maxShift) {
+      return nameDest;
+    }
+
+    return {
+      x: nextX,
+      y: nameDest.y,
+      width: nameDest.width,
+      height: nameDest.height,
+    };
   }
 
   function rememberHiddenCanvasClan(text) {
     HIGHLIGHT_STATE.canvasClanHiddenHits++;
     HIGHLIGHT_STATE.lastCanvasClanText = String(text || "").slice(0, 80);
-  }
-
-  function observeCanvasNameOffset(anchor, clanDest) {
-    const minX = Math.min(anchor.x, clanDest.x);
-    const maxX = Math.max(anchor.x + anchor.width, clanDest.x + clanDest.width);
-    const centerX = minX + (maxX - minX) / 2;
-    const currentCenterX = anchor.x + anchor.width / 2;
-    const shiftX = Math.round(centerX - currentCenterX);
-    const maxShift = Math.max(16, Math.min(140, clanDest.width + 24));
-    if (shiftX >= -4) return;
-    if (Math.abs(shiftX) > maxShift) return;
-
-    const name = normalizeHighlightName(anchor.text).toLowerCase();
-    if (!name || Number.isFinite(Number(HIGHLIGHT_CONFIG.nameOffsets[name]))) return;
-
-    const samples = HIGHLIGHT_STATE.canvasNameOffsetSamples.get(name) || [];
-    samples.push({
-      shiftX,
-      at: Date.now(),
-    });
-
-    const recentSamples = samples
-      .filter((sample) => Date.now() - sample.at <= 6000)
-      .slice(-12);
-    HIGHLIGHT_STATE.canvasNameOffsetSamples.set(name, recentSamples);
-
-    const lockedOffset = getStableCanvasNameOffset(recentSamples);
-    if (lockedOffset === null) return;
-
-    HIGHLIGHT_CONFIG.nameOffsets[name] = lockedOffset;
-    HIGHLIGHT_STATE.canvasNameOffsetSamples.delete(name);
-    saveHighlightConfig();
-  }
-
-  function getAlignedCanvasNameDest(ctx, text, dest, now) {
-    if (!dest) return dest;
-    pruneCanvasHighlightTracking(now);
-
-    const offset = getCanvasNameOffset(text);
-    if (!Number.isFinite(offset) || offset === 0) return dest;
-
-    const nextX = Math.round(dest.x + offset);
-    if (Math.abs(offset) > 180) return dest;
-
-    return {
-      x: nextX,
-      y: dest.y,
-      width: dest.width,
-      height: dest.height,
-    };
-  }
-
-  function getCanvasNameOffset(text) {
-    const name = normalizeHighlightName(text).toLowerCase();
-    const offset = Number(HIGHLIGHT_CONFIG.nameOffsets[name]);
-    return Number.isFinite(offset) ? clamp(Math.round(offset), -180, 180) : 0;
-  }
-
-  function getStableCanvasNameOffset(samples) {
-    if (!Array.isArray(samples) || samples.length < 7) return null;
-
-    const shifts = samples.map((sample) => sample.shiftX).filter(Number.isFinite);
-    if (shifts.length < 7) return null;
-
-    const median = getMedian(shifts);
-    const closeCount = shifts.filter((shift) => Math.abs(shift - median) <= 4).length;
-    if (closeCount < 6) return null;
-
-    return clamp(Math.round(median), -180, 180);
-  }
-
-  function getMedian(values) {
-    const sorted = values.slice().sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    if (sorted.length % 2 === 1) {
-      return sorted[mid];
-    }
-
-    return (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
   function getHighlighterTime() {
@@ -3604,8 +3536,9 @@
       canvasHits: HIGHLIGHT_STATE.canvasHits,
       canvasImageHits: HIGHLIGHT_STATE.canvasImageHits,
       canvasClanHiddenHits: HIGHLIGHT_STATE.canvasClanHiddenHits,
-      nameOffsets: { ...HIGHLIGHT_CONFIG.nameOffsets },
-      canvasNameOffsetSamples: HIGHLIGHT_STATE.canvasNameOffsetSamples.size,
+      pendingCanvasNames: HIGHLIGHT_STATE.pendingCanvasNames.length,
+      canvasDynamicAlignHits: HIGHLIGHT_STATE.canvasDynamicAlignHits,
+      canvasDeferredNameHits: HIGHLIGHT_STATE.canvasDeferredNameHits,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
       lastCanvasImageText: HIGHLIGHT_STATE.lastCanvasImageText,
       lastCanvasClanText: HIGHLIGHT_STATE.lastCanvasClanText,
