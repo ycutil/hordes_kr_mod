@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.4
+// @version      0.7.5
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.4";
+  const MOD_VERSION = "0.7.5";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3301,7 +3301,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3=t=>{I=t}",
-      "N3=t=>{I=t;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.engine=t;window.__HORDES_KR_RUNTIME__.updatedAt=Date.now()}catch(o){}}",
+      "N3=t=>{I=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientEngineSetter=(r.hookHits.clientEngineSetter||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientEngineSetter:\"+((o&&o.message)||o))}catch(i){}}}",
       patches,
       "client-engine-setter"
     );
@@ -3309,7 +3309,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "ib=(t,e)=>{tt.width=t,tt.height=e,To.width=t,To.height=e,Ln.width=t,Ln.height=e}",
-      "ib=(t,e)=>{try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{camera:gt,cameraTransform:Qt,webglCanvas:To,overlayCanvas:Ln,renderState:tt,settings:fe,updatedAt:Date.now()})}catch(o){}tt.width=t,tt.height=e,To.width=t,To.height=e,Ln.width=t,Ln.height=e}",
+      "ib=(t,e)=>{try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}r.webglCanvas=To;r.overlayCanvas=Ln;r.renderState=tt;try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientRenderState=(r.hookHits.clientRenderState||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientRenderState:\"+((o&&o.message)||o))}catch(i){}}tt.width=t,tt.height=e,To.width=t,To.height=e,Ln.width=t,Ln.height=e}",
       patches,
       "client-render-state"
     );
@@ -3317,9 +3317,17 @@
     patched = replaceClientSourceOnce(
       patched,
       "QA=(t,e)=>{W3(e),HA(e),I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
-      "QA=(t,e)=>{W3(e),HA(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:I,camera:gt,cameraTransform:Qt,webglCanvas:To,overlayCanvas:Ln,renderState:tt,settings:fe,delta:t,frameTime:e,updatedAt:Date.now()})}catch(o){}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
+      "QA=(t,e)=>{W3(e),HA(e);try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
       patches,
       "client-frame-loop"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "N3(new Fh({})),Z_(!0),z9()",
+      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
+      patches,
+      "client-onload-runtime"
     );
 
     if (patches.length > 0) {
@@ -3880,6 +3888,8 @@
       patchedBy: runtime.patchedBy || "",
       patchedVersion: runtime.patchedVersion || "",
       patchedSource: runtime.patchedSource || "",
+      hookHits: runtime.hookHits || null,
+      hookErrors: Array.isArray(runtime.hookErrors) ? runtime.hookErrors.slice(-8) : [],
     };
   }
 
