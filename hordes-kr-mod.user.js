@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.3
+// @version      0.7.4
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.3";
+  const MOD_VERSION = "0.7.4";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3296,6 +3296,30 @@
       "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}ne.tick(t),",
       patches,
       "frame-loop"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "N3=t=>{I=t}",
+      "N3=t=>{I=t;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.engine=t;window.__HORDES_KR_RUNTIME__.updatedAt=Date.now()}catch(o){}}",
+      patches,
+      "client-engine-setter"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "ib=(t,e)=>{tt.width=t,tt.height=e,To.width=t,To.height=e,Ln.width=t,Ln.height=e}",
+      "ib=(t,e)=>{try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{camera:gt,cameraTransform:Qt,webglCanvas:To,overlayCanvas:Ln,renderState:tt,settings:fe,updatedAt:Date.now()})}catch(o){}tt.width=t,tt.height=e,To.width=t,To.height=e,Ln.width=t,Ln.height=e}",
+      patches,
+      "client-render-state"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "QA=(t,e)=>{W3(e),HA(e),I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
+      "QA=(t,e)=>{W3(e),HA(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:I,camera:gt,cameraTransform:Qt,webglCanvas:To,overlayCanvas:Ln,renderState:tt,settings:fe,delta:t,frameTime:e,updatedAt:Date.now()})}catch(o){}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
+      patches,
+      "client-frame-loop"
     );
 
     if (patches.length > 0) {
