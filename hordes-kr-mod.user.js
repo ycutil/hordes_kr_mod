@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.4
+// @version      0.8.5
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.4";
+  const MOD_VERSION = "0.8.5";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2841,7 +2841,7 @@
         }
 
         const result = originalDrawImage.apply(this, arguments);
-        drawCanvasImageNameBoost(this, arguments, imageText, originalDrawImage, dest);
+        drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText, dest);
         return result;
       };
     }
@@ -3049,10 +3049,10 @@
     drawText.call(ctx, text, x, y);
   }
 
-  function drawCanvasImageNameBoost(ctx, args, imageText, originalDrawImage, knownDest) {
+  function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText, knownDest) {
     if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
     if (HIGHLIGHT_STATE.canvasInternalDraw) return false;
-    if (typeof originalDrawImage !== "function") return false;
+    if (typeof originalFillText !== "function") return false;
 
     const rawText = String(imageText || "").trim();
     const matchedName = getMatchingHighlightName(rawText);
@@ -3086,8 +3086,35 @@
     try {
       HIGHLIGHT_STATE.canvasInternalDraw = true;
       ctx.save();
-      ctx.globalAlpha = 0.45;
-      originalDrawImage.apply(ctx, args);
+      ctx.globalAlpha = 1;
+      ctx.textBaseline = "bottom";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+
+      const fontSize = clamp(Math.round(dest.height * 1.16), 18, 30);
+      const fontFamily = getCanvasFontFamily(String(ctx.font || "")) || "hordes, Arial, sans-serif";
+      ctx.font = `900 ${fontSize}px ${fontFamily}`;
+      ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
+      ctx.shadowBlur = Math.max(2, Math.round(fontSize * 0.16));
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+
+      const x = Math.round(dest.x + dest.width / 2);
+      const y = Math.round(dest.y + dest.height + 1);
+
+      if (typeof originalStrokeText === "function") {
+        ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
+        ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
+        originalStrokeText.call(ctx, rawText, x, y);
+      }
+
+      ctx.fillStyle = "#ffffff";
+      originalFillText.call(ctx, rawText, x, y);
+      originalFillText.call(ctx, rawText, x + 0.35, y);
+      originalFillText.call(ctx, rawText, x - 0.35, y);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      originalFillText.call(ctx, rawText, x, y - 0.35);
       ctx.restore();
       return true;
     } catch {
