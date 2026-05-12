@@ -55,6 +55,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.7.7`부터는 `/play`에서 원본 외부 클라이언트 스크립트를 CSP로 차단하고 inline 패치본만 실행되도록 게이트를 추가합니다.
 `v0.7.8`부터는 Tampermonkey 샌드박스 단계에서 CSP 게이트를 먼저 설치해 원본 `/client.js` 선실행 레이스를 더 줄입니다.
 `v0.7.9`부터는 `@inject-into page`로 페이지 컨텍스트에서 바로 실행해 샌드박스 주입 지연을 줄입니다.
+`v0.8.0`부터는 이름 텍스처 캔버스를 태그하고 `drawImage` 시점에 강조 글자를 덧그립니다. CSP 스크립트 게이트는 기본 비활성화됩니다.
 
 적용 확인:
 
@@ -110,7 +111,7 @@ HordesKrMod.clearCapturedNameplateStyle()
 
 비활성화 후에는 페이지를 새로고침해야 게임 기본 언어 요청으로 돌아갑니다.
 
-닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역, 2D 캔버스의 `fillText`/`strokeText` 이름표, WebGL 런타임 좌표 기반 오버레이에 적용됩니다. 클릭한 이름표 스타일을 재사용하려면 대상 캐릭터를 클릭해 둔 상태로 `await HordesKrMod.captureSelectedNameStyle("닉네임", 4000)`을 실행합니다. `sampleCount`가 0이면 WebGL 경로이므로 새로고침 후 `HordesKrMod.scriptHookStatus()`와 `HordesKrMod.runtimeOverlayStatus()`를 확인하세요.
+닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역, 2D 캔버스의 `fillText`/`strokeText`, 이름 텍스처가 `drawImage`로 그려지는 이름표, WebGL 런타임 좌표 기반 오버레이에 적용됩니다. 현재 Hordes 플레이 화면의 머리 위 이름표는 주로 `drawImage` 경로를 사용합니다.
 
 ## 다음 작업
 

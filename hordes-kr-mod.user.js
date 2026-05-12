@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.9
+// @version      0.8.0
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -44,6 +44,7 @@
 
     try {
       if (localStorage.getItem("hordesKrMod.scriptGate.disabled") === "true") return;
+      if (localStorage.getItem("hordesKrMod.scriptGate.enabled") !== "true") return;
       if (document.getElementById("hordes-kr-script-gate")) return;
 
       const root = document.documentElement;
@@ -69,12 +70,13 @@
     }
   }
 
-  const MOD_VERSION = "0.7.9";
+  const MOD_VERSION = "0.8.0";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
   const SCRIPT_GATE_DISABLED_KEY = "hordesKrMod.scriptGate.disabled";
+  const SCRIPT_GATE_ENABLED_KEY = "hordesKrMod.scriptGate.enabled";
   const HIGHLIGHT_DEFAULTS_VERSION_KEY = "hordesKrMod.highlight.defaultsVersion";
   const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2-hmage";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
@@ -153,11 +155,16 @@
     pending: false,
     canvasInstalled: false,
     canvasHits: 0,
+    canvasImageHits: 0,
     lastCanvasText: "",
+    lastCanvasImageText: "",
     lastCanvasDrawKey: "",
     lastCanvasDrawAt: 0,
+    lastCanvasImageDrawKey: "",
+    lastCanvasImageDrawAt: 0,
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
+    canvasInternalDraw: false,
     styleCapture: null,
     scriptHookInstalled: false,
     scriptObserver: null,
@@ -1933,12 +1940,12 @@
   const originalFetch = pageWindow.fetch ? pageWindow.fetch.bind(pageWindow) : null;
   if (!originalFetch) return;
 
+  initCanvasTextHighlighter();
   initGameScriptRuntimeHook();
   initStatusUi();
   installXhrInterceptor();
   initDomTranslator();
   initNameHighlighter();
-  initCanvasTextHighlighter();
   initRuntimeNameOverlay();
   initEventScheduler();
 
@@ -1980,10 +1987,12 @@
       console.info("[Hordes KR Mod] Localization cache cleared.");
     },
     enableScriptGate() {
+      localStorage.setItem(SCRIPT_GATE_ENABLED_KEY, "true");
       localStorage.removeItem(SCRIPT_GATE_DISABLED_KEY);
       return "스크립트 게이트 켜짐 - 새로고침 필요";
     },
     disableScriptGate() {
+      localStorage.setItem(SCRIPT_GATE_ENABLED_KEY, "false");
       localStorage.setItem(SCRIPT_GATE_DISABLED_KEY, "true");
       return "스크립트 게이트 꺼짐 - 새로고침 필요";
     },
@@ -2776,9 +2785,15 @@
 
     const originalFillText = proto.fillText;
     const originalStrokeText = proto.strokeText;
+    const originalDrawImage = proto.drawImage;
 
     if (typeof originalFillText === "function") {
       proto.fillText = function hordesKrFillText(text, x, y, maxWidth) {
+        if (HIGHLIGHT_STATE.canvasInternalDraw) {
+          return originalFillText.apply(this, arguments);
+        }
+
+        rememberCanvasTextSource(this, text);
         recordCanvasNameStyle("fillText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
         const result = originalFillText.apply(this, arguments);
@@ -2789,10 +2804,24 @@
 
     if (typeof originalStrokeText === "function") {
       proto.strokeText = function hordesKrStrokeText(text, x, y, maxWidth) {
+        if (HIGHLIGHT_STATE.canvasInternalDraw) {
+          return originalStrokeText.apply(this, arguments);
+        }
+
+        rememberCanvasTextSource(this, text);
         recordCanvasNameStyle("strokeText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
         const result = originalStrokeText.apply(this, arguments);
         drawCanvasNameTextOverlay(this, text, x, y, maxWidth, originalFillText, originalStrokeText);
+        return result;
+      };
+    }
+
+    if (typeof originalDrawImage === "function") {
+      proto.drawImage = function hordesKrDrawImage() {
+        const imageText = getCanvasImageText(arguments[0]);
+        const result = originalDrawImage.apply(this, arguments);
+        drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText);
         return result;
       };
     }
@@ -2802,6 +2831,33 @@
       value: true,
     });
     HIGHLIGHT_STATE.canvasInstalled = true;
+  }
+
+  function rememberCanvasTextSource(ctx, text) {
+    const canvas = ctx && ctx.canvas;
+    if (!canvas) return;
+
+    const rawText = String(text ?? "").trim();
+    if (!rawText || rawText.length > 80) return;
+
+    try {
+      canvas.__hordesKrText = rawText;
+      canvas.__hordesKrFont = String(ctx.font || "");
+      canvas.__hordesKrFillStyle = normalizeCanvasStyle(ctx.fillStyle);
+      canvas.__hordesKrTaggedAt = Date.now();
+    } catch {
+      // Some canvas-like sources can be non-extensible.
+    }
+  }
+
+  function getCanvasImageText(image) {
+    if (!image) return "";
+
+    try {
+      return typeof image.__hordesKrText === "string" ? image.__hordesKrText : "";
+    } catch {
+      return "";
+    }
   }
 
   function drawCanvasNameHighlight(ctx, text, x, y, maxWidth) {
@@ -2973,6 +3029,127 @@
     drawText.call(ctx, text, x, y);
   }
 
+  function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
+    if (HIGHLIGHT_STATE.canvasInternalDraw) return;
+    if (typeof originalFillText !== "function") return;
+
+    const rawText = String(imageText || "").trim();
+    const matchedName = getMatchingHighlightName(rawText);
+    if (!matchedName) return;
+
+    const dest = getDrawImageDestination(args);
+    if (!dest) return;
+
+    const now = pageWindow.performance && pageWindow.performance.now
+      ? pageWindow.performance.now()
+      : Date.now();
+    const drawKey = [
+      rawText,
+      Math.round(dest.x),
+      Math.round(dest.y),
+      Math.round(dest.width),
+      Math.round(dest.height),
+      ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
+    ].join("|");
+    if (
+      HIGHLIGHT_STATE.lastCanvasImageDrawKey === drawKey &&
+      now - HIGHLIGHT_STATE.lastCanvasImageDrawAt < 8
+    ) {
+      return;
+    }
+
+    HIGHLIGHT_STATE.lastCanvasImageDrawKey = drawKey;
+    HIGHLIGHT_STATE.lastCanvasImageDrawAt = now;
+    HIGHLIGHT_STATE.canvasImageHits++;
+    HIGHLIGHT_STATE.lastCanvasImageText = rawText.slice(0, 80);
+
+    try {
+      HIGHLIGHT_STATE.canvasInternalDraw = true;
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.textBaseline = "bottom";
+      ctx.textAlign = "left";
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+
+      const fontSize = clamp(Math.round(dest.height * 1.16), 18, 30);
+      const fontFamily = getCanvasFontFamily(String(ctx.font || "")) || "hordes, Arial, sans-serif";
+      ctx.font = `900 ${fontSize}px ${fontFamily}`;
+      ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
+      ctx.shadowBlur = Math.max(2, Math.round(fontSize * 0.16));
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+
+      const prefix = "#KR ";
+      const fullText = `${prefix}${rawText}`;
+      const fullWidth = measureCanvasTextWidth(ctx, fullText);
+      const prefixWidth = measureCanvasTextWidth(ctx, prefix);
+      const x = Math.round(dest.x + dest.width / 2 - fullWidth / 2);
+      const y = Math.round(dest.y + dest.height + 1);
+
+      if (typeof originalStrokeText === "function") {
+        ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
+        ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
+        originalStrokeText.call(ctx, fullText, x, y);
+      }
+
+      ctx.fillStyle = "#2f7dff";
+      originalFillText.call(ctx, prefix, x, y);
+      ctx.fillStyle = "#ffffff";
+      originalFillText.call(ctx, rawText, x + prefixWidth, y);
+      ctx.restore();
+    } catch {
+      try {
+        ctx.restore();
+      } catch {
+        // Ignore canvas state recovery failures.
+      }
+    } finally {
+      HIGHLIGHT_STATE.canvasInternalDraw = false;
+    }
+  }
+
+  function getDrawImageDestination(args) {
+    if (!args || args.length < 3) return null;
+
+    const image = args[0];
+    let x;
+    let y;
+    let width;
+    let height;
+
+    if (args.length >= 9) {
+      x = Number(args[5]);
+      y = Number(args[6]);
+      width = Number(args[7]);
+      height = Number(args[8]);
+    } else if (args.length >= 5) {
+      x = Number(args[1]);
+      y = Number(args[2]);
+      width = Number(args[3]);
+      height = Number(args[4]);
+    } else {
+      x = Number(args[1]);
+      y = Number(args[2]);
+      width = Number(image && (image.width || image.videoWidth || image.naturalWidth));
+      height = Number(image && (image.height || image.videoHeight || image.naturalHeight));
+    }
+
+    if (![x, y, width, height].every(Number.isFinite)) return null;
+    if (width <= 0 || height <= 0) return null;
+
+    return { x, y, width, height };
+  }
+
+  function measureCanvasTextWidth(ctx, text) {
+    try {
+      return ctx.measureText(text).width || 0;
+    } catch {
+      return String(text || "").length * 10;
+    }
+  }
+
   function captureSelectedNameStyle(name, durationMs) {
     const normalized = normalizeHighlightName(name);
     if (!normalized) throw new Error("captureSelectedNameStyle requires a visible name.");
@@ -3139,7 +3316,9 @@
       domHighlights: countDomHighlightElements(),
       canvasInstalled: HIGHLIGHT_STATE.canvasInstalled,
       canvasHits: HIGHLIGHT_STATE.canvasHits,
+      canvasImageHits: HIGHLIGHT_STATE.canvasImageHits,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
+      lastCanvasImageText: HIGHLIGHT_STATE.lastCanvasImageText,
       nameplateStyle: getNameplateStyleStatus(),
       scriptHook: getScriptHookStatus(),
       runtimeOverlay: getRuntimeOverlayStatus(),
@@ -3240,9 +3419,12 @@
     if (!/^\/play(?:\/|$)/.test(location.pathname)) return false;
 
     try {
-      return localStorage.getItem(SCRIPT_GATE_DISABLED_KEY) !== "true";
+      return (
+        localStorage.getItem(SCRIPT_GATE_DISABLED_KEY) !== "true" &&
+        localStorage.getItem(SCRIPT_GATE_ENABLED_KEY) === "true"
+      );
     } catch {
-      return true;
+      return false;
     }
   }
 
