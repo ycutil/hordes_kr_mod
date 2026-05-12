@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.6
+// @version      0.7.7
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,11 +36,12 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.6";
+  const MOD_VERSION = "0.7.7";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
+  const SCRIPT_GATE_DISABLED_KEY = "hordesKrMod.scriptGate.disabled";
   const HIGHLIGHT_DEFAULTS_VERSION_KEY = "hordesKrMod.highlight.defaultsVersion";
   const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2-hmage";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
@@ -127,6 +128,8 @@
     styleCapture: null,
     scriptHookInstalled: false,
     scriptObserver: null,
+    scriptGateInstalled: false,
+    scriptGateError: "",
     scriptHookAttemptedScripts: [],
     scriptHookPatchedScripts: [],
     scriptHookErrors: [],
@@ -1943,6 +1946,14 @@
       });
       console.info("[Hordes KR Mod] Localization cache cleared.");
     },
+    enableScriptGate() {
+      localStorage.removeItem(SCRIPT_GATE_DISABLED_KEY);
+      return "스크립트 게이트 켜짐 - 새로고침 필요";
+    },
+    disableScriptGate() {
+      localStorage.setItem(SCRIPT_GATE_DISABLED_KEY, "true");
+      return "스크립트 게이트 꺼짐 - 새로고침 필요";
+    },
     async testRequest() {
       setStatus({
         lastState: "모드 테스트 중",
@@ -3106,6 +3117,7 @@
     if (HIGHLIGHT_STATE.scriptHookInstalled) return;
     HIGHLIGHT_STATE.scriptHookInstalled = true;
 
+    installClientScriptGate();
     patchCanvasContextCapture();
 
     const scan = () => scanGameClientScripts();
@@ -3147,6 +3159,54 @@
     );
 
     scan();
+  }
+
+  function installClientScriptGate() {
+    if (!shouldInstallClientScriptGate()) return;
+
+    const install = () => {
+      try {
+        if (document.getElementById("hordes-kr-script-gate")) return;
+
+        const root = document.documentElement;
+        if (!root) {
+          setTimeout(install, 0);
+          return;
+        }
+
+        let head = document.head;
+        if (!head) {
+          head = document.createElement("head");
+          root.insertBefore(head, root.firstChild);
+        }
+
+        const meta = document.createElement("meta");
+        meta.id = "hordes-kr-script-gate";
+        meta.httpEquiv = "Content-Security-Policy";
+        meta.content = [
+          "script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com https://www.gstatic.com",
+          "worker-src 'self' blob:",
+          "child-src 'self' blob:",
+        ].join("; ");
+        head.insertBefore(meta, head.firstChild);
+        HIGHLIGHT_STATE.scriptGateInstalled = true;
+        HIGHLIGHT_STATE.scriptGateError = "";
+      } catch (error) {
+        HIGHLIGHT_STATE.scriptGateError = error && error.message ? error.message : String(error);
+      }
+    };
+
+    install();
+  }
+
+  function shouldInstallClientScriptGate() {
+    if (!/^\/play(?:\/|$)/.test(location.pathname)) return false;
+
+    try {
+      return localStorage.getItem(SCRIPT_GATE_DISABLED_KEY) !== "true";
+    } catch {
+      return true;
+    }
   }
 
   function patchCanvasContextCapture() {
@@ -3424,6 +3484,11 @@
   function getScriptHookStatus() {
     return {
       installed: HIGHLIGHT_STATE.scriptHookInstalled,
+      scriptGate: {
+        enabled: shouldInstallClientScriptGate(),
+        installed: HIGHLIGHT_STATE.scriptGateInstalled,
+        error: HIGHLIGHT_STATE.scriptGateError,
+      },
       attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
       patchedScripts: [...HIGHLIGHT_STATE.scriptHookPatchedScripts],
       errors: [...HIGHLIGHT_STATE.scriptHookErrors],

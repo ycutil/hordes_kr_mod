@@ -52,6 +52,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.7.4`부터는 실제 플레이 클라이언트인 `/client.js`의 엔진, 카메라, 프레임 루프 패턴을 추가로 패치합니다.
 `v0.7.5`부터는 `/client.js` 런타임 값을 개별 대입하고 엔진 생성 직후에도 한 번 더 노출해 후킹 성공 여부를 더 정확히 표시합니다.
 `v0.7.6`부터는 원본 `/client.js`가 먼저 실행되는 레이스를 줄이기 위해 동기 XHR로 패치본을 즉시 삽입합니다.
+`v0.7.7`부터는 `/play`에서 원본 외부 클라이언트 스크립트를 CSP로 차단하고 inline 패치본만 실행되도록 게이트를 추가합니다.
 
 적용 확인:
 
@@ -80,6 +81,8 @@ UI 조정:
 HordesKrMod.disable()
 HordesKrMod.enable()
 HordesKrMod.clearCache()
+HordesKrMod.disableScriptGate()
+HordesKrMod.enableScriptGate()
 HordesKrMod.testRequest()
 HordesKrMod.status()
 HordesKrMod.eventStatus()
