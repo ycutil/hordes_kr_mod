@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.1
+// @version      0.7.2
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.1";
+  const MOD_VERSION = "0.7.2";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -80,6 +80,7 @@
     names: DEFAULT_HIGHLIGHT_NAMES,
     enabled: true,
     canvasEnabled: true,
+    nameplateStyle: null,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
@@ -121,6 +122,7 @@
     lastCanvasDrawAt: 0,
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
+    styleCapture: null,
   };
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -2037,6 +2039,17 @@
     findNameplateCandidates(name) {
       return findRuntimeNameCandidates(name);
     },
+    captureSelectedNameStyle(name, durationMs = 4000) {
+      return captureSelectedNameStyle(name, durationMs);
+    },
+    nameplateStyleStatus() {
+      return getNameplateStyleStatus();
+    },
+    clearCapturedNameplateStyle() {
+      HIGHLIGHT_CONFIG.nameplateStyle = null;
+      saveHighlightConfig();
+      return getNameplateStyleStatus();
+    },
   };
 
   function loadJsonConfig(key, defaults) {
@@ -2692,6 +2705,7 @@
 
     if (typeof originalFillText === "function") {
       proto.fillText = function hordesKrFillText(text, x, y, maxWidth) {
+        recordCanvasNameStyle("fillText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
         const result = originalFillText.apply(this, arguments);
         drawCanvasNameTextOverlay(this, text, x, y, maxWidth, originalFillText, originalStrokeText);
@@ -2701,6 +2715,7 @@
 
     if (typeof originalStrokeText === "function") {
       proto.strokeText = function hordesKrStrokeText(text, x, y, maxWidth) {
+        recordCanvasNameStyle("strokeText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
         const result = originalStrokeText.apply(this, arguments);
         drawCanvasNameTextOverlay(this, text, x, y, maxWidth, originalFillText, originalStrokeText);
@@ -2765,15 +2780,21 @@
     return `900 ${targetSize || getBoostedCanvasFontSize(fontSize)}px ${getCanvasFontFamily(font)}`;
   }
 
+  function getCapturedCanvasFont(font, fontSize, targetSize) {
+    const captured = HIGHLIGHT_CONFIG.nameplateStyle;
+    const family = getCanvasFontFamily((captured && captured.font) || font);
+    return `900 ${targetSize || fontSize}px ${family}`;
+  }
+
   function getFittedCanvasFontSize(ctx, text, maxWidth, fontSize) {
-    let targetSize = getBoostedCanvasFontSize(fontSize);
+    let targetSize = getTargetCanvasFontSize(fontSize);
     const widthLimit = Number(maxWidth);
     if (!Number.isFinite(widthLimit) || widthLimit <= 0) return targetSize;
 
     try {
       const originalFont = ctx.font;
       while (targetSize > fontSize) {
-        ctx.font = getBoostedCanvasFont(originalFont, fontSize, targetSize);
+        ctx.font = getCapturedCanvasFont(originalFont, fontSize, targetSize);
         if (ctx.measureText(String(text)).width <= widthLimit * 0.98) break;
         targetSize--;
       }
@@ -2783,6 +2804,16 @@
     }
 
     return Math.max(fontSize, targetSize);
+  }
+
+  function getTargetCanvasFontSize(fontSize) {
+    const captured = HIGHLIGHT_CONFIG.nameplateStyle;
+    const capturedSize = captured && Number(captured.fontSize);
+    if (Number.isFinite(capturedSize) && capturedSize > 0) {
+      return Math.max(fontSize, Math.round(capturedSize));
+    }
+
+    return getBoostedCanvasFontSize(fontSize);
   }
 
   function drawCanvasNameTextOverlay(ctx, text, x, y, maxWidth, originalFillText, originalStrokeText) {
@@ -2816,26 +2847,34 @@
     HIGHLIGHT_STATE.lastCanvasTextOverlayAt = now;
 
     const fontSize = getCanvasFontSize(ctx.font);
-    const widthLimit = Number(maxWidth);
-    const overlayMaxWidth = Number.isFinite(widthLimit) && widthLimit > 0 ? widthLimit : undefined;
 
     try {
       ctx.save();
+      const capturedStyle = HIGHLIGHT_CONFIG.nameplateStyle || {};
+      const widthLimit = Number(maxWidth);
+      const capturedMaxWidth = Number(capturedStyle.maxWidth);
+      const overlayMaxWidth = Number.isFinite(capturedMaxWidth) && capturedMaxWidth > 0
+        ? capturedMaxWidth
+        : Number.isFinite(widthLimit) && widthLimit > 0
+          ? widthLimit
+          : undefined;
       const targetFontSize = getFittedCanvasFontSize(ctx, rawText, overlayMaxWidth, fontSize);
-      ctx.font = getBoostedCanvasFont(ctx.font, fontSize, targetFontSize);
+      ctx.font = getCapturedCanvasFont(ctx.font, fontSize, targetFontSize);
       ctx.globalAlpha = 1;
+      if (capturedStyle.textAlign) ctx.textAlign = capturedStyle.textAlign;
+      if (capturedStyle.textBaseline) ctx.textBaseline = capturedStyle.textBaseline;
       ctx.lineJoin = "round";
       ctx.miterLimit = 2;
-      ctx.shadowColor = "rgba(8, 15, 29, 0.85)";
-      ctx.shadowBlur = Math.max(2, Math.round(targetFontSize * 0.12));
+      ctx.shadowColor = capturedStyle.shadowColor || "rgba(8, 15, 29, 0.85)";
+      ctx.shadowBlur = Math.max(Number(capturedStyle.shadowBlur) || 0, Math.round(targetFontSize * 0.12));
 
       if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(4, Math.round(targetFontSize * 0.26));
-        ctx.strokeStyle = "rgba(6, 12, 24, 1)";
+        ctx.lineWidth = Math.max(Number(capturedStyle.lineWidth) || 0, Math.round(targetFontSize * 0.26), 4);
+        ctx.strokeStyle = capturedStyle.strokeStyle || "rgba(6, 12, 24, 1)";
         drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
       }
 
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = capturedStyle.fillStyle || "#ffffff";
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY, overlayMaxWidth);
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.35, numberY, overlayMaxWidth);
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.35, numberY, overlayMaxWidth);
@@ -2858,6 +2897,139 @@
     }
 
     drawText.call(ctx, text, x, y);
+  }
+
+  function captureSelectedNameStyle(name, durationMs) {
+    const normalized = normalizeHighlightName(name);
+    if (!normalized) throw new Error("captureSelectedNameStyle requires a visible name.");
+
+    const duration = clamp(Number(durationMs) || 4000, 500, 15000);
+    const capture = {
+      name: normalized,
+      startedAt: Date.now(),
+      durationMs: duration,
+      samples: [],
+      token: Math.random().toString(36).slice(2),
+    };
+    HIGHLIGHT_STATE.styleCapture = capture;
+    console.info(`[Hordes KR Mod] Capturing selected name style for "${normalized}" for ${duration}ms.`);
+
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        if (HIGHLIGHT_STATE.styleCapture !== capture) {
+          resolve(getNameplateStyleStatus());
+          return;
+        }
+
+        resolve(finishSelectedNameStyleCapture(capture));
+      }, duration);
+    });
+  }
+
+  function recordCanvasNameStyle(method, ctx, text, x, y, maxWidth) {
+    const capture = HIGHLIGHT_STATE.styleCapture;
+    if (!capture) return;
+
+    const rawText = String(text ?? "");
+    if (!rawText.toLowerCase().includes(capture.name.toLowerCase())) return;
+    if (capture.samples.length >= 300) return;
+
+    const fontSize = getCanvasFontSize(ctx.font);
+    let measuredWidth = 0;
+    try {
+      measuredWidth = ctx.measureText(rawText).width || 0;
+    } catch {
+      measuredWidth = 0;
+    }
+
+    const sample = {
+      method,
+      text: rawText.slice(0, 80),
+      font: String(ctx.font || ""),
+      fontSize,
+      fillStyle: normalizeCanvasStyle(ctx.fillStyle),
+      strokeStyle: normalizeCanvasStyle(ctx.strokeStyle),
+      lineWidth: Number(ctx.lineWidth) || 0,
+      textAlign: String(ctx.textAlign || ""),
+      textBaseline: String(ctx.textBaseline || ""),
+      shadowColor: normalizeCanvasStyle(ctx.shadowColor),
+      shadowBlur: Number(ctx.shadowBlur) || 0,
+      globalAlpha: Number(ctx.globalAlpha) || 1,
+      x: roundCoord(Number(x)),
+      y: roundCoord(Number(y)),
+      maxWidth: Number(maxWidth) || 0,
+      measuredWidth: roundCoord(measuredWidth),
+      canvas: ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
+      score: 0,
+      capturedAt: Date.now(),
+    };
+    sample.score = scoreCanvasNameStyle(sample);
+    capture.samples.push(sample);
+  }
+
+  function finishSelectedNameStyleCapture(capture) {
+    const samples = capture.samples.slice().sort((a, b) => b.score - a.score);
+    const best = samples[0] || null;
+    HIGHLIGHT_STATE.styleCapture = null;
+
+    if (best) {
+      HIGHLIGHT_CONFIG.nameplateStyle = {
+        font: best.font,
+        fontSize: best.fontSize,
+        fillStyle: best.fillStyle || "#ffffff",
+        strokeStyle: best.strokeStyle || "rgba(6, 12, 24, 1)",
+        lineWidth: best.lineWidth,
+        shadowColor: best.shadowColor,
+        shadowBlur: best.shadowBlur,
+        maxWidth: best.maxWidth,
+        measuredWidth: best.measuredWidth,
+        textAlign: best.textAlign,
+        textBaseline: best.textBaseline,
+        globalAlpha: best.globalAlpha,
+        sourceName: capture.name,
+        capturedAt: new Date().toISOString(),
+      };
+      saveHighlightConfig();
+    }
+
+    const report = {
+      name: capture.name,
+      sampleCount: capture.samples.length,
+      saved: HIGHLIGHT_CONFIG.nameplateStyle,
+      best,
+      topSamples: samples.slice(0, 8),
+    };
+    console.info("[Hordes KR Mod] Selected name style capture result", report);
+    if (report.topSamples.length > 0) console.table(report.topSamples);
+    return report;
+  }
+
+  function getNameplateStyleStatus() {
+    const capture = HIGHLIGHT_STATE.styleCapture;
+    return {
+      saved: HIGHLIGHT_CONFIG.nameplateStyle || null,
+      capture: capture
+        ? {
+            name: capture.name,
+            durationMs: capture.durationMs,
+            elapsedMs: Date.now() - capture.startedAt,
+            sampleCount: capture.samples.length,
+          }
+        : null,
+    };
+  }
+
+  function scoreCanvasNameStyle(sample) {
+    const fontWeightScore = /(bold|[7-9]00)/i.test(sample.font) ? 12 : 0;
+    const methodScore = sample.method === "strokeText" ? 8 : 0;
+    const lineScore = Math.min(40, sample.lineWidth * 9);
+    const shadowScore = Math.min(20, sample.shadowBlur * 2);
+    return sample.fontSize * 3 + fontWeightScore + methodScore + lineScore + shadowScore;
+  }
+
+  function normalizeCanvasStyle(style) {
+    if (typeof style === "string") return style;
+    return "";
   }
 
   function getCanvasAlignOffset(textAlign, width) {
@@ -2893,6 +3065,7 @@
       canvasInstalled: HIGHLIGHT_STATE.canvasInstalled,
       canvasHits: HIGHLIGHT_STATE.canvasHits,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
+      nameplateStyle: getNameplateStyleStatus(),
     };
   }
 

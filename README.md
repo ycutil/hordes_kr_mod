@@ -47,6 +47,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.6.9`부터는 강조 배경/테두리를 제거하고 굵은 글자만 표시합니다.
 `v0.7.0`부터는 클릭 상태처럼 보이도록 글자 외곽선과 굵은 덧칠을 적용합니다.
 `v0.7.1`부터는 클릭 상태에 더 가깝게 글자 외곽선과 크기를 강화합니다.
+`v0.7.2`부터는 클릭된 이름표 스타일을 캡처해 강조 스타일로 재사용할 수 있습니다.
 
 적용 확인:
 
@@ -90,11 +91,14 @@ HordesKrMod.toggleCanvasNameHighlight()
 HordesKrMod.highlightStatus()
 HordesKrMod.inspectRuntime("닉네임")
 HordesKrMod.findNameplateCandidates("닉네임")
+HordesKrMod.captureSelectedNameStyle("닉네임", 4000)
+HordesKrMod.nameplateStyleStatus()
+HordesKrMod.clearCapturedNameplateStyle()
 ```
 
 비활성화 후에는 페이지를 새로고침해야 게임 기본 언어 요청으로 돌아갑니다.
 
-닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역에 적용됩니다. 2D 캔버스에 `fillText`/`strokeText`로 그려지는 닉네임은 실험적으로 배경 강조를 시도합니다. WebGL에서 직접 그려지는 머리 위 닉네임은 `inspectRuntime("닉네임")` 결과를 보고 별도 훅을 찾아야 합니다.
+닉네임 강조는 채팅/파티/클랜/목록처럼 DOM 텍스트로 보이는 영역과 2D 캔버스의 `fillText`/`strokeText` 이름표에 적용됩니다. 클릭한 이름표 스타일을 재사용하려면 대상 캐릭터를 클릭해 둔 상태로 `await HordesKrMod.captureSelectedNameStyle("닉네임", 4000)`을 실행합니다. `sampleCount`가 0이면 해당 이름표가 2D 캔버스 텍스트가 아니라 WebGL/런타임 객체에서 처리되는 것이므로 `inspectRuntime("닉네임")` 결과를 보고 더 깊은 훅을 찾아야 합니다.
 
 ## 다음 작업
 
