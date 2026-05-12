@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.7
+// @version      0.7.8
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,6 +16,8 @@
   "use strict";
 
   if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
+    installEarlyClientScriptGate();
+
     if (unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__) return;
     unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__ = true;
 
@@ -36,7 +38,37 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.7";
+  function installEarlyClientScriptGate() {
+    if (!/^\/play(?:\/|$)/.test(location.pathname)) return;
+
+    try {
+      if (localStorage.getItem("hordesKrMod.scriptGate.disabled") === "true") return;
+      if (document.getElementById("hordes-kr-script-gate")) return;
+
+      const root = document.documentElement;
+      if (!root) return;
+
+      let head = document.head;
+      if (!head) {
+        head = document.createElement("head");
+        root.insertBefore(head, root.firstChild);
+      }
+
+      const meta = document.createElement("meta");
+      meta.id = "hordes-kr-script-gate";
+      meta.httpEquiv = "Content-Security-Policy";
+      meta.content = [
+        "script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com https://www.gstatic.com",
+        "worker-src 'self' blob:",
+        "child-src 'self' blob:",
+      ].join("; ");
+      head.insertBefore(meta, head.firstChild);
+    } catch {
+      // Early CSP setup is best-effort; the page-context hook reports detailed status.
+    }
+  }
+
+  const MOD_VERSION = "0.7.8";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3166,7 +3198,11 @@
 
     const install = () => {
       try {
-        if (document.getElementById("hordes-kr-script-gate")) return;
+        if (document.getElementById("hordes-kr-script-gate")) {
+          HIGHLIGHT_STATE.scriptGateInstalled = true;
+          HIGHLIGHT_STATE.scriptGateError = "";
+          return;
+        }
 
         const root = document.documentElement;
         if (!root) {
