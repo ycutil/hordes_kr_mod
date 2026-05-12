@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.8
+// @version      0.7.9
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
 // @match        https://www.hordes.io/*
 // @run-at       document-start
 // @grant        unsafeWindow
+// @inject-into  page
 // @updateURL    https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
 // @downloadURL  https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
 // ==/UserScript==
@@ -15,9 +16,9 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
-    installEarlyClientScriptGate();
+  installEarlyClientScriptGate();
 
+  if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
     if (unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__) return;
     unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__ = true;
 
@@ -68,7 +69,7 @@
     }
   }
 
-  const MOD_VERSION = "0.7.8";
+  const MOD_VERSION = "0.7.9";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
