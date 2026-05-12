@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.8
+// @version      0.8.9
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.8";
+  const MOD_VERSION = "0.8.9";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -5152,6 +5152,61 @@
           .action:hover {
             border-color: rgba(245, 194, 71, 0.8);
           }
+          .input-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 6px;
+            margin-top: 7px;
+          }
+          .text-input {
+            min-width: 0;
+            border: 1px solid rgba(166, 220, 213, 0.28);
+            background: rgba(4, 8, 16, 0.72);
+            color: #dff8f5;
+            border-radius: 5px;
+            padding: 6px 8px;
+            font: inherit;
+            outline: none;
+          }
+          .text-input:focus {
+            border-color: rgba(245, 194, 71, 0.8);
+          }
+          .highlight-list {
+            display: grid;
+            gap: 5px;
+            margin-top: 7px;
+          }
+          .highlight-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid rgba(166, 220, 213, 0.16);
+            background: rgba(61, 89, 95, 0.28);
+            border-radius: 5px;
+            padding: 5px 6px;
+          }
+          .highlight-name {
+            color: #dff8f5;
+            font-weight: 800;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .remove {
+            border: 1px solid rgba(166, 220, 213, 0.24);
+            background: rgba(4, 8, 16, 0.35);
+            color: #a6dcd5;
+            border-radius: 5px;
+            padding: 4px 7px;
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+          }
+          .remove:hover {
+            border-color: rgba(244, 41, 41, 0.7);
+            color: #ffffff;
+          }
           .note {
             color: #a6dcd5;
             font-size: 11px;
@@ -5194,6 +5249,14 @@
               <button id="toggle" class="action" type="button"></button>
               <button id="toggleHighlight" class="action" type="button"></button>
             </div>
+            <div class="section">
+              <div class="row"><span class="label">강조 ID</span><span id="highlightCount" class="value"></span></div>
+              <div id="highlightList" class="highlight-list"></div>
+              <div class="input-row">
+                <input id="highlightInput" class="text-input" type="text" maxlength="32" placeholder="닉네임 입력" autocomplete="off" />
+                <button id="addHighlight" class="action" type="button">추가</button>
+              </div>
+            </div>
           </div>
         </div>
         <button id="badge" class="badge" type="button">
@@ -5223,6 +5286,16 @@
       shadow.getElementById("toggleHighlight").addEventListener("click", () => {
         pageWindow.HordesKrMod.toggleNameHighlight();
         renderStatusUi();
+      });
+
+      shadow.getElementById("addHighlight").addEventListener("click", () => {
+        addHighlightNameFromUi();
+      });
+
+      shadow.getElementById("highlightInput").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        addHighlightNameFromUi();
       });
 
       installUiDragging(shadow);
@@ -5374,6 +5447,49 @@
     shadow.getElementById("toggle").textContent = enabled ? "번역 끄기" : "번역 켜기";
     shadow.getElementById("toggleHighlight").textContent = HIGHLIGHT_CONFIG.enabled ? "강조 끄기" : "강조 켜기";
     renderEventUi(shadow);
+    renderHighlightUi(shadow);
+  }
+
+  function addHighlightNameFromUi() {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return;
+
+    const input = shadow.getElementById("highlightInput");
+    const name = normalizeHighlightName(input && input.value);
+    if (!name) return;
+
+    pageWindow.HordesKrMod.addHighlightName(name);
+    if (input) input.value = "";
+    renderStatusUi();
+  }
+
+  function renderHighlightUi(shadow) {
+    const count = shadow.getElementById("highlightCount");
+    const list = shadow.getElementById("highlightList");
+    if (!count || !list) return;
+
+    const names = HIGHLIGHT_CONFIG.names.slice();
+    count.textContent = names.length > 0 ? `${names.length}개` : "없음";
+    list.replaceChildren(
+      ...names.map((name) => {
+        const row = document.createElement("div");
+        const value = document.createElement("span");
+        const remove = document.createElement("button");
+
+        row.className = "highlight-item";
+        value.className = "highlight-name";
+        value.textContent = name;
+        remove.className = "remove";
+        remove.type = "button";
+        remove.textContent = "삭제";
+        remove.addEventListener("click", () => {
+          pageWindow.HordesKrMod.removeHighlightName(name);
+          renderStatusUi();
+        });
+        row.append(value, remove);
+        return row;
+      })
+    );
   }
 
   function renderEventUi(shadow) {
