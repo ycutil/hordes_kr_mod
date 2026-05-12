@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.2
+// @version      0.7.3
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.2";
+  const MOD_VERSION = "0.7.3";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -80,11 +80,13 @@
     names: DEFAULT_HIGHLIGHT_NAMES,
     enabled: true,
     canvasEnabled: true,
+    runtimeOverlayEnabled: true,
     nameplateStyle: null,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
+  HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
   applyDefaultHighlightNames();
   const CACHE = new Map();
   const MOD_STATUS = {
@@ -123,6 +125,18 @@
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
     styleCapture: null,
+    scriptHookInstalled: false,
+    scriptObserver: null,
+    scriptHookAttemptedScripts: [],
+    scriptHookPatchedScripts: [],
+    scriptHookErrors: [],
+    runtimeOverlayHost: null,
+    runtimeOverlayItems: new Map(),
+    runtimeOverlayTimer: null,
+    runtimeOverlayHits: 0,
+    lastRuntimeOverlayAt: 0,
+    lastRuntimeOverlayError: "",
+    lastRuntimeOverlayMatches: [],
   };
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -1883,11 +1897,13 @@
   const originalFetch = pageWindow.fetch ? pageWindow.fetch.bind(pageWindow) : null;
   if (!originalFetch) return;
 
+  initGameScriptRuntimeHook();
   initStatusUi();
   installXhrInterceptor();
   initDomTranslator();
   initNameHighlighter();
   initCanvasTextHighlighter();
+  initRuntimeNameOverlay();
   initEventScheduler();
 
   pageWindow.fetch = async function hordesKrFetch(input, init) {
@@ -2023,6 +2039,7 @@
       HIGHLIGHT_CONFIG.enabled = !HIGHLIGHT_CONFIG.enabled;
       saveHighlightConfig();
       refreshNameHighlights();
+      updateRuntimeNameOverlay();
       return HIGHLIGHT_CONFIG.enabled;
     },
     toggleCanvasNameHighlight() {
@@ -2030,8 +2047,20 @@
       saveHighlightConfig();
       return HIGHLIGHT_CONFIG.canvasEnabled;
     },
+    toggleRuntimeNameOverlay() {
+      HIGHLIGHT_CONFIG.runtimeOverlayEnabled = !HIGHLIGHT_CONFIG.runtimeOverlayEnabled;
+      saveHighlightConfig();
+      updateRuntimeNameOverlay();
+      return HIGHLIGHT_CONFIG.runtimeOverlayEnabled;
+    },
     highlightStatus() {
       return getHighlightStatus();
+    },
+    scriptHookStatus() {
+      return getScriptHookStatus();
+    },
+    runtimeOverlayStatus() {
+      return getRuntimeOverlayStatus();
     },
     inspectRuntime(name) {
       return inspectRuntimeForNameplates(name);
@@ -2622,6 +2651,7 @@
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return true;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
+    if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
   }
@@ -3060,13 +3090,804 @@
     return {
       enabled: HIGHLIGHT_CONFIG.enabled,
       canvasEnabled: HIGHLIGHT_CONFIG.canvasEnabled,
+      runtimeOverlayEnabled: HIGHLIGHT_CONFIG.runtimeOverlayEnabled,
       names: [...HIGHLIGHT_CONFIG.names],
       domHighlights: countDomHighlightElements(),
       canvasInstalled: HIGHLIGHT_STATE.canvasInstalled,
       canvasHits: HIGHLIGHT_STATE.canvasHits,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
       nameplateStyle: getNameplateStyleStatus(),
+      scriptHook: getScriptHookStatus(),
+      runtimeOverlay: getRuntimeOverlayStatus(),
     };
+  }
+
+  function initGameScriptRuntimeHook() {
+    if (HIGHLIGHT_STATE.scriptHookInstalled) return;
+    HIGHLIGHT_STATE.scriptHookInstalled = true;
+
+    patchCanvasContextCapture();
+
+    const scan = () => scanGameClientScripts();
+    const root = document.documentElement || document;
+
+    try {
+      HIGHLIGHT_STATE.scriptObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (!node || node.nodeType !== Node.ELEMENT_NODE) continue;
+
+            if (node.tagName === "SCRIPT") {
+              interceptGameClientScript(node);
+            } else if (typeof node.querySelectorAll === "function") {
+              node.querySelectorAll("script[src]").forEach(interceptGameClientScript);
+            }
+          }
+        }
+      });
+      HIGHLIGHT_STATE.scriptObserver.observe(root, { childList: true, subtree: true });
+    } catch (error) {
+      recordScriptHookError(error, "observer");
+    }
+
+    scan();
+  }
+
+  function patchCanvasContextCapture() {
+    const CanvasElement = pageWindow.HTMLCanvasElement;
+    if (!CanvasElement || !CanvasElement.prototype || CanvasElement.prototype.__hordesKrContextCapturePatched) return;
+
+    const originalGetContext = CanvasElement.prototype.getContext;
+    if (typeof originalGetContext !== "function") return;
+
+    CanvasElement.prototype.getContext = function hordesKrGetContext(type) {
+      const context = originalGetContext.apply(this, arguments);
+      const contextType = String(type || "").toLowerCase();
+
+      if (context && (contextType === "webgl2" || contextType === "webgl" || contextType === "experimental-webgl")) {
+        exposeRuntimePart({
+          webglCanvas: this,
+          updatedAt: Date.now(),
+        });
+      } else if (context && contextType === "2d") {
+        exposeRuntimePart({
+          overlayCanvas: this,
+          updatedAt: Date.now(),
+        });
+      }
+
+      return context;
+    };
+
+    Object.defineProperty(CanvasElement.prototype, "__hordesKrContextCapturePatched", {
+      configurable: true,
+      value: true,
+    });
+  }
+
+  function scanGameClientScripts() {
+    try {
+      document.querySelectorAll("script[src]").forEach(interceptGameClientScript);
+    } catch (error) {
+      recordScriptHookError(error, "scan");
+    }
+  }
+
+  function interceptGameClientScript(script) {
+    if (!script || !script.getAttribute || script.dataset.hordesKrRuntimeHooked) return;
+
+    const rawSrc = script.getAttribute("src");
+    const url = toUrl(rawSrc);
+    if (!url || !shouldPatchGameClientScript(url)) return;
+
+    script.dataset.hordesKrRuntimeHooked = "checking";
+    rememberScriptHookValue("scriptHookAttemptedScripts", shortScriptUrl(url));
+
+    const parent = script.parentNode;
+    const nextSibling = script.nextSibling;
+    const originalType = script.getAttribute("type") || "";
+
+    try {
+      script.type = "javascript/hordes-kr-blocked";
+      if (parent) parent.removeChild(script);
+    } catch (error) {
+      recordScriptHookError(error, shortScriptUrl(url));
+      return;
+    }
+
+    loadAndPatchGameClientScript(parent, nextSibling, url, originalType);
+  }
+
+  function shouldPatchGameClientScript(url) {
+    if (url.origin !== location.origin) return false;
+    if (!/\.js$/i.test(url.pathname)) return false;
+
+    const path = url.pathname.toLowerCase();
+    if (path.includes("/data/") || path.includes("/loc/")) return false;
+
+    return (
+      path.endsWith("/script.js") ||
+      path.endsWith("/client.js") ||
+      path.includes("/play/") ||
+      path.includes("/game/") ||
+      path.includes("/client/") ||
+      path.includes("/assets/")
+    );
+  }
+
+  async function loadAndPatchGameClientScript(parent, nextSibling, url, originalType) {
+    try {
+      const response = await originalFetch(url.toString(), { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`script request failed: ${response.status}`);
+
+      const source = await response.text();
+      const patched = patchGameClientSource(source, url);
+      insertScriptSource(parent, nextSibling, patched.source, url, patched.patches, originalType);
+
+      if (patched.patches.length > 0) {
+        rememberScriptHookValue("scriptHookPatchedScripts", {
+          src: shortScriptUrl(url),
+          patches: patched.patches,
+        });
+      }
+    } catch (error) {
+      recordScriptHookError(error, shortScriptUrl(url));
+      insertFallbackScript(parent, nextSibling, url, originalType);
+    }
+  }
+
+  function insertScriptSource(parent, nextSibling, source, url, patches, originalType) {
+    const targetParent = parent || document.head || document.documentElement;
+    if (!targetParent) return;
+
+    const replacement = document.createElement("script");
+    replacement.dataset.hordesKrRuntimeHooked = "inlined";
+    replacement.dataset.hordesKrRuntimeSource = shortScriptUrl(url);
+    if (patches.length > 0) replacement.dataset.hordesKrRuntimePatches = patches.join(",");
+    if (originalType && !/^(text|application)\/javascript$/i.test(originalType)) replacement.type = originalType;
+    replacement.textContent = `${source}\n//# sourceURL=${url.toString()}#hordes-kr-runtime`;
+
+    if (nextSibling && nextSibling.parentNode === targetParent) {
+      targetParent.insertBefore(replacement, nextSibling);
+    } else {
+      targetParent.appendChild(replacement);
+    }
+  }
+
+  function insertFallbackScript(parent, nextSibling, url, originalType) {
+    const targetParent = parent || document.head || document.documentElement;
+    if (!targetParent) return;
+
+    const fallback = document.createElement("script");
+    fallback.dataset.hordesKrRuntimeHooked = "fallback";
+    fallback.src = url.toString();
+    if (originalType) fallback.type = originalType;
+
+    if (nextSibling && nextSibling.parentNode === targetParent) {
+      targetParent.insertBefore(fallback, nextSibling);
+    } else {
+      targetParent.appendChild(fallback);
+    }
+  }
+
+  function patchGameClientSource(source, url) {
+    let patched = String(source || "");
+    const patches = [];
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "Ku=t=>{ne=t}",
+      "Ku=t=>{ne=t;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.engine=t;window.__HORDES_KR_RUNTIME__.updatedAt=Date.now()}catch(o){}}",
+      patches,
+      "engine-setter"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "Mu=(t,e)=>{N.width=t,N.height=e,ko.width=t,ko.height=e,yn.width=t,yn.height=e}",
+      "Mu=(t,e)=>{try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,updatedAt:Date.now()})}catch(o){}N.width=t,N.height=e,ko.width=t,ko.height=e,yn.width=t,yn.height=e}",
+      patches,
+      "render-state"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e),ne.tick(t),",
+      "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}ne.tick(t),",
+      patches,
+      "frame-loop"
+    );
+
+    if (patches.length > 0) {
+      patched += `\n;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.patchedBy="Hordes KR Mod";window.__HORDES_KR_RUNTIME__.patchedVersion=${JSON.stringify(MOD_VERSION)};window.__HORDES_KR_RUNTIME__.patchedSource=${JSON.stringify(shortScriptUrl(url))};}catch(o){}\n`;
+    }
+
+    return { source: patched, patches };
+  }
+
+  function replaceClientSourceOnce(source, search, replacement, patches, patchName) {
+    if (!source.includes(search)) return source;
+
+    patches.push(patchName);
+    return source.replace(search, replacement);
+  }
+
+  function exposeRuntimePart(part) {
+    try {
+      pageWindow.__HORDES_KR_RUNTIME__ = pageWindow.__HORDES_KR_RUNTIME__ || {};
+      Object.assign(pageWindow.__HORDES_KR_RUNTIME__, part);
+    } catch {
+      // The runtime hook is best-effort and must never block the game.
+    }
+  }
+
+  function rememberScriptHookValue(field, value, limit = 12) {
+    const list = HIGHLIGHT_STATE[field];
+    if (!Array.isArray(list)) return;
+
+    list.push(value);
+    while (list.length > limit) list.shift();
+  }
+
+  function recordScriptHookError(error, source) {
+    rememberScriptHookValue("scriptHookErrors", {
+      source,
+      message: error && error.message ? error.message : String(error),
+      at: new Date().toISOString(),
+    });
+  }
+
+  function shortScriptUrl(url) {
+    const parsed = typeof url === "string" ? toUrl(url) : url;
+    if (!parsed) return String(url || "");
+    return `${parsed.pathname}${parsed.search}`;
+  }
+
+  function getScriptHookStatus() {
+    return {
+      installed: HIGHLIGHT_STATE.scriptHookInstalled,
+      attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
+      patchedScripts: [...HIGHLIGHT_STATE.scriptHookPatchedScripts],
+      errors: [...HIGHLIGHT_STATE.scriptHookErrors],
+      runtime: getExposedRuntimeSummary(),
+    };
+  }
+
+  function initRuntimeNameOverlay() {
+    installRuntimeNameOverlayStyle();
+    ensureRuntimeNameOverlayHost();
+
+    if (HIGHLIGHT_STATE.runtimeOverlayTimer) return;
+    HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, 80);
+    pageWindow.addEventListener("resize", updateRuntimeNameOverlay);
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", updateRuntimeNameOverlay, { once: true });
+    }
+  }
+
+  function installRuntimeNameOverlayStyle() {
+    if (document.getElementById("hordes-kr-runtime-name-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "hordes-kr-runtime-name-style";
+    style.textContent = `
+      #hordes-kr-runtime-name-overlay {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        overflow: visible !important;
+      }
+      .hordes-kr-runtime-name-label {
+        position: fixed !important;
+        transform: translate(-50%, -100%) !important;
+        color: #ffffff !important;
+        opacity: 1 !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        font-size: 19px !important;
+        line-height: 1.05 !important;
+        font-weight: 900 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        -webkit-text-stroke: 0.75px rgba(5, 10, 22, 0.98) !important;
+        text-shadow:
+          2px 0 0 rgba(5, 10, 22, 0.98),
+          -2px 0 0 rgba(5, 10, 22, 0.98),
+          0 2px 0 rgba(5, 10, 22, 0.98),
+          0 -2px 0 rgba(5, 10, 22, 0.98),
+          0 3px 3px rgba(0, 0, 0, 0.92),
+          0 0 5px rgba(64, 121, 255, 0.72) !important;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) !important;
+        will-change: left, top, transform !important;
+      }
+      .hordes-kr-runtime-name-prefix {
+        color: #2f7dff !important;
+        -webkit-text-stroke: 0.7px rgba(5, 10, 22, 0.98) !important;
+        text-shadow:
+          2px 0 0 rgba(5, 10, 22, 0.98),
+          -2px 0 0 rgba(5, 10, 22, 0.98),
+          0 2px 0 rgba(5, 10, 22, 0.98),
+          0 -2px 0 rgba(5, 10, 22, 0.98),
+          0 0 5px rgba(64, 121, 255, 0.95) !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function ensureRuntimeNameOverlayHost() {
+    if (HIGHLIGHT_STATE.runtimeOverlayHost && document.contains(HIGHLIGHT_STATE.runtimeOverlayHost)) {
+      return HIGHLIGHT_STATE.runtimeOverlayHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-runtime-name-overlay";
+    host.setAttribute("aria-hidden", "true");
+    document.body.appendChild(host);
+    HIGHLIGHT_STATE.runtimeOverlayHost = host;
+    return host;
+  }
+
+  function updateRuntimeNameOverlay() {
+    try {
+      if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.runtimeOverlayEnabled || HIGHLIGHT_CONFIG.names.length === 0) {
+        clearRuntimeNameOverlay();
+        return;
+      }
+
+      const host = ensureRuntimeNameOverlayHost();
+      const runtime = getExposedRuntime();
+      if (!host || !runtime || !getRuntimeProjectionMatrix(runtime)) {
+        clearRuntimeNameOverlay();
+        return;
+      }
+
+      const candidates = collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
+        limit: 16,
+        maxDepth: 7,
+        maxObjects: 9000,
+      });
+      const projected = [];
+
+      for (const candidate of candidates) {
+        const point = projectRuntimeEntityToScreen(candidate, runtime);
+        if (!point) continue;
+
+        projected.push({ ...candidate, screen: point });
+        if (projected.length >= 12) break;
+      }
+
+      renderRuntimeNameOverlayLabels(host, projected);
+      HIGHLIGHT_STATE.lastRuntimeOverlayMatches = projected.slice(0, 8).map((candidate) => ({
+        name: candidate.name,
+        path: candidate.path,
+        position: candidate.position.map(roundCoord),
+        screen: {
+          x: roundCoord(candidate.screen.x),
+          y: roundCoord(candidate.screen.y),
+        },
+      }));
+
+      if (projected.length > 0) {
+        HIGHLIGHT_STATE.runtimeOverlayHits += projected.length;
+        HIGHLIGHT_STATE.lastRuntimeOverlayAt = Date.now();
+        HIGHLIGHT_STATE.lastRuntimeOverlayError = "";
+      }
+    } catch (error) {
+      HIGHLIGHT_STATE.lastRuntimeOverlayError = error && error.message ? error.message : String(error);
+      clearRuntimeNameOverlay();
+    }
+  }
+
+  function clearRuntimeNameOverlay() {
+    const host = HIGHLIGHT_STATE.runtimeOverlayHost;
+    if (host) host.replaceChildren();
+    HIGHLIGHT_STATE.runtimeOverlayItems.clear();
+    HIGHLIGHT_STATE.lastRuntimeOverlayMatches = [];
+  }
+
+  function renderRuntimeNameOverlayLabels(host, candidates) {
+    const activeKeys = new Set();
+
+    for (const candidate of candidates) {
+      const key = `${candidate.name}:${candidate.path}`;
+      activeKeys.add(key);
+
+      let label = HIGHLIGHT_STATE.runtimeOverlayItems.get(key);
+      if (!label) {
+        label = document.createElement("div");
+        label.className = "hordes-kr-runtime-name-label";
+
+        const prefix = document.createElement("span");
+        prefix.className = "hordes-kr-runtime-name-prefix";
+        prefix.textContent = "#KR";
+
+        const name = document.createElement("span");
+        name.dataset.hordesKrRuntimeName = "true";
+
+        label.append(prefix, document.createTextNode(" "), name);
+        host.appendChild(label);
+        HIGHLIGHT_STATE.runtimeOverlayItems.set(key, label);
+      }
+
+      const nameNode = label.querySelector("[data-hordes-kr-runtime-name]");
+      if (nameNode) nameNode.textContent = candidate.name;
+      label.style.left = `${Math.round(candidate.screen.x)}px`;
+      label.style.top = `${Math.round(candidate.screen.y)}px`;
+    }
+
+    for (const [key, label] of HIGHLIGHT_STATE.runtimeOverlayItems.entries()) {
+      if (activeKeys.has(key)) continue;
+
+      label.remove();
+      HIGHLIGHT_STATE.runtimeOverlayItems.delete(key);
+    }
+  }
+
+  function collectRuntimeOverlayEntities(names, options = {}) {
+    const normalizedNames = names.map(normalizeHighlightName).filter(Boolean);
+    if (normalizedNames.length === 0) return [];
+
+    const lowerNames = normalizedNames.map((name) => name.toLowerCase());
+    const runtime = getExposedRuntime();
+    if (!runtime) return [];
+
+    const limit = options.limit || 16;
+    const maxDepth = options.maxDepth || 7;
+    const maxObjects = options.maxObjects || 9000;
+    const roots = [{ value: runtime, path: "runtime", depth: 0 }];
+    if (runtime.engine) roots.push({ value: runtime.engine, path: "runtime.engine", depth: 0 });
+
+    const queue = roots.slice();
+    const seen = new WeakSet();
+    const candidates = [];
+    let visited = 0;
+
+    while (queue.length > 0 && visited < maxObjects && candidates.length < limit * 3) {
+      const item = queue.shift();
+      const value = item.value;
+      if (!isRuntimeObject(value) || seen.has(value)) continue;
+
+      seen.add(value);
+      visited++;
+
+      const candidate = summarizeRuntimeOverlayEntity(value, item.path, lowerNames);
+      if (candidate) candidates.push(candidate);
+
+      if (item.depth >= maxDepth) continue;
+      const childLimit = item.depth === 0 ? 800 : 140;
+      for (const child of getRuntimeChildren(value, item.path, childLimit)) {
+        queue.push({ ...child, depth: item.depth + 1 });
+      }
+    }
+
+    return dedupeRuntimeOverlayCandidates(candidates)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  }
+
+  function summarizeRuntimeOverlayEntity(value, path, lowerNames) {
+    const name = getRuntimeNameValueLoose(value);
+    if (!name) return null;
+
+    const lowerName = name.toLowerCase();
+    const matchedName = lowerNames.find((target) => lowerName.includes(target));
+    if (!matchedName) return null;
+
+    const positionInfo = getRuntimeWorldPosition(value);
+    if (!positionInfo) return null;
+
+    return {
+      entity: value,
+      path,
+      name,
+      matchedName,
+      position: positionInfo.position,
+      positionSource: positionInfo.source,
+      score: scoreRuntimeOverlayCandidate(value, name, matchedName, path, positionInfo.source),
+    };
+  }
+
+  function scoreRuntimeOverlayCandidate(value, name, matchedName, path, positionSource) {
+    let score = name.toLowerCase() === matchedName ? 120 : 80;
+    if (/visual/i.test(positionSource)) score += 30;
+    if (/entity|player|unit|mob|actor/i.test(path)) score += 20;
+    if (Number.isFinite(Number(safeReadValue(value, "id")))) score += 8;
+    if (Number.isFinite(Number(safeReadValue(value, "level")))) score += 8;
+    if (Number.isFinite(Number(safeReadValue(value, "health") ?? safeReadValue(value, "hp")))) score += 8;
+    return score;
+  }
+
+  function dedupeRuntimeOverlayCandidates(candidates) {
+    const seen = new Set();
+    const result = [];
+
+    for (const candidate of candidates) {
+      const id = safeReadValue(candidate.entity, "id") ?? safeReadValue(candidate.entity, "entityId");
+      const positionKey = candidate.position.map((value) => Math.round(value * 10)).join(",");
+      const key = id !== undefined
+        ? `${candidate.name}:id:${String(id)}`
+        : `${candidate.name}:${positionKey}`;
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(candidate);
+    }
+
+    return result;
+  }
+
+  function getRuntimeNameValueLoose(value) {
+    const ownName = getRuntimeNameValue(value);
+    if (ownName) return ownName;
+
+    const keys = ["name", "playerName", "charName", "characterName", "displayName", "username", "nick", "nickname"];
+    for (const key of keys) {
+      const candidate = safeReadValue(value, key);
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    }
+
+    return "";
+  }
+
+  function getRuntimeWorldPosition(value) {
+    const direct = parseRuntimeVector(value);
+    if (direct) return { position: direct, source: "self" };
+
+    const directX = Number(safeReadValue(value, "x"));
+    const directY = Number(safeReadValue(value, "y"));
+    const directZ = Number(safeReadValue(value, "z"));
+    if (Number.isFinite(directX) && Number.isFinite(directY) && Number.isFinite(directZ)) {
+      return { position: [directX, directY, directZ], source: "x/y/z" };
+    }
+
+    for (const key of ["visualPosition", "worldPosition", "position", "pos", "coords"]) {
+      const position = parseRuntimeVector(safeReadValue(value, key));
+      if (position) return { position, source: key };
+    }
+
+    for (const key of ["transform", "model", "object", "mesh", "node"]) {
+      const nested = safeReadValue(value, key);
+      if (!isRuntimeObject(nested)) continue;
+
+      const nestedPosition = getRuntimeWorldPositionFromContainer(nested, key);
+      if (nestedPosition) return nestedPosition;
+    }
+
+    return null;
+  }
+
+  function getRuntimeWorldPositionFromContainer(container, sourcePrefix) {
+    for (const key of ["visualPosition", "worldPosition", "position", "pos", "translation"]) {
+      const position = parseRuntimeVector(safeReadValue(container, key));
+      if (position) return { position, source: `${sourcePrefix}.${key}` };
+    }
+
+    for (const key of ["matrix", "worldMatrix", "modelMatrix", "transform"]) {
+      const matrix = parseRuntimeMatrix16(safeReadValue(container, key));
+      if (matrix) return { position: [matrix[12], matrix[13], matrix[14]], source: `${sourcePrefix}.${key}` };
+    }
+
+    return null;
+  }
+
+  function parseRuntimeVector(value) {
+    if (!value) return null;
+
+    if ((Array.isArray(value) || ArrayBuffer.isView(value)) && value.length >= 3) {
+      const vector = [Number(value[0]), Number(value[1]), Number(value[2])];
+      return vector.every(Number.isFinite) ? vector : null;
+    }
+
+    if (typeof value === "object") {
+      const x = Number(safeReadValue(value, "x"));
+      const y = Number(safeReadValue(value, "y"));
+      const z = Number(safeReadValue(value, "z"));
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) return [x, y, z];
+
+      const indexed = [Number(safeReadValue(value, "0")), Number(safeReadValue(value, "1")), Number(safeReadValue(value, "2"))];
+      if (indexed.every(Number.isFinite)) return indexed;
+    }
+
+    return null;
+  }
+
+  function parseRuntimeMatrix16(value) {
+    if (!value || (!Array.isArray(value) && !ArrayBuffer.isView(value)) || value.length < 16) return null;
+
+    const matrix = Array.from(value.slice ? value.slice(0, 16) : Array.prototype.slice.call(value, 0, 16)).map(Number);
+    return matrix.every(Number.isFinite) ? matrix : null;
+  }
+
+  function projectRuntimeEntityToScreen(candidate, runtime) {
+    const position = candidate.position.slice();
+    position[1] += getRuntimeEntityNameYOffset(candidate.entity);
+    return projectRuntimePointToScreen(position, runtime);
+  }
+
+  function getRuntimeEntityNameYOffset(entity) {
+    const explicitKeys = ["nameplateHeight", "height", "displayHeight"];
+    for (const key of explicitKeys) {
+      const value = Number(safeReadValue(entity, key));
+      if (Number.isFinite(value) && value > 0 && value < 12) return value + 0.35;
+    }
+
+    const size = Number(safeReadValue(entity, "size") ?? safeReadValue(entity, "scale") ?? safeReadValue(entity, "radius"));
+    if (Number.isFinite(size) && size > 0 && size < 8) return Math.max(1.9, size * 1.55);
+
+    return 2.35;
+  }
+
+  function projectRuntimePointToScreen(position, runtime) {
+    const matrix = getRuntimeProjectionMatrix(runtime);
+    const rect = getRuntimeCanvasRect(runtime);
+    if (!matrix || !rect || rect.width <= 0 || rect.height <= 0) return null;
+
+    const columnMajor = projectRuntimePointWithMatrix(position, matrix, rect, true);
+    if (isUsableProjectedPoint(columnMajor)) return columnMajor;
+
+    const rowMajor = projectRuntimePointWithMatrix(position, matrix, rect, false);
+    if (isUsableProjectedPoint(rowMajor)) return rowMajor;
+
+    return null;
+  }
+
+  function projectRuntimePointWithMatrix(position, matrix, rect, columnMajor) {
+    const x = position[0];
+    const y = position[1];
+    const z = position[2];
+    let clipX;
+    let clipY;
+    let clipW;
+
+    if (columnMajor) {
+      clipX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+      clipY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+      clipW = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+    } else {
+      clipX = matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3];
+      clipY = matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7];
+      clipW = matrix[12] * x + matrix[13] * y + matrix[14] * z + matrix[15];
+    }
+
+    if (!Number.isFinite(clipX) || !Number.isFinite(clipY) || !Number.isFinite(clipW) || Math.abs(clipW) < 0.00001) {
+      return null;
+    }
+
+    const ndcX = clipX / clipW;
+    const ndcY = clipY / clipW;
+    return {
+      x: rect.left + (ndcX * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-ndcY * 0.5 + 0.5) * rect.height,
+      ndcX,
+      ndcY,
+      clipW,
+      columnMajor,
+    };
+  }
+
+  function isUsableProjectedPoint(point) {
+    return (
+      point &&
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      point.clipW > 0 &&
+      point.ndcX >= -1.35 &&
+      point.ndcX <= 1.35 &&
+      point.ndcY >= -1.35 &&
+      point.ndcY <= 1.35
+    );
+  }
+
+  function getRuntimeProjectionMatrix(runtime) {
+    const camera = runtime && runtime.camera;
+    if (!camera) return null;
+
+    for (const key of ["projectionViewMatrix", "viewProjectionMatrix", "viewProjection", "projectionMatrix"]) {
+      const matrix = parseRuntimeMatrix16(safeReadValue(camera, key));
+      if (matrix) return matrix;
+    }
+
+    return parseRuntimeMatrix16(camera);
+  }
+
+  function getRuntimeCanvasRect(runtime) {
+    const canvases = [runtime && runtime.webglCanvas, runtime && runtime.overlayCanvas]
+      .filter(isVisibleCanvasElement);
+    if (canvases.length > 0) return canvases[0].getBoundingClientRect();
+
+    return getLargestCanvasRect();
+  }
+
+  function getLargestCanvasRect() {
+    const canvases = Array.from(document.querySelectorAll("canvas"))
+      .map((canvas) => ({ canvas, rect: canvas.getBoundingClientRect() }))
+      .filter((item) => item.rect.width > 0 && item.rect.height > 0)
+      .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
+
+    return canvases[0] ? canvases[0].rect : null;
+  }
+
+  function isVisibleCanvasElement(value) {
+    const CanvasElement = pageWindow.HTMLCanvasElement;
+    return !!(CanvasElement && value instanceof CanvasElement && value.isConnected && value.getBoundingClientRect().width > 0);
+  }
+
+  function getExposedRuntime() {
+    try {
+      return pageWindow.__HORDES_KR_RUNTIME__ || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getExposedRuntimeSummary() {
+    const runtime = getExposedRuntime();
+    if (!runtime) {
+      return {
+        exposed: false,
+      };
+    }
+
+    const rect = getRuntimeCanvasRect(runtime);
+    return {
+      exposed: true,
+      keys: safeOwnKeys(runtime),
+      hasEngine: !!runtime.engine,
+      hasCamera: !!runtime.camera,
+      hasProjectionMatrix: !!getRuntimeProjectionMatrix(runtime),
+      hasWebglCanvas: isVisibleCanvasElement(runtime.webglCanvas),
+      hasOverlayCanvas: isVisibleCanvasElement(runtime.overlayCanvas),
+      canvas: rect
+        ? {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          }
+        : null,
+      updatedAgoMs: Number.isFinite(runtime.updatedAt) ? Date.now() - runtime.updatedAt : null,
+      patchedBy: runtime.patchedBy || "",
+      patchedVersion: runtime.patchedVersion || "",
+      patchedSource: runtime.patchedSource || "",
+    };
+  }
+
+  function getRuntimeOverlayStatus() {
+    return {
+      enabled: HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.runtimeOverlayEnabled,
+      installed: !!HIGHLIGHT_STATE.runtimeOverlayTimer,
+      host: !!HIGHLIGHT_STATE.runtimeOverlayHost,
+      labels: HIGHLIGHT_STATE.runtimeOverlayItems.size,
+      hits: HIGHLIGHT_STATE.runtimeOverlayHits,
+      lastAt: HIGHLIGHT_STATE.lastRuntimeOverlayAt
+        ? new Date(HIGHLIGHT_STATE.lastRuntimeOverlayAt).toISOString()
+        : null,
+      lastError: HIGHLIGHT_STATE.lastRuntimeOverlayError,
+      lastMatches: [...HIGHLIGHT_STATE.lastRuntimeOverlayMatches],
+      runtime: getExposedRuntimeSummary(),
+    };
+  }
+
+  function collectRuntimeOverlayEntitySummaries(names) {
+    return collectRuntimeOverlayEntities(names, {
+      limit: 20,
+      maxDepth: 7,
+      maxObjects: 9000,
+    }).map((candidate) => ({
+      name: candidate.name,
+      matchedName: candidate.matchedName,
+      path: candidate.path,
+      position: candidate.position.map(roundCoord),
+      positionSource: candidate.positionSource,
+      score: candidate.score,
+    }));
   }
 
   function countDomHighlightElements() {
@@ -3088,6 +3909,7 @@
       canvases: getCanvasReport(),
       domMatches: collectDomNameMatches(names, 20),
       windowKeys: collectInterestingWindowKeys(120),
+      runtimeOverlayCandidates: collectRuntimeOverlayEntitySummaries(names),
       candidates: findRuntimeNameCandidates(name, { limit: 40, maxDepth: 3, maxObjects: 3500 }),
     };
 
@@ -3387,6 +4209,14 @@
     const descriptor = safeGetDescriptor(value, key);
     if (!descriptor || !("value" in descriptor)) return undefined;
     return descriptor.value;
+  }
+
+  function safeReadValue(value, key) {
+    try {
+      return value ? value[key] : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   function getElementSelector(element) {
