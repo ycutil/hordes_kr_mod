@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.6
+// @version      0.8.7
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.6";
+  const MOD_VERSION = "0.8.7";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -118,6 +118,7 @@
     canvasEnabled: true,
     runtimeOverlayEnabled: true,
     hideClanNames: true,
+    nameOffsets: {},
     nameplateStyle: null,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
@@ -125,6 +126,10 @@
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
   HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
   HIGHLIGHT_CONFIG.hideClanNames = HIGHLIGHT_CONFIG.hideClanNames !== false;
+  if (!isObject(HIGHLIGHT_CONFIG.nameOffsets) || Array.isArray(HIGHLIGHT_CONFIG.nameOffsets)) {
+    HIGHLIGHT_CONFIG.nameOffsets = {};
+  }
+  HIGHLIGHT_CONFIG.nameOffsets = normalizeNameOffsets(HIGHLIGHT_CONFIG.nameOffsets);
   applyDefaultHighlightNames();
   const CACHE = new Map();
   const MOD_STATUS = {
@@ -168,7 +173,7 @@
     lastCanvasImageDrawAt: 0,
     canvasHighlightAnchors: [],
     canvasClanSuppression: new Map(),
-    canvasNameAlignments: new Map(),
+    canvasNameOffsetSamples: new Map(),
     lastCanvasTextOverlayKey: "",
     lastCanvasTextOverlayAt: 0,
     canvasInternalDraw: false,
@@ -2118,6 +2123,30 @@
       saveHighlightConfig();
       return HIGHLIGHT_CONFIG.hideClanNames;
     },
+    nameOffsets() {
+      return { ...HIGHLIGHT_CONFIG.nameOffsets };
+    },
+    setNameOffset(name, offset) {
+      const normalized = normalizeHighlightName(name).toLowerCase();
+      const numberOffset = Number(offset);
+      if (!normalized || !Number.isFinite(numberOffset)) return { ...HIGHLIGHT_CONFIG.nameOffsets };
+
+      HIGHLIGHT_CONFIG.nameOffsets[normalized] = clamp(Math.round(numberOffset), -180, 180);
+      saveHighlightConfig();
+      return { ...HIGHLIGHT_CONFIG.nameOffsets };
+    },
+    clearNameOffset(name) {
+      const normalized = normalizeHighlightName(name).toLowerCase();
+      if (normalized) {
+        delete HIGHLIGHT_CONFIG.nameOffsets[normalized];
+        HIGHLIGHT_STATE.canvasNameOffsetSamples.delete(normalized);
+      } else {
+        HIGHLIGHT_CONFIG.nameOffsets = {};
+        HIGHLIGHT_STATE.canvasNameOffsetSamples.clear();
+      }
+      saveHighlightConfig();
+      return { ...HIGHLIGHT_CONFIG.nameOffsets };
+    },
     highlightStatus() {
       return getHighlightStatus();
     },
@@ -2737,7 +2766,22 @@
 
   function saveHighlightConfig() {
     HIGHLIGHT_CONFIG.names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names);
+    HIGHLIGHT_CONFIG.nameOffsets = normalizeNameOffsets(HIGHLIGHT_CONFIG.nameOffsets);
     saveJsonConfig(HIGHLIGHT_CONFIG_KEY, HIGHLIGHT_CONFIG);
+  }
+
+  function normalizeNameOffsets(offsets) {
+    const result = {};
+    if (!isObject(offsets) || Array.isArray(offsets)) return result;
+
+    Object.entries(offsets).forEach(([name, offset]) => {
+      const normalized = normalizeHighlightName(name).toLowerCase();
+      const numberOffset = Number(offset);
+      if (!normalized || !Number.isFinite(numberOffset)) return;
+      result[normalized] = clamp(Math.round(numberOffset), -180, 180);
+    });
+
+    return result;
   }
 
   function applyDefaultHighlightNames() {
@@ -3194,7 +3238,7 @@
       anchorText: anchor.text,
       expiresAt: now + 1600,
     });
-    rememberCanvasNameAlignment(ctx, anchor, dest, now);
+    observeCanvasNameOffset(anchor, dest);
     rememberHiddenCanvasClan(rawText);
     return true;
   }
@@ -3257,9 +3301,6 @@
     for (const [key, value] of HIGHLIGHT_STATE.canvasClanSuppression.entries()) {
       if (!value || value.expiresAt <= now) HIGHLIGHT_STATE.canvasClanSuppression.delete(key);
     }
-    for (const [key, value] of HIGHLIGHT_STATE.canvasNameAlignments.entries()) {
-      if (!value || value.expiresAt <= now) HIGHLIGHT_STATE.canvasNameAlignments.delete(key);
-    }
   }
 
   function getCanvasClanSuppressionKey(ctx, dest, text) {
@@ -3277,34 +3318,47 @@
     HIGHLIGHT_STATE.lastCanvasClanText = String(text || "").slice(0, 80);
   }
 
-  function rememberCanvasNameAlignment(ctx, anchor, clanDest, now) {
+  function observeCanvasNameOffset(anchor, clanDest) {
     const minX = Math.min(anchor.x, clanDest.x);
     const maxX = Math.max(anchor.x + anchor.width, clanDest.x + clanDest.width);
     const centerX = minX + (maxX - minX) / 2;
     const currentCenterX = anchor.x + anchor.width / 2;
-    const shiftX = centerX - currentCenterX;
+    const shiftX = Math.round(centerX - currentCenterX);
     const maxShift = Math.max(16, Math.min(140, clanDest.width + 24));
+    if (shiftX >= -4) return;
     if (Math.abs(shiftX) > maxShift) return;
 
-    const value = {
-      name: normalizeHighlightName(anchor.text).toLowerCase(),
-      canvas: getCanvasIdentity(ctx),
+    const name = normalizeHighlightName(anchor.text).toLowerCase();
+    if (!name || Number.isFinite(Number(HIGHLIGHT_CONFIG.nameOffsets[name]))) return;
+
+    const samples = HIGHLIGHT_STATE.canvasNameOffsetSamples.get(name) || [];
+    samples.push({
       shiftX,
-      y: anchor.y + anchor.height / 2,
-      expiresAt: now + 1600,
-    };
-    HIGHLIGHT_STATE.canvasNameAlignments.set(getCanvasNameAlignmentKey(value.canvas, value.name, value.y), value);
+      at: Date.now(),
+    });
+
+    const recentSamples = samples
+      .filter((sample) => Date.now() - sample.at <= 6000)
+      .slice(-12);
+    HIGHLIGHT_STATE.canvasNameOffsetSamples.set(name, recentSamples);
+
+    const lockedOffset = getStableCanvasNameOffset(recentSamples);
+    if (lockedOffset === null) return;
+
+    HIGHLIGHT_CONFIG.nameOffsets[name] = lockedOffset;
+    HIGHLIGHT_STATE.canvasNameOffsetSamples.delete(name);
+    saveHighlightConfig();
   }
 
   function getAlignedCanvasNameDest(ctx, text, dest, now) {
     if (!dest) return dest;
     pruneCanvasHighlightTracking(now);
 
-    const alignment = findCanvasNameAlignment(ctx, text, dest, now);
-    if (!alignment) return dest;
+    const offset = getCanvasNameOffset(text);
+    if (!Number.isFinite(offset) || offset === 0) return dest;
 
-    const nextX = Math.round(dest.x + alignment.shiftX);
-    if (Math.abs(alignment.shiftX) > 140) return dest;
+    const nextX = Math.round(dest.x + offset);
+    if (Math.abs(offset) > 180) return dest;
 
     return {
       x: nextX,
@@ -3314,36 +3368,33 @@
     };
   }
 
-  function findCanvasNameAlignment(ctx, text, dest, now) {
+  function getCanvasNameOffset(text) {
     const name = normalizeHighlightName(text).toLowerCase();
-    const canvas = getCanvasIdentity(ctx);
-    const y = dest.y + dest.height / 2;
-    const direct = HIGHLIGHT_STATE.canvasNameAlignments.get(getCanvasNameAlignmentKey(canvas, name, y));
-    if (direct && direct.expiresAt > now) return direct;
+    const offset = Number(HIGHLIGHT_CONFIG.nameOffsets[name]);
+    return Number.isFinite(offset) ? clamp(Math.round(offset), -180, 180) : 0;
+  }
 
-    let best = null;
-    let bestDy = Infinity;
-    for (const value of HIGHLIGHT_STATE.canvasNameAlignments.values()) {
-      if (!value || value.expiresAt <= now) continue;
-      if (value.name !== name || value.canvas !== canvas) continue;
+  function getStableCanvasNameOffset(samples) {
+    if (!Array.isArray(samples) || samples.length < 7) return null;
 
-      const dy = Math.abs(value.y - y);
-      if (dy <= 48 && dy < bestDy) {
-        best = value;
-        bestDy = dy;
-      }
+    const shifts = samples.map((sample) => sample.shiftX).filter(Number.isFinite);
+    if (shifts.length < 7) return null;
+
+    const median = getMedian(shifts);
+    const closeCount = shifts.filter((shift) => Math.abs(shift - median) <= 4).length;
+    if (closeCount < 6) return null;
+
+    return clamp(Math.round(median), -180, 180);
+  }
+
+  function getMedian(values) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) {
+      return sorted[mid];
     }
 
-    return best;
-  }
-
-  function getCanvasNameAlignmentKey(canvas, name, y) {
-    return [canvas, name, Math.round(Number(y) / 16)].join("|");
-  }
-
-  function getCanvasIdentity(ctx) {
-    const canvas = ctx && ctx.canvas;
-    return canvas ? `${canvas.width}x${canvas.height}` : "";
+    return (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
   function getHighlighterTime() {
@@ -3553,7 +3604,8 @@
       canvasHits: HIGHLIGHT_STATE.canvasHits,
       canvasImageHits: HIGHLIGHT_STATE.canvasImageHits,
       canvasClanHiddenHits: HIGHLIGHT_STATE.canvasClanHiddenHits,
-      canvasNameAlignments: HIGHLIGHT_STATE.canvasNameAlignments.size,
+      nameOffsets: { ...HIGHLIGHT_CONFIG.nameOffsets },
+      canvasNameOffsetSamples: HIGHLIGHT_STATE.canvasNameOffsetSamples.size,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
       lastCanvasImageText: HIGHLIGHT_STATE.lastCanvasImageText,
       lastCanvasClanText: HIGHLIGHT_STATE.lastCanvasClanText,
