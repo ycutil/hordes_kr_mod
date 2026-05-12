@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.0
+// @version      0.8.1
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.0";
+  const MOD_VERSION = "0.8.1";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2819,10 +2819,17 @@
 
     if (typeof originalDrawImage === "function") {
       proto.drawImage = function hordesKrDrawImage() {
+        if (HIGHLIGHT_STATE.canvasInternalDraw) {
+          return originalDrawImage.apply(this, arguments);
+        }
+
         const imageText = getCanvasImageText(arguments[0]);
-        const result = originalDrawImage.apply(this, arguments);
-        drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText);
-        return result;
+        if (shouldReplaceCanvasImageName(imageText)) {
+          const replaced = drawCanvasImageNameOverlay(this, arguments, imageText, originalFillText, originalStrokeText);
+          if (replaced) return undefined;
+        }
+
+        return originalDrawImage.apply(this, arguments);
       };
     }
 
@@ -3029,17 +3036,22 @@
     drawText.call(ctx, text, x, y);
   }
 
+  function shouldReplaceCanvasImageName(imageText) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
+    return !!getMatchingHighlightName(String(imageText || "").trim());
+  }
+
   function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
-    if (HIGHLIGHT_STATE.canvasInternalDraw) return;
-    if (typeof originalFillText !== "function") return;
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
+    if (HIGHLIGHT_STATE.canvasInternalDraw) return false;
+    if (typeof originalFillText !== "function") return false;
 
     const rawText = String(imageText || "").trim();
     const matchedName = getMatchingHighlightName(rawText);
-    if (!matchedName) return;
+    if (!matchedName) return false;
 
     const dest = getDrawImageDestination(args);
-    if (!dest) return;
+    if (!dest) return false;
 
     const now = pageWindow.performance && pageWindow.performance.now
       ? pageWindow.performance.now()
@@ -3052,16 +3064,14 @@
       Math.round(dest.height),
       ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
     ].join("|");
-    if (
-      HIGHLIGHT_STATE.lastCanvasImageDrawKey === drawKey &&
-      now - HIGHLIGHT_STATE.lastCanvasImageDrawAt < 8
-    ) {
-      return;
+    const shouldCount =
+      HIGHLIGHT_STATE.lastCanvasImageDrawKey !== drawKey ||
+      now - HIGHLIGHT_STATE.lastCanvasImageDrawAt >= 40;
+    if (shouldCount) {
+      HIGHLIGHT_STATE.lastCanvasImageDrawKey = drawKey;
+      HIGHLIGHT_STATE.lastCanvasImageDrawAt = now;
+      HIGHLIGHT_STATE.canvasImageHits++;
     }
-
-    HIGHLIGHT_STATE.lastCanvasImageDrawKey = drawKey;
-    HIGHLIGHT_STATE.lastCanvasImageDrawAt = now;
-    HIGHLIGHT_STATE.canvasImageHits++;
     HIGHLIGHT_STATE.lastCanvasImageText = rawText.slice(0, 80);
 
     try {
@@ -3099,12 +3109,14 @@
       ctx.fillStyle = "#ffffff";
       originalFillText.call(ctx, rawText, x + prefixWidth, y);
       ctx.restore();
+      return true;
     } catch {
       try {
         ctx.restore();
       } catch {
         // Ignore canvas state recovery failures.
       }
+      return false;
     } finally {
       HIGHLIGHT_STATE.canvasInternalDraw = false;
     }
