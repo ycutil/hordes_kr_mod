@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.0
+// @version      0.7.1
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.0";
+  const MOD_VERSION = "0.7.1";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2751,14 +2751,38 @@
   }
 
   function getBoostedCanvasFontSize(fontSize) {
-    return Math.max(fontSize + 2, Math.round(fontSize * 1.14));
+    return Math.max(fontSize + 3, Math.round(fontSize * 1.24));
   }
 
-  function getBoostedCanvasFont(font, fontSize) {
+  function getCanvasFontFamily(font) {
     const family = String(font || "")
       .replace(/^.*?(\d+(?:\.\d+)?px(?:\/[^\s]+)?\s*)/, "")
       .trim() || "sans-serif";
-    return `900 ${getBoostedCanvasFontSize(fontSize)}px ${family}`;
+    return family;
+  }
+
+  function getBoostedCanvasFont(font, fontSize, targetSize) {
+    return `900 ${targetSize || getBoostedCanvasFontSize(fontSize)}px ${getCanvasFontFamily(font)}`;
+  }
+
+  function getFittedCanvasFontSize(ctx, text, maxWidth, fontSize) {
+    let targetSize = getBoostedCanvasFontSize(fontSize);
+    const widthLimit = Number(maxWidth);
+    if (!Number.isFinite(widthLimit) || widthLimit <= 0) return targetSize;
+
+    try {
+      const originalFont = ctx.font;
+      while (targetSize > fontSize) {
+        ctx.font = getBoostedCanvasFont(originalFont, fontSize, targetSize);
+        if (ctx.measureText(String(text)).width <= widthLimit * 0.98) break;
+        targetSize--;
+      }
+      ctx.font = originalFont;
+    } catch {
+      // Measuring text can fail on unusual canvas contexts. Use the default target size.
+    }
+
+    return Math.max(fontSize, targetSize);
   }
 
   function drawCanvasNameTextOverlay(ctx, text, x, y, maxWidth, originalFillText, originalStrokeText) {
@@ -2797,23 +2821,26 @@
 
     try {
       ctx.save();
-      ctx.font = getBoostedCanvasFont(ctx.font, fontSize);
+      const targetFontSize = getFittedCanvasFontSize(ctx, rawText, overlayMaxWidth, fontSize);
+      ctx.font = getBoostedCanvasFont(ctx.font, fontSize, targetFontSize);
       ctx.globalAlpha = 1;
       ctx.lineJoin = "round";
       ctx.miterLimit = 2;
-      ctx.shadowBlur = 0;
-      ctx.shadowColor = "transparent";
+      ctx.shadowColor = "rgba(8, 15, 29, 0.85)";
+      ctx.shadowBlur = Math.max(2, Math.round(targetFontSize * 0.12));
 
       if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.24));
-        ctx.strokeStyle = "rgba(8, 15, 29, 0.98)";
+        ctx.lineWidth = Math.max(4, Math.round(targetFontSize * 0.26));
+        ctx.strokeStyle = "rgba(6, 12, 24, 1)";
         drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
       }
 
       ctx.fillStyle = "#ffffff";
       drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.45, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.45, numberY, overlayMaxWidth);
+      drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.35, numberY, overlayMaxWidth);
+      drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.35, numberY, overlayMaxWidth);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY - 0.35, overlayMaxWidth);
       ctx.restore();
     } catch {
       try {
