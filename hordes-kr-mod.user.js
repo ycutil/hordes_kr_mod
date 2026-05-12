@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.8.1
+// @version      0.8.2
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.8.1";
+  const MOD_VERSION = "0.8.2";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3091,23 +3091,22 @@
       ctx.shadowOffsetX = 1;
       ctx.shadowOffsetY = 1;
 
-      const prefix = "#KR ";
-      const fullText = `${prefix}${rawText}`;
-      const fullWidth = measureCanvasTextWidth(ctx, fullText);
-      const prefixWidth = measureCanvasTextWidth(ctx, prefix);
-      const x = Math.round(dest.x + dest.width / 2 - fullWidth / 2);
+      const textWidth = measureCanvasTextWidth(ctx, rawText);
+      const x = Math.round(dest.x + dest.width / 2 - textWidth / 2);
       const y = Math.round(dest.y + dest.height + 1);
 
       if (typeof originalStrokeText === "function") {
         ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
         ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
-        originalStrokeText.call(ctx, fullText, x, y);
+        originalStrokeText.call(ctx, rawText, x, y);
       }
 
-      ctx.fillStyle = "#2f7dff";
-      originalFillText.call(ctx, prefix, x, y);
       ctx.fillStyle = "#ffffff";
-      originalFillText.call(ctx, rawText, x + prefixWidth, y);
+      originalFillText.call(ctx, rawText, x, y);
+      originalFillText.call(ctx, rawText, x + 0.35, y);
+      originalFillText.call(ctx, rawText, x - 0.35, y);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      originalFillText.call(ctx, rawText, x, y - 0.35);
       ctx.restore();
       return true;
     } catch {
