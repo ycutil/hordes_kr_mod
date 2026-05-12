@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.7.5
+// @version      0.7.6
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -36,7 +36,7 @@
     return;
   }
 
-  const MOD_VERSION = "0.7.5";
+  const MOD_VERSION = "0.7.6";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3130,6 +3130,22 @@
       recordScriptHookError(error, "observer");
     }
 
+    document.addEventListener(
+      "beforescriptexecute",
+      (event) => {
+        const script = event.target;
+        if (!script || !script.getAttribute || script.dataset.hordesKrRuntimeHooked) return;
+
+        const url = toUrl(script.getAttribute("src"));
+        if (!url || !shouldPatchGameClientScript(url)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        interceptGameClientScript(script);
+      },
+      true
+    );
+
     scan();
   }
 
@@ -3215,7 +3231,33 @@
     );
   }
 
-  async function loadAndPatchGameClientScript(parent, nextSibling, url, originalType) {
+  function loadAndPatchGameClientScript(parent, nextSibling, url, originalType) {
+    try {
+      const source = loadScriptSourceSync(url);
+      const patched = patchGameClientSource(source, url);
+      insertScriptSource(parent, nextSibling, patched.source, url, patched.patches, originalType);
+      recordPatchedScript(url, patched.patches, "sync-xhr");
+      return;
+    } catch (error) {
+      recordScriptHookError(error, `${shortScriptUrl(url)} sync`);
+    }
+
+    loadAndPatchGameClientScriptAsync(parent, nextSibling, url, originalType);
+  }
+
+  function loadScriptSourceSync(url) {
+    const xhr = new pageWindow.XMLHttpRequest();
+    xhr.open("GET", url.toString(), false);
+    xhr.send(null);
+
+    if ((xhr.status >= 200 && xhr.status < 300) || (xhr.status === 0 && xhr.responseText)) {
+      return xhr.responseText;
+    }
+
+    throw new Error(`sync script request failed: ${xhr.status}`);
+  }
+
+  async function loadAndPatchGameClientScriptAsync(parent, nextSibling, url, originalType) {
     try {
       const response = await originalFetch(url.toString(), { credentials: "same-origin" });
       if (!response.ok) throw new Error(`script request failed: ${response.status}`);
@@ -3223,17 +3265,21 @@
       const source = await response.text();
       const patched = patchGameClientSource(source, url);
       insertScriptSource(parent, nextSibling, patched.source, url, patched.patches, originalType);
-
-      if (patched.patches.length > 0) {
-        rememberScriptHookValue("scriptHookPatchedScripts", {
-          src: shortScriptUrl(url),
-          patches: patched.patches,
-        });
-      }
+      recordPatchedScript(url, patched.patches, "async-fetch");
     } catch (error) {
       recordScriptHookError(error, shortScriptUrl(url));
       insertFallbackScript(parent, nextSibling, url, originalType);
     }
+  }
+
+  function recordPatchedScript(url, patches, loader) {
+    if (patches.length === 0) return;
+
+    rememberScriptHookValue("scriptHookPatchedScripts", {
+      src: shortScriptUrl(url),
+      patches,
+      loader,
+    });
   }
 
   function insertScriptSource(parent, nextSibling, source, url, patches, originalType) {
