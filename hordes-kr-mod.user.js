@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.2
+// @version      0.9.3
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.2";
+  const MOD_VERSION = "0.9.3";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -187,6 +187,10 @@
     overlayHits: 0,
     lastOverlayAt: 0,
     lastOverlayError: "",
+    canvasHits: 0,
+    lastCanvasAt: 0,
+    lastCanvasText: "",
+    lastCanvasDrawKey: "",
   };
   const HIGHLIGHT_STATE = {
     observer: null,
@@ -2078,6 +2082,9 @@
     distanceToTarget() {
       return getTargetDistance(true);
     },
+    targetDistanceOverlayStatus() {
+      return getTargetDistanceOverlayStatus();
+    },
     toggleEventAlarms() {
       if (
         EVENT_CONFIG.alarmsEnabled &&
@@ -2895,7 +2902,9 @@
           return undefined;
         }
 
-        return originalDrawImage.apply(this, arguments);
+        const result = originalDrawImage.apply(this, arguments);
+        drawCanvasTargetDistanceOverlay(this, imageText, dest, originalFillText, originalStrokeText);
+        return result;
       };
     }
 
@@ -3174,7 +3183,7 @@
   }
 
   function flushPendingCanvasNames(force) {
-    const now = getHighlighterTime();
+    const now = Date.now();
     const seq = HIGHLIGHT_STATE.canvasDrawSeq;
     const remaining = [];
 
@@ -3200,6 +3209,13 @@
       pending.originalFillText,
       pending.originalStrokeText,
       dest
+    );
+    drawCanvasTargetDistanceOverlay(
+      pending.ctx,
+      pending.text,
+      dest,
+      pending.originalFillText,
+      pending.originalStrokeText
     );
   }
 
@@ -3280,6 +3296,83 @@
     } finally {
       HIGHLIGHT_STATE.canvasInternalDraw = false;
     }
+  }
+
+  function drawCanvasTargetDistanceOverlay(ctx, imageText, dest, originalFillText, originalStrokeText) {
+    if (!dest || HIGHLIGHT_STATE.canvasInternalDraw || typeof originalFillText !== "function") return false;
+
+    const result = getTargetDistance(false);
+    if (!result.available || !result.target || !isCanvasTextForTarget(imageText, result.target.name)) {
+      return false;
+    }
+
+    const text = formatTargetDistance(result.distance);
+    const drawKey = [
+      result.target.name,
+      text,
+      Math.round(dest.x),
+      Math.round(dest.y),
+      Math.round(dest.width),
+      Math.round(dest.height),
+    ].join("|");
+    const now = Date.now();
+    if (TARGET_DISTANCE_STATE.lastCanvasDrawKey === drawKey && now - TARGET_DISTANCE_STATE.lastCanvasAt < 16) {
+      return false;
+    }
+
+    TARGET_DISTANCE_STATE.lastCanvasDrawKey = drawKey;
+    TARGET_DISTANCE_STATE.lastCanvasAt = now;
+    TARGET_DISTANCE_STATE.lastCanvasText = text;
+    TARGET_DISTANCE_STATE.canvasHits++;
+
+    try {
+      HIGHLIGHT_STATE.canvasInternalDraw = true;
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.textBaseline = "bottom";
+      ctx.textAlign = "left";
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+
+      const fontSize = clamp(Math.round(dest.height * 1.06), 15, 24);
+      const fontFamily = getCanvasFontFamily(String(ctx.font || "")) || "hordes, Arial, sans-serif";
+      ctx.font = `900 ${fontSize}px ${fontFamily}`;
+      ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
+      ctx.shadowBlur = Math.max(2, Math.round(fontSize * 0.14));
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+
+      const x = Math.round(dest.x + dest.width + 8);
+      const y = Math.round(dest.y + dest.height + 1);
+
+      if (typeof originalStrokeText === "function") {
+        ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.2));
+        ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
+        originalStrokeText.call(ctx, text, x, y);
+      }
+
+      ctx.fillStyle = "#f5c247";
+      originalFillText.call(ctx, text, x, y);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+      originalFillText.call(ctx, text, x + 0.35, y - 0.35);
+      ctx.restore();
+      return true;
+    } catch {
+      try {
+        ctx.restore();
+      } catch {
+        // Ignore canvas state recovery failures.
+      }
+      return false;
+    } finally {
+      HIGHLIGHT_STATE.canvasInternalDraw = false;
+    }
+  }
+
+  function isCanvasTextForTarget(imageText, targetName) {
+    const text = String(imageText || "").trim().toLowerCase();
+    const name = String(targetName || "").trim().toLowerCase();
+    return Boolean(text && name && (text === name || text.includes(name) || name.includes(text)));
   }
 
   function resolvePendingCanvasNameWithClan(ctx, imageText, dest, now, seq) {
@@ -4149,6 +4242,11 @@
 
   function updateTargetDistanceOverlay() {
     try {
+      if (Date.now() - TARGET_DISTANCE_STATE.lastCanvasAt < 250) {
+        clearTargetDistanceOverlay();
+        return;
+      }
+
       const result = getTargetDistance(false);
       if (!result.available || !result.target || !result.target.screen) {
         clearTargetDistanceOverlay();
@@ -4197,6 +4295,30 @@
   function getTargetDistanceOverlayOffsetX(name) {
     const length = String(name || "").trim().length;
     return clamp(Math.round(length * 4.9 + 30), 48, 160);
+  }
+
+  function getTargetDistanceOverlayStatus() {
+    const label = TARGET_DISTANCE_STATE.overlayLabel;
+    return {
+      targetDistance: getTargetDistance(true),
+      dom: {
+        host: Boolean(TARGET_DISTANCE_STATE.overlayHost && document.contains(TARGET_DISTANCE_STATE.overlayHost)),
+        label: Boolean(label && document.contains(label)),
+        text: label ? label.textContent : "",
+        left: label ? label.style.left : "",
+        top: label ? label.style.top : "",
+        hits: TARGET_DISTANCE_STATE.overlayHits,
+        lastAt: TARGET_DISTANCE_STATE.lastOverlayAt
+          ? new Date(TARGET_DISTANCE_STATE.lastOverlayAt).toISOString()
+          : null,
+        lastError: TARGET_DISTANCE_STATE.lastOverlayError,
+      },
+      canvas: {
+        hits: TARGET_DISTANCE_STATE.canvasHits,
+        text: TARGET_DISTANCE_STATE.lastCanvasText,
+        lastAt: TARGET_DISTANCE_STATE.lastCanvasAt || null,
+      },
+    };
   }
 
   function clearRuntimeNameOverlay() {

@@ -68,6 +68,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.9.0`부터는 강조 ID 입력칸이 활성화된 동안 키 입력이 게임으로 전달되지 않도록 차단합니다.
 `v0.9.1`부터는 미사용 보조 코드를 정리하고, 선택한 타겟과의 거리 계산을 실험적으로 제공합니다.
 `v0.9.2`부터는 선택한 타겟의 이름표 오른쪽에 거리를 실시간으로 표시합니다.
+`v0.9.3`부터는 화면 좌표 투영이 실패해도 캔버스 이름표 렌더링 경로에서 타겟 거리를 직접 그립니다.
 
 적용 확인:
 
@@ -103,6 +104,7 @@ HordesKrMod.status()
 HordesKrMod.eventStatus()
 HordesKrMod.targetDistance()
 HordesKrMod.distanceToTarget()
+HordesKrMod.targetDistanceOverlayStatus()
 HordesKrMod.toggleEventAlarms()
 HordesKrMod.toggleEventSound()
 HordesKrMod.resetUi()
