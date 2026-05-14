@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.5
+// @version      0.9.6
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.5";
+  const MOD_VERSION = "0.9.6";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2178,6 +2178,9 @@
     runtimeOverlayStatus() {
       return getRuntimeOverlayStatus();
     },
+    runtimeDebug() {
+      return getRuntimeDebugReport();
+    },
     inspectRuntime(name) {
       return inspectRuntimeForNameplates(name);
     },
@@ -3938,15 +3941,51 @@
   function patchGameClientSource(source, url) {
     let patched = String(source || "");
     const patches = [];
-    const exposeLegacyRuntime = "try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,player:ne&&ne.player,target:ne&&ne.player&&ne.player.target,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}";
+    const exposeLegacyRuntime = [
+      "try{",
+      "var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "var g=null,p=null;",
+      "try{g=ne}catch(i){r.debug=r.debug||{};r.debug.legacyEngineReadError=(i&&i.message)||String(i)}",
+      "try{p=g&&g.player}catch(i){r.debug=r.debug||{};r.debug.legacyPlayerReadError=(i&&i.message)||String(i)}",
+      "r.engine=g;r.player=p;",
+      "try{r.target=p&&p.target}catch(i){r.debug=r.debug||{};r.debug.legacyTargetReadError=(i&&i.message)||String(i)}",
+      "r.camera=he;r.webglCanvas=ko;r.overlayCanvas=yn;r.renderState=N;r.settings=Te;r.frameTime=e;r.updatedAt=Date.now();",
+      "r.hookHits=r.hookHits||{};r.hookHits.frameLoop=(r.hookHits.frameLoop||0)+1;",
+      "r.debug=r.debug||{};r.debug.legacyFrameLoopAt=r.updatedAt;",
+      "try{r.debug.legacyEngineKeys=g?Object.getOwnPropertyNames(g).slice(0,40):[]}catch(i){r.debug.legacyEngineKeysError=(i&&i.message)||String(i)}",
+      "}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"frameLoop:\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
     const exposeLegacyRuntimeCall = `(function(){${exposeLegacyRuntime}})()`;
-    const exposeClientRuntime = "try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}";
+    const exposeClientRuntime = [
+      "try{",
+      "var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "var g=null,p=null;",
+      "r.updatedAt=Date.now();r.frameLoopSeenAt=r.updatedAt;",
+      "r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1;",
+      "r.debug=r.debug||{};r.debug.frameLoopAt=r.updatedAt;",
+      "try{g=I}catch(i){r.debug.engineReadError=(i&&i.message)||String(i)}",
+      "r.engine=g;",
+      "try{r.debug.frameLoopIType=typeof I}catch(i){}",
+      "try{r.debug.frameLoopIConstructor=g&&g.constructor&&g.constructor.name||\"\"}catch(i){}",
+      "try{r.debug.frameLoopIKeys=g?Object.getOwnPropertyNames(g).slice(0,40):[]}catch(i){r.debug.frameLoopIKeysError=(i&&i.message)||String(i)}",
+      "try{p=g&&g.player}catch(i){r.debug.playerReadError=(i&&i.message)||String(i)}",
+      "r.player=p;",
+      "try{r.target=p&&p.target}catch(i){r.debug.targetReadError=(i&&i.message)||String(i)}",
+      "try{r.camera=gt}catch(i){r.debug.cameraReadError=(i&&i.message)||String(i)}",
+      "try{r.cameraTransform=Qt}catch(i){r.debug.cameraTransformReadError=(i&&i.message)||String(i)}",
+      "try{r.webglCanvas=To}catch(i){r.debug.webglCanvasReadError=(i&&i.message)||String(i)}",
+      "try{r.overlayCanvas=Ln}catch(i){r.debug.overlayCanvasReadError=(i&&i.message)||String(i)}",
+      "try{r.renderState=tt}catch(i){r.debug.renderStateReadError=(i&&i.message)||String(i)}",
+      "try{r.settings=fe}catch(i){r.debug.settingsReadError=(i&&i.message)||String(i)}",
+      "r.delta=t;r.frameTime=e;",
+      "}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
     const exposeClientRuntimeCall = `(function(){${exposeClientRuntime}})()`;
 
     patched = replaceClientSourceOnce(
       patched,
       "Ku=t=>{ne=t}",
-      "Ku=t=>{ne=t;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.engine=t;window.__HORDES_KR_RUNTIME__.updatedAt=Date.now()}catch(o){}}",
+      "Ku=t=>{ne=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;r.updatedAt=Date.now();r.debug=r.debug||{};r.debug.engineSetterAt=r.updatedAt;try{r.debug.engineSetterKeys=t?Object.getOwnPropertyNames(t).slice(0,40):[]}catch(i){r.debug.engineSetterKeysError=(i&&i.message)||String(i)}}catch(o){}}",
       patches,
       "engine-setter"
     );
@@ -3970,7 +4009,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3=t=>{I=t}",
-      "N3=t=>{I=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;try{r.player=t&&t.player;r.target=t&&t.player&&t.player.target}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientEngineSetter=(r.hookHits.clientEngineSetter||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientEngineSetter:\"+((o&&o.message)||o))}catch(i){}}}",
+      "N3=t=>{I=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;try{r.player=t&&t.player;r.target=t&&t.player&&t.player.target}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientEngineSetter=(r.hookHits.clientEngineSetter||0)+1;r.debug=r.debug||{};r.debug.clientEngineSetterAt=r.updatedAt;try{r.debug.clientEngineSetterKeys=t?Object.getOwnPropertyNames(t).slice(0,40):[]}catch(i){r.debug.clientEngineSetterKeysError=(i&&i.message)||String(i)}}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientEngineSetter:\"+((o&&o.message)||o))}catch(i){}}}",
       patches,
       "client-engine-setter"
     );
@@ -3994,7 +4033,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3(new Fh({})),Z_(!0),z9()",
-      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
+      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1;r.debug=r.debug||{};r.debug.clientOnloadAt=r.updatedAt;try{r.debug.clientOnloadEngineKeys=I?Object.getOwnPropertyNames(I).slice(0,40):[]}catch(i){r.debug.clientOnloadEngineKeysError=(i&&i.message)||String(i)}}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
       patches,
       "client-onload-runtime"
     );
@@ -4698,6 +4737,9 @@
       }
     }
 
+    const byConfiguredName = findRuntimeEntityByConfiguredHighlightNames(runtime);
+    if (byConfiguredName) return byConfiguredName.entity;
+
     return null;
   }
 
@@ -4747,6 +4789,56 @@
       patchedSource: runtime.patchedSource || "",
       hookHits: runtime.hookHits || null,
       hookErrors: Array.isArray(runtime.hookErrors) ? runtime.hookErrors.slice(-8) : [],
+      frameLoopSeenAgoMs: Number.isFinite(runtime.frameLoopSeenAt) ? Date.now() - runtime.frameLoopSeenAt : null,
+      debug: summarizeRuntimeDebug(runtime),
+    };
+  }
+
+  function getRuntimeDebugReport() {
+    const runtime = getExposedRuntime();
+    return {
+      version: MOD_VERSION,
+      runtime: getExposedRuntimeSummary(),
+      targetDistance: getTargetDistance(true),
+      engine: summarizeRuntimeObjectForDebug(runtime && runtime.engine),
+      player: summarizeRuntimeObjectForDebug(runtime && runtime.player),
+      target: summarizeRuntimeObjectForDebug(runtime && runtime.target),
+    };
+  }
+
+  function summarizeRuntimeDebug(runtime) {
+    const debug = runtime && isRuntimeObject(runtime.debug) ? runtime.debug : null;
+    return {
+      debugKeys: debug ? safeOwnKeys(debug).slice(0, 40) : [],
+      frameLoopAtAgoMs: debug && Number.isFinite(debug.frameLoopAt) ? Date.now() - debug.frameLoopAt : null,
+      frameLoopIType: debug ? debug.frameLoopIType || "" : "",
+      frameLoopIConstructor: debug ? debug.frameLoopIConstructor || "" : "",
+      frameLoopIKeys: debug && Array.isArray(debug.frameLoopIKeys) ? debug.frameLoopIKeys : [],
+      clientEngineSetterAtAgoMs: debug && Number.isFinite(debug.clientEngineSetterAt)
+        ? Date.now() - debug.clientEngineSetterAt
+        : null,
+      clientEngineSetterKeys: debug && Array.isArray(debug.clientEngineSetterKeys) ? debug.clientEngineSetterKeys : [],
+      clientOnloadAtAgoMs: debug && Number.isFinite(debug.clientOnloadAt)
+        ? Date.now() - debug.clientOnloadAt
+        : null,
+      clientOnloadEngineKeys: debug && Array.isArray(debug.clientOnloadEngineKeys) ? debug.clientOnloadEngineKeys : [],
+      engineReadError: debug ? debug.engineReadError || "" : "",
+      playerReadError: debug ? debug.playerReadError || "" : "",
+      targetReadError: debug ? debug.targetReadError || "" : "",
+    };
+  }
+
+  function summarizeRuntimeObjectForDebug(value) {
+    if (!isRuntimeObject(value)) return null;
+
+    const position = getRuntimeWorldPosition(value);
+    return {
+      summary: describeRuntimeValue(value),
+      name: getRuntimeNameValueLoose(value),
+      id: getRuntimeEntityId(value),
+      position: position ? position.position.map(roundCoord) : null,
+      positionSource: position ? position.source : "",
+      keys: safeOwnKeys(value).slice(0, 80),
     };
   }
 
@@ -5198,6 +5290,9 @@
       if (direct) return direct;
     }
 
+    const byConfiguredName = findRuntimeEntityByConfiguredHighlightNames(runtime);
+    if (byConfiguredName) return { ...byConfiguredName, source: "highlightNames" };
+
     return findBestRuntimeEntity(runtime, (value, path) => scoreLocalPlayerEntity(value, path));
   }
 
@@ -5284,6 +5379,28 @@
     });
   }
 
+  function findRuntimeEntityByConfiguredHighlightNames(runtime) {
+    const names = HIGHLIGHT_CONFIG.names
+      .map(normalizeHighlightName)
+      .filter(Boolean)
+      .map((name) => name.toLowerCase());
+    if (names.length === 0) return null;
+
+    return findBestRuntimeEntity(runtime, (value, path) => {
+      if (!getRuntimeWorldPosition(value)) return 0;
+
+      const name = getRuntimeNameValueLoose(value).toLowerCase();
+      if (!name || !names.includes(name)) return 0;
+
+      let score = 145;
+      if (/(\.|^)player$/i.test(path)) score += 50;
+      if (/local|myPlayer|self|controlled|character|hero|avatar/i.test(path)) score += 40;
+      if (safeReadValue(value, "isSelf") === true || safeReadValue(value, "isLocal") === true) score += 80;
+      if (getRuntimeEntityId(value) !== undefined) score += 8;
+      return score;
+    });
+  }
+
   function findBestRuntimeEntity(runtime, scoreEntity) {
     const queue = getRuntimeSearchRoots(runtime).map((root) => ({ ...root, depth: 0 }));
     const seen = new WeakSet();
@@ -5342,7 +5459,14 @@
     const roots = [{ value: runtime, path: "runtime" }];
     if (runtime && runtime.player) roots.push({ value: runtime.player, path: "runtime.player" });
     if (runtime && runtime.target) roots.push({ value: runtime.target, path: "runtime.target" });
-    if (runtime && runtime.engine) roots.push({ value: runtime.engine, path: "runtime.engine" });
+    if (runtime && runtime.engine) {
+      roots.push({ value: runtime.engine, path: "runtime.engine" });
+
+      for (const key of ["entities", "entityList", "players", "mobs", "units", "actors", "objects", "world", "scene"]) {
+        const value = safeReadValue(runtime.engine, key);
+        if (isRuntimeObject(value)) roots.push({ value, path: `runtime.engine.${key}` });
+      }
+    }
     return roots;
   }
 
