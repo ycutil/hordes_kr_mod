@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.4
+// @version      0.9.5
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.4";
+  const MOD_VERSION = "0.9.5";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3938,6 +3938,10 @@
   function patchGameClientSource(source, url) {
     let patched = String(source || "");
     const patches = [];
+    const exposeLegacyRuntime = "try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,player:ne&&ne.player,target:ne&&ne.player&&ne.player.target,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}";
+    const exposeLegacyRuntimeCall = `(function(){${exposeLegacyRuntime}})()`;
+    const exposeClientRuntime = "try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}";
+    const exposeClientRuntimeCall = `(function(){${exposeClientRuntime}})()`;
 
     patched = replaceClientSourceOnce(
       patched,
@@ -3958,7 +3962,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e),ne.tick(t),",
-      "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,player:ne&&ne.player,target:ne&&ne.player&&ne.player.target,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}ne.tick(t),",
+      `Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);${exposeLegacyRuntime};ne.tick(t),${exposeLegacyRuntimeCall},`,
       patches,
       "frame-loop"
     );
@@ -3982,7 +3986,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "QA=(t,e)=>{W3(e),HA(e),I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
-      "QA=(t,e)=>{W3(e),HA(e);try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
+      `QA=(t,e)=>{W3(e),HA(e);${exposeClientRuntime};I&&I.player?(wx(t),RA(t),I.tick(t),${exposeClientRuntimeCall},zA(t),wA(t,I),BA(t,I)):I&&(I.tick(t),${exposeClientRuntimeCall})}`,
       patches,
       "client-frame-loop"
     );
