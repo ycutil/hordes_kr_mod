@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.3
+// @version      0.9.4
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.3";
+  const MOD_VERSION = "0.9.4";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -3958,7 +3958,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e),ne.tick(t),",
-      "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}ne.tick(t),",
+      "Vy=(t,e)=>{Iu(t),tt(ot,!0),Ii(he,!0),em(e);try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};Object.assign(window.__HORDES_KR_RUNTIME__,{engine:ne,player:ne&&ne.player,target:ne&&ne.player&&ne.player.target,camera:he,webglCanvas:ko,overlayCanvas:yn,renderState:N,settings:Te,frameTime:e,updatedAt:Date.now()})}catch(o){}ne.tick(t),",
       patches,
       "frame-loop"
     );
@@ -3966,7 +3966,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3=t=>{I=t}",
-      "N3=t=>{I=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientEngineSetter=(r.hookHits.clientEngineSetter||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientEngineSetter:\"+((o&&o.message)||o))}catch(i){}}}",
+      "N3=t=>{I=t;try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=t;try{r.player=t&&t.player;r.target=t&&t.player&&t.player.target}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientEngineSetter=(r.hookHits.clientEngineSetter||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientEngineSetter:\"+((o&&o.message)||o))}catch(i){}}}",
       patches,
       "client-engine-setter"
     );
@@ -3982,7 +3982,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "QA=(t,e)=>{W3(e),HA(e),I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
-      "QA=(t,e)=>{W3(e),HA(e);try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
+      "QA=(t,e)=>{W3(e),HA(e);try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.delta=t;r.frameTime=e;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientFrameLoop=(r.hookHits.clientFrameLoop||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}I&&I.player?(wx(t),RA(t),I.tick(t),zA(t),wA(t,I),BA(t,I)):I&&I.tick(t)}",
       patches,
       "client-frame-loop"
     );
@@ -3990,7 +3990,7 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3(new Fh({})),Z_(!0),z9()",
-      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
+      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
       patches,
       "client-onload-runtime"
     );
@@ -4318,6 +4318,12 @@
         text: TARGET_DISTANCE_STATE.lastCanvasText,
         lastAt: TARGET_DISTANCE_STATE.lastCanvasAt || null,
       },
+      scriptHook: {
+        attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
+        patchedScripts: [...HIGHLIGHT_STATE.scriptHookPatchedScripts],
+        errors: [...HIGHLIGHT_STATE.scriptHookErrors],
+      },
+      runtime: getExposedRuntimeSummary(),
     };
   }
 
@@ -4657,10 +4663,51 @@
 
   function getExposedRuntime() {
     try {
-      return pageWindow.__HORDES_KR_RUNTIME__ || null;
+      const runtime = pageWindow.__HORDES_KR_RUNTIME__ || null;
+      refreshRuntimeEntityReferences(runtime);
+      return runtime;
     } catch {
       return null;
     }
+  }
+
+  function refreshRuntimeEntityReferences(runtime) {
+    if (!runtime) return;
+
+    const engine = safeReadValue(runtime, "engine");
+    const player = findRuntimePlayerReference(runtime, engine);
+    if (player) {
+      runtime.player = player;
+
+      const target = findRuntimeTargetReference(runtime, player);
+      if (target) runtime.target = target;
+    }
+  }
+
+  function findRuntimePlayerReference(runtime, engine) {
+    for (const container of [runtime, engine]) {
+      if (!isRuntimeObject(container)) continue;
+
+      for (const key of ["player", "localPlayer", "myPlayer", "character", "hero", "avatar", "controlledEntity"]) {
+        const value = safeReadValue(container, key);
+        if (isRuntimeObject(value)) return value;
+      }
+    }
+
+    return null;
+  }
+
+  function findRuntimeTargetReference(runtime, player) {
+    for (const container of [runtime, player]) {
+      if (!isRuntimeObject(container)) continue;
+
+      for (const key of ["target", "targetUnit", "targetEntity", "selectedTarget", "selectedEntity", "currentTarget", "attackTarget", "focusTarget", "enemyTarget"]) {
+        const value = safeReadValue(container, key);
+        if (value !== null && value !== undefined && value !== false) return value;
+      }
+    }
+
+    return null;
   }
 
   function getExposedRuntimeSummary() {
@@ -4676,6 +4723,8 @@
       exposed: true,
       keys: safeOwnKeys(runtime),
       hasEngine: !!runtime.engine,
+      hasPlayer: !!runtime.player,
+      hasTarget: !!runtime.target,
       hasCamera: !!runtime.camera,
       hasProjectionMatrix: !!getRuntimeProjectionMatrix(runtime),
       hasWebglCanvas: isVisibleCanvasElement(runtime.webglCanvas),
@@ -5137,7 +5186,9 @@
   }
 
   function findLocalPlayerEntity(runtime) {
-    const directKeys = ["player", "localPlayer", "myPlayer", "character", "hero", "avatar", "controlledEntity"];
+    refreshRuntimeEntityReferences(runtime);
+
+    const directKeys = ["player", "localPlayer", "myPlayer", "character", "hero", "avatar", "controlledEntity", "entity", "unit", "actor"];
     for (const root of getRuntimeSearchRoots(runtime)) {
       const direct = resolveFirstRuntimeEntityFromKeys(root.value, runtime, directKeys, root.path);
       if (direct) return direct;
@@ -5147,6 +5198,8 @@
   }
 
   function findSelectedTargetEntity(runtime, selfEntity) {
+    refreshRuntimeEntityReferences(runtime);
+
     const directKeys = ["target", "targetUnit", "targetEntity", "selectedTarget", "selectedEntity", "currentTarget", "attackTarget", "focusTarget", "enemyTarget"];
     const targetIdKeys = ["targetId", "targetUnitId", "targetEntityId", "selectedTargetId", "selectedEntityId", "currentTargetId", "attackTargetId", "focusTargetId", "enemyTargetId"];
     const roots = [
@@ -5283,6 +5336,8 @@
 
   function getRuntimeSearchRoots(runtime) {
     const roots = [{ value: runtime, path: "runtime" }];
+    if (runtime && runtime.player) roots.push({ value: runtime.player, path: "runtime.player" });
+    if (runtime && runtime.target) roots.push({ value: runtime.target, path: "runtime.target" });
     if (runtime && runtime.engine) roots.push({ value: runtime.engine, path: "runtime.engine" });
     return roots;
   }
