@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.1
+// @version      0.9.2
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.1";
+  const MOD_VERSION = "0.9.2";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -82,10 +82,11 @@
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HOUR_MS = 60 * 60 * 1000;
   const MINUTE_MS = 60 * 1000;
-  const RUNTIME_OVERLAY_INTERVAL_MS = 120;
-  const TARGET_DISTANCE_CACHE_MS = 300;
+  const RUNTIME_OVERLAY_INTERVAL_MS = 100;
+  const TARGET_DISTANCE_CACHE_MS = 100;
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
+  const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
   const STATUS_UI_KEYBOARD_EVENTS = [
     "keydown",
     "keypress",
@@ -181,6 +182,11 @@
   const TARGET_DISTANCE_STATE = {
     lastAt: 0,
     lastResult: null,
+    overlayHost: null,
+    overlayLabel: null,
+    overlayHits: 0,
+    lastOverlayAt: 0,
+    lastOverlayError: "",
   };
   const HIGHLIGHT_STATE = {
     observer: null,
@@ -3959,6 +3965,7 @@
   function initRuntimeNameOverlay() {
     installRuntimeNameOverlayStyle();
     ensureRuntimeNameOverlayHost();
+    ensureTargetDistanceOverlayHost();
 
     if (HIGHLIGHT_STATE.runtimeOverlayTimer) return;
     HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, RUNTIME_OVERLAY_INTERVAL_MS);
@@ -3983,6 +3990,40 @@
         pointer-events: none !important;
         z-index: 2147483647 !important;
         overflow: visible !important;
+      }
+      #hordes-kr-target-distance-overlay {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        overflow: visible !important;
+      }
+      .hordes-kr-target-distance-label {
+        position: fixed !important;
+        transform: translate(0, -100%) !important;
+        color: #f5c247 !important;
+        opacity: 1 !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        font-size: 17px !important;
+        line-height: 1.05 !important;
+        font-weight: 900 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        -webkit-text-stroke: 0.7px rgba(5, 10, 22, 0.98) !important;
+        text-shadow:
+          2px 0 0 rgba(5, 10, 22, 0.98),
+          -2px 0 0 rgba(5, 10, 22, 0.98),
+          0 2px 0 rgba(5, 10, 22, 0.98),
+          0 -2px 0 rgba(5, 10, 22, 0.98),
+          0 2px 3px rgba(0, 0, 0, 0.92),
+          0 0 5px rgba(245, 194, 71, 0.78) !important;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) !important;
+        will-change: left, top !important;
       }
       .hordes-kr-runtime-name-label {
         position: fixed !important;
@@ -4037,7 +4078,25 @@
     return host;
   }
 
+  function ensureTargetDistanceOverlayHost() {
+    if (TARGET_DISTANCE_STATE.overlayHost && document.contains(TARGET_DISTANCE_STATE.overlayHost)) {
+      return TARGET_DISTANCE_STATE.overlayHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-target-distance-overlay";
+    host.setAttribute("aria-hidden", "true");
+    document.body.appendChild(host);
+    TARGET_DISTANCE_STATE.overlayHost = host;
+    TARGET_DISTANCE_STATE.overlayLabel = null;
+    return host;
+  }
+
   function updateRuntimeNameOverlay() {
+    updateTargetDistanceOverlay();
+
     try {
       if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.runtimeOverlayEnabled || HIGHLIGHT_CONFIG.names.length === 0) {
         clearRuntimeNameOverlay();
@@ -4086,6 +4145,58 @@
       HIGHLIGHT_STATE.lastRuntimeOverlayError = error && error.message ? error.message : String(error);
       clearRuntimeNameOverlay();
     }
+  }
+
+  function updateTargetDistanceOverlay() {
+    try {
+      const result = getTargetDistance(false);
+      if (!result.available || !result.target || !result.target.screen) {
+        clearTargetDistanceOverlay();
+        return;
+      }
+
+      const host = ensureTargetDistanceOverlayHost();
+      if (!host) return;
+
+      const label = ensureTargetDistanceOverlayLabel(host);
+      const targetName = result.target.name || "";
+      const offsetX = getTargetDistanceOverlayOffsetX(targetName);
+
+      label.textContent = formatTargetDistance(result.distance);
+      label.style.left = `${Math.round(result.target.screen.x + offsetX)}px`;
+      label.style.top = `${Math.round(result.target.screen.y + TARGET_DISTANCE_OVERLAY_OFFSET_Y)}px`;
+      label.title = `${targetName || "타겟"} / 3D ${formatTargetDistance(result.distance3d)}`;
+
+      TARGET_DISTANCE_STATE.overlayHits++;
+      TARGET_DISTANCE_STATE.lastOverlayAt = Date.now();
+      TARGET_DISTANCE_STATE.lastOverlayError = "";
+    } catch (error) {
+      TARGET_DISTANCE_STATE.lastOverlayError = error && error.message ? error.message : String(error);
+      clearTargetDistanceOverlay();
+    }
+  }
+
+  function ensureTargetDistanceOverlayLabel(host) {
+    if (TARGET_DISTANCE_STATE.overlayLabel && host.contains(TARGET_DISTANCE_STATE.overlayLabel)) {
+      return TARGET_DISTANCE_STATE.overlayLabel;
+    }
+
+    const label = document.createElement("div");
+    label.className = "hordes-kr-target-distance-label";
+    host.replaceChildren(label);
+    TARGET_DISTANCE_STATE.overlayLabel = label;
+    return label;
+  }
+
+  function clearTargetDistanceOverlay() {
+    const host = TARGET_DISTANCE_STATE.overlayHost;
+    if (host) host.replaceChildren();
+    TARGET_DISTANCE_STATE.overlayLabel = null;
+  }
+
+  function getTargetDistanceOverlayOffsetX(name) {
+    const length = String(name || "").trim().length;
+    return clamp(Math.round(length * 4.9 + 30), 48, 160);
   }
 
   function clearRuntimeNameOverlay() {
@@ -4858,6 +4969,13 @@
 
     const horizontalDistance = getHorizontalRuntimeDistance(selfPosition.position, targetPosition.position);
     const distance3d = getRuntimeVectorDistance(selfPosition.position, targetPosition.position);
+    const targetScreen = projectRuntimeEntityToScreen(
+      {
+        entity: target.entity,
+        position: targetPosition.position,
+      },
+      runtime
+    );
 
     return {
       available: true,
@@ -4876,6 +4994,12 @@
         position: targetPosition.position.map(roundCoord),
         positionSource: targetPosition.source,
         referenceSource: target.source,
+        screen: targetScreen
+          ? {
+              x: roundCoord(targetScreen.x),
+              y: roundCoord(targetScreen.y),
+            }
+          : null,
       },
     };
   }
