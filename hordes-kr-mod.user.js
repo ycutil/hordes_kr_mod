@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.6
+// @version      0.9.7
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.6";
+  const MOD_VERSION = "0.9.7";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -2007,7 +2007,7 @@
     return originalFetch(input, init);
   };
 
-  pageWindow.HordesKrMod = {
+	  pageWindow.HordesKrMod = {
     version: MOD_VERSION,
     enable() {
       localStorage.setItem(ENABLED_KEY, "true");
@@ -2198,7 +2198,13 @@
       saveHighlightConfig();
       return getNameplateStyleStatus();
     },
-  };
+	  };
+
+  Object.assign(pageWindow.HordesKrMod, {
+    runtimeDebug: () => getRuntimeDebugReport(),
+    debugRuntime: () => getRuntimeDebugReport(),
+    diagnostics: () => getRuntimeDebugReport(),
+  });
 
   function loadJsonConfig(key, defaults) {
     try {
