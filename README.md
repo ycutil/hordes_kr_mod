@@ -66,6 +66,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 `v0.8.8`부터는 이름 drawImage를 짧게 보류한 뒤 같은 호출 흐름의 클랜 drawImage와 묶어 원래 좌표 기준으로 동적 중앙 정렬합니다.
 `v0.8.9`부터는 우측 하단 패널에서 강조 ID 목록을 추가하고 삭제할 수 있습니다.
 `v0.9.0`부터는 강조 ID 입력칸이 활성화된 동안 키 입력이 게임으로 전달되지 않도록 차단합니다.
+`v0.9.1`부터는 미사용 보조 코드를 정리하고, 선택한 타겟과의 거리 계산을 실험적으로 제공합니다.
 
 적용 확인:
 
@@ -78,7 +79,7 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 - Obelisk: KST 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 시작
 - Gloomfury: KST 01:00, 04:00, 07:00, 10:00, 13:00, 16:00, 19:00, 22:00 시작
 - 각 이벤트는 1시간 지속되며, Gloomfury 다음 1시간은 휴식 시간으로 표시합니다.
-- 알림은 기본으로 10분/5분/1분 전에 패널 상태에 표시됩니다. 브라우저/소리 알림은 콘솔 명령으로 제어할 수 있습니다.
+- 브라우저/소리 알림은 콘솔 명령으로 제어할 수 있습니다.
 
 UI 조정:
 
@@ -99,6 +100,8 @@ HordesKrMod.enableScriptGate()
 HordesKrMod.testRequest()
 HordesKrMod.status()
 HordesKrMod.eventStatus()
+HordesKrMod.targetDistance()
+HordesKrMod.distanceToTarget()
 HordesKrMod.toggleEventAlarms()
 HordesKrMod.toggleEventSound()
 HordesKrMod.resetUi()

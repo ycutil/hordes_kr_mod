@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.0
+// @version      0.9.1
 // @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -70,7 +70,7 @@
     }
   }
 
-  const MOD_VERSION = "0.9.0";
+  const MOD_VERSION = "0.9.1";
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
@@ -82,6 +82,32 @@
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HOUR_MS = 60 * 60 * 1000;
   const MINUTE_MS = 60 * 1000;
+  const RUNTIME_OVERLAY_INTERVAL_MS = 120;
+  const TARGET_DISTANCE_CACHE_MS = 300;
+  const TARGET_DISTANCE_MAX_OBJECTS = 1800;
+  const TARGET_DISTANCE_MAX_DEPTH = 5;
+  const STATUS_UI_KEYBOARD_EVENTS = [
+    "keydown",
+    "keypress",
+    "keyup",
+    "beforeinput",
+    "input",
+    "compositionstart",
+    "compositionupdate",
+    "compositionend",
+    "paste",
+    "copy",
+    "cut",
+  ];
+  const HIGHLIGHT_INPUT_POINTER_EVENTS = [
+    "pointerdown",
+    "mousedown",
+    "mouseup",
+    "click",
+    "dblclick",
+    "touchstart",
+    "touchend",
+  ];
   const EVENT_PHASES = {
     obelisk: {
       name: "Obelisk",
@@ -151,6 +177,10 @@
     schedule: [],
     firedAlarms: new Set(),
     timer: null,
+  };
+  const TARGET_DISTANCE_STATE = {
+    lastAt: 0,
+    lastResult: null,
   };
   const HIGHLIGHT_STATE = {
     observer: null,
@@ -2036,6 +2066,12 @@
         schedule: EVENT_STATE.schedule,
       };
     },
+    targetDistance() {
+      return getTargetDistance(true);
+    },
+    distanceToTarget() {
+      return getTargetDistance(true);
+    },
     toggleEventAlarms() {
       if (
         EVENT_CONFIG.alarmsEnabled &&
@@ -2937,10 +2973,6 @@
     return family;
   }
 
-  function getBoostedCanvasFont(font, fontSize, targetSize) {
-    return `900 ${targetSize || getBoostedCanvasFontSize(fontSize)}px ${getCanvasFontFamily(font)}`;
-  }
-
   function getCapturedCanvasFont(font, fontSize, targetSize) {
     const captured = HIGHLIGHT_CONFIG.nameplateStyle;
     const family = getCanvasFontFamily((captured && captured.font) || font);
@@ -3500,20 +3532,6 @@
     return "";
   }
 
-  function getCanvasAlignOffset(textAlign, width) {
-    if (textAlign === "center") return width / 2;
-    if (textAlign === "right" || textAlign === "end") return width;
-    return 0;
-  }
-
-  function getCanvasBaselineOffset(textBaseline, height, metrics, fontSize) {
-    if (textBaseline === "top") return 0;
-    if (textBaseline === "hanging") return fontSize * 0.2;
-    if (textBaseline === "middle") return height / 2;
-    if (textBaseline === "bottom" || textBaseline === "ideographic") return height;
-    return metrics.actualBoundingBoxAscent || fontSize * 0.78;
-  }
-
   function getMatchingHighlightName(text) {
     const haystack = String(text || "").toLowerCase();
     if (!haystack) return "";
@@ -3943,7 +3961,7 @@
     ensureRuntimeNameOverlayHost();
 
     if (HIGHLIGHT_STATE.runtimeOverlayTimer) return;
-    HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, 80);
+    HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, RUNTIME_OVERLAY_INTERVAL_MS);
     pageWindow.addEventListener("resize", updateRuntimeNameOverlay);
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", updateRuntimeNameOverlay, { once: true });
@@ -4134,8 +4152,8 @@
     const candidates = [];
     let visited = 0;
 
-    while (queue.length > 0 && visited < maxObjects && candidates.length < limit * 3) {
-      const item = queue.shift();
+    for (let cursor = 0; cursor < queue.length && visited < maxObjects && candidates.length < limit * 3; cursor++) {
+      const item = queue[cursor];
       const value = item.value;
       if (!isRuntimeObject(value) || seen.has(value)) continue;
 
@@ -4599,8 +4617,8 @@
     const seen = new WeakSet();
     let visited = 0;
 
-    while (queue.length > 0 && visited < maxObjects && candidates.length < limit) {
-      const item = queue.shift();
+    for (let cursor = 0; cursor < queue.length && visited < maxObjects && candidates.length < limit; cursor++) {
+      const item = queue[cursor];
       const value = item.value;
       if (!isRuntimeObject(value) || seen.has(value)) continue;
 
@@ -4804,6 +4822,261 @@
     } catch {
       return undefined;
     }
+  }
+
+  function getTargetDistance(force = false) {
+    const now = Date.now();
+    if (
+      !force &&
+      TARGET_DISTANCE_STATE.lastResult &&
+      now - TARGET_DISTANCE_STATE.lastAt < TARGET_DISTANCE_CACHE_MS
+    ) {
+      return TARGET_DISTANCE_STATE.lastResult;
+    }
+
+    const result = calculateTargetDistance();
+    TARGET_DISTANCE_STATE.lastAt = now;
+    TARGET_DISTANCE_STATE.lastResult = result;
+    return result;
+  }
+
+  function calculateTargetDistance() {
+    const runtime = getExposedRuntime();
+    if (!runtime) return getUnavailableTargetDistance("런타임을 찾지 못했습니다.");
+
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return getUnavailableTargetDistance("내 캐릭터 객체를 찾지 못했습니다.");
+
+    const selfPosition = getRuntimeWorldPosition(self.entity);
+    if (!selfPosition) return getUnavailableTargetDistance("내 캐릭터 좌표를 찾지 못했습니다.");
+
+    const target = findSelectedTargetEntity(runtime, self.entity);
+    if (!target) return getUnavailableTargetDistance("타겟 객체를 찾지 못했습니다.");
+
+    const targetPosition = getRuntimeWorldPosition(target.entity);
+    if (!targetPosition) return getUnavailableTargetDistance("타겟 좌표를 찾지 못했습니다.");
+
+    const horizontalDistance = getHorizontalRuntimeDistance(selfPosition.position, targetPosition.position);
+    const distance3d = getRuntimeVectorDistance(selfPosition.position, targetPosition.position);
+
+    return {
+      available: true,
+      distance: roundCoord(horizontalDistance),
+      distance3d: roundCoord(distance3d),
+      units: "world",
+      self: {
+        name: getRuntimeEntityLabel(self.entity),
+        path: self.path,
+        position: selfPosition.position.map(roundCoord),
+        positionSource: selfPosition.source,
+      },
+      target: {
+        name: getRuntimeEntityLabel(target.entity),
+        path: target.path,
+        position: targetPosition.position.map(roundCoord),
+        positionSource: targetPosition.source,
+        referenceSource: target.source,
+      },
+    };
+  }
+
+  function getUnavailableTargetDistance(reason) {
+    return {
+      available: false,
+      reason,
+      distance: null,
+      distance3d: null,
+      units: "world",
+    };
+  }
+
+  function findLocalPlayerEntity(runtime) {
+    const directKeys = ["player", "localPlayer", "myPlayer", "character", "hero", "avatar", "controlledEntity"];
+    for (const root of getRuntimeSearchRoots(runtime)) {
+      const direct = resolveFirstRuntimeEntityFromKeys(root.value, runtime, directKeys, root.path);
+      if (direct) return direct;
+    }
+
+    return findBestRuntimeEntity(runtime, (value, path) => scoreLocalPlayerEntity(value, path));
+  }
+
+  function findSelectedTargetEntity(runtime, selfEntity) {
+    const directKeys = ["target", "targetUnit", "targetEntity", "selectedTarget", "selectedEntity", "currentTarget", "attackTarget", "focusTarget", "enemyTarget"];
+    const targetIdKeys = ["targetId", "targetUnitId", "targetEntityId", "selectedTargetId", "selectedEntityId", "currentTargetId", "attackTargetId", "focusTargetId", "enemyTargetId"];
+    const roots = [
+      { value: selfEntity, path: "self" },
+      ...getRuntimeSearchRoots(runtime),
+    ];
+
+    for (const root of roots) {
+      const direct = resolveFirstRuntimeEntityFromKeys(root.value, runtime, directKeys, root.path, selfEntity);
+      if (direct) return direct;
+
+      for (const key of targetIdKeys) {
+        const id = safeReadValue(root.value, key);
+        const byId = findRuntimeEntityById(runtime, id, selfEntity);
+        if (byId) return { ...byId, source: `${root.path}.${key}` };
+      }
+    }
+
+    return findBestRuntimeEntity(runtime, (value, path) => scoreSelectedTargetEntity(value, path, selfEntity));
+  }
+
+  function resolveFirstRuntimeEntityFromKeys(container, runtime, keys, path, selfEntity) {
+    if (!isRuntimeObject(container)) return null;
+
+    for (const key of keys) {
+      const entity = resolveRuntimeEntityReference(
+        safeReadValue(container, key),
+        runtime,
+        `${path}.${key}`,
+        selfEntity
+      );
+      if (entity) return entity;
+    }
+
+    return null;
+  }
+
+  function resolveRuntimeEntityReference(reference, runtime, source, selfEntity) {
+    if (reference === null || reference === undefined || reference === false) return null;
+
+    if (isRuntimeObject(reference)) {
+      const entity = unwrapRuntimeEntityReference(reference, selfEntity);
+      if (entity) return { entity, path: source, source };
+
+      const id = getRuntimeEntityId(reference);
+      const byId = findRuntimeEntityById(runtime, id, selfEntity);
+      return byId ? { ...byId, source } : null;
+    }
+
+    const byId = findRuntimeEntityById(runtime, reference, selfEntity);
+    return byId ? { ...byId, source } : null;
+  }
+
+  function unwrapRuntimeEntityReference(reference, selfEntity, depth = 0) {
+    if (!isRuntimeObject(reference) || depth > 2) return null;
+    if (!isSameRuntimeEntity(reference, selfEntity) && getRuntimeWorldPosition(reference)) return reference;
+
+    for (const key of ["entity", "target", "unit", "actor", "player", "object", "model", "owner"]) {
+      const nested = safeReadValue(reference, key);
+      if (!isRuntimeObject(nested) || nested === reference) continue;
+
+      const entity = unwrapRuntimeEntityReference(nested, selfEntity, depth + 1);
+      if (entity) return entity;
+    }
+
+    return null;
+  }
+
+  function findRuntimeEntityById(runtime, id, selfEntity) {
+    if (id === null || id === undefined || id === "") return null;
+
+    const expected = String(id);
+    return findBestRuntimeEntity(runtime, (value) => {
+      if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+
+      const actual = getRuntimeEntityId(value);
+      return actual !== undefined && String(actual) === expected ? 130 : 0;
+    });
+  }
+
+  function findBestRuntimeEntity(runtime, scoreEntity) {
+    const queue = getRuntimeSearchRoots(runtime).map((root) => ({ ...root, depth: 0 }));
+    const seen = new WeakSet();
+    let visited = 0;
+    let best = null;
+
+    for (let cursor = 0; cursor < queue.length && visited < TARGET_DISTANCE_MAX_OBJECTS; cursor++) {
+      const item = queue[cursor];
+      const value = item.value;
+      if (!isRuntimeObject(value) || seen.has(value)) continue;
+
+      seen.add(value);
+      visited++;
+
+      const score = Number(scoreEntity(value, item.path)) || 0;
+      if (score > 0 && (!best || score > best.score)) {
+        best = { entity: value, path: item.path, source: item.path, score };
+      }
+
+      if (item.depth >= TARGET_DISTANCE_MAX_DEPTH) continue;
+      const childLimit = item.depth === 0 ? 420 : 90;
+      for (const child of getRuntimeChildren(value, item.path, childLimit)) {
+        queue.push({ ...child, depth: item.depth + 1 });
+      }
+    }
+
+    return best;
+  }
+
+  function scoreLocalPlayerEntity(value, path) {
+    if (!getRuntimeWorldPosition(value)) return 0;
+
+    let score = 0;
+    if (/(\.|^)player$/i.test(path)) score += 90;
+    if (/local|myPlayer|self|controlled|character|hero|avatar/i.test(path)) score += 60;
+    if (safeReadValue(value, "isSelf") === true || safeReadValue(value, "isLocal") === true) score += 80;
+    if (getRuntimeNameValueLoose(value)) score += 10;
+    if (getRuntimeEntityId(value) !== undefined) score += 8;
+    return score;
+  }
+
+  function scoreSelectedTargetEntity(value, path, selfEntity) {
+    if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+
+    let score = 0;
+    if (/target|selected|focus/i.test(path)) score += 55;
+    for (const key of ["isTarget", "isTargeted", "targeted", "isSelected", "selected", "isCurrentTarget"]) {
+      if (safeReadValue(value, key) === true) score += 80;
+    }
+    if (getRuntimeNameValueLoose(value)) score += 12;
+    if (getRuntimeEntityId(value) !== undefined) score += 8;
+    return score >= 80 ? score : 0;
+  }
+
+  function getRuntimeSearchRoots(runtime) {
+    const roots = [{ value: runtime, path: "runtime" }];
+    if (runtime && runtime.engine) roots.push({ value: runtime.engine, path: "runtime.engine" });
+    return roots;
+  }
+
+  function getRuntimeEntityId(entity) {
+    for (const key of ["id", "entityId", "uid", "guid", "uuid", "networkId", "serverId"]) {
+      const value = safeReadValue(entity, key);
+      if (value !== null && value !== undefined && value !== "") return value;
+    }
+    return undefined;
+  }
+
+  function getRuntimeEntityLabel(entity) {
+    return getRuntimeNameValueLoose(entity) || String(getRuntimeEntityId(entity) ?? "unknown");
+  }
+
+  function isSameRuntimeEntity(left, right) {
+    if (!left || !right) return false;
+    if (left === right) return true;
+
+    const leftId = getRuntimeEntityId(left);
+    const rightId = getRuntimeEntityId(right);
+    return leftId !== undefined && rightId !== undefined && String(leftId) === String(rightId);
+  }
+
+  function getHorizontalRuntimeDistance(left, right) {
+    const dx = Number(left[0]) - Number(right[0]);
+    const dz = Number(left[2]) - Number(right[2]);
+    if (Number.isFinite(dx) && Number.isFinite(dz)) return Math.hypot(dx, dz);
+
+    const dy = Number(left[1]) - Number(right[1]);
+    return Math.hypot(dx, dy);
+  }
+
+  function getRuntimeVectorDistance(left, right) {
+    return Math.hypot(
+      Number(left[0]) - Number(right[0]),
+      Number(left[1]) - Number(right[1]),
+      Number(left[2]) - Number(right[2])
+    );
   }
 
   function getElementSelector(element) {
@@ -5245,6 +5518,7 @@
             <div class="section">
               <div class="row"><span class="label">남은 시간</span><span id="eventRemaining" class="value"></span></div>
               <div class="row"><span class="label">다음</span><span id="eventNext" class="value"></span></div>
+              <div class="row"><span class="label">타겟 거리</span><span id="targetDistance" class="value"></span></div>
               <div id="eventSchedule" class="schedule"></div>
             </div>
             <div class="actions">
@@ -5327,19 +5601,7 @@
       event.stopImmediatePropagation();
     };
 
-    [
-      "keydown",
-      "keypress",
-      "keyup",
-      "beforeinput",
-      "input",
-      "compositionstart",
-      "compositionupdate",
-      "compositionend",
-      "paste",
-      "copy",
-      "cut",
-    ].forEach((type) => {
+    STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
       pageWindow.addEventListener(type, guard, true);
       document.addEventListener(type, guard, true);
     });
@@ -5380,14 +5642,14 @@
     const input = shadow.getElementById("highlightInput");
     if (!input) return;
 
-    ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "touchstart", "touchend"].forEach((type) => {
+    HIGHLIGHT_INPUT_POINTER_EVENTS.forEach((type) => {
       input.addEventListener(type, (event) => {
         event.stopPropagation();
         pageWindow.requestAnimationFrame(() => input.focus({ preventScroll: true }));
       });
     });
 
-    ["keydown", "keypress", "keyup", "beforeinput", "input", "paste", "copy", "cut", "compositionstart", "compositionupdate", "compositionend"].forEach((type) => {
+    STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
       input.addEventListener(type, (event) => {
         event.stopPropagation();
       });
@@ -5479,14 +5741,6 @@
     STATUS_UI.resizeObserver.observe(panel);
   }
 
-  function setUiScale(delta) {
-    UI_CONFIG.fontScale = clamp((UI_CONFIG.fontScale || 1) + delta, 0.85, 1.25);
-    UI_CONFIG.width = clamp((UI_CONFIG.width || 320) + delta * 600, 280, 520);
-    saveJsonConfig(UI_CONFIG_KEY, UI_CONFIG);
-    applyUiConfig();
-    renderStatusUi();
-  }
-
   function resetUiConfig() {
     UI_CONFIG.x = null;
     UI_CONFIG.y = null;
@@ -5532,6 +5786,7 @@
     shadow.getElementById("toggle").textContent = enabled ? "번역 끄기" : "번역 켜기";
     shadow.getElementById("toggleHighlight").textContent = HIGHLIGHT_CONFIG.enabled ? "강조 끄기" : "강조 켜기";
     renderEventUi(shadow);
+    renderTargetDistanceUi(shadow);
     renderHighlightUi(shadow);
   }
 
@@ -5577,6 +5832,34 @@
     );
   }
 
+  function renderTargetDistanceUi(shadow) {
+    const targetDistance = shadow.getElementById("targetDistance");
+    if (!targetDistance) return;
+
+    if (!STATUS_UI.panelOpen) {
+      targetDistance.textContent = "-";
+      targetDistance.title = "";
+      return;
+    }
+
+    const result = getTargetDistance(false);
+    if (!result.available) {
+      targetDistance.textContent = "-";
+      targetDistance.title = result.reason || "";
+      return;
+    }
+
+    const targetName = result.target && result.target.name ? result.target.name : "대상";
+    targetDistance.textContent = `${formatTargetDistance(result.distance)} (${targetName})`;
+    targetDistance.title = `3D ${formatTargetDistance(result.distance3d)} / ${result.target.referenceSource || result.target.path}`;
+  }
+
+  function formatTargetDistance(distance) {
+    const value = Number(distance);
+    if (!Number.isFinite(value)) return "-";
+    return value < 100 ? value.toFixed(1) : String(Math.round(value));
+  }
+
   function renderEventUi(shadow) {
     if (!EVENT_STATE.current) updateEventState();
 
@@ -5607,18 +5890,6 @@
         return row;
       })
     );
-  }
-
-  function getAlarmButtonText() {
-    if (!EVENT_CONFIG.alarmsEnabled) return "알림 켜기";
-    if (
-      !EVENT_CONFIG.browserNotification &&
-      "Notification" in pageWindow &&
-      pageWindow.Notification.permission === "default"
-    ) {
-      return "권한 요청";
-    }
-    return "알림 끄기";
   }
 
   function getBadgeState(enabled, isApplied, isReady, isBusy, isError) {
