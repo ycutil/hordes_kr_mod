@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.7
-// @description  Korean localization override for Hordes.io. Chat live translation is intentionally excluded.
+// @version      0.9.91-local
+// @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
 // @match        https://www.hordes.io/*
 // @run-at       document-start
 // @grant        unsafeWindow
+// @grant        GM_xmlhttpRequest
+// @connect      api.openai.com
 // @inject-into  page
 // @updateURL    https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
 // @downloadURL  https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
@@ -16,9 +18,13 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
+  const BOOT_VERSION = "0.9.91-local";
+  markUserscriptStarted("entry");
+  installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
 
   if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
+    markUserscriptStarted("sandbox");
     if (unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__) return;
     unsafeWindow.__HORDES_KR_MOD_BOOTSTRAPPED__ = true;
 
@@ -36,7 +42,124 @@
     };
 
     injectIntoPage();
+    installBootstrapFallbackStatus();
     return;
+  }
+
+  markUserscriptStarted("page");
+
+  function markUserscriptStarted(stage) {
+    const marker = `${BOOT_VERSION}:${stage}:${Date.now()}`;
+    try {
+      window.__HORDES_KR_USERSCRIPT_STARTED__ = marker;
+    } catch {
+      // Marker is diagnostic only.
+    }
+
+    try {
+      if (typeof unsafeWindow !== "undefined") {
+        unsafeWindow.__HORDES_KR_USERSCRIPT_STARTED__ = marker;
+      }
+    } catch {
+      // Cross-context marker is best-effort.
+    }
+
+    const markDom = () => {
+      const root = document.documentElement;
+      if (!root) return false;
+      root.setAttribute("data-hordes-kr-userscript-started", marker);
+      root.setAttribute("data-hordes-kr-userscript-version", BOOT_VERSION);
+      return true;
+    };
+
+    try {
+      if (!markDom()) {
+        setTimeout(markDom, 0);
+        document.addEventListener("DOMContentLoaded", markDom, { once: true });
+      }
+    } catch {
+      // DOM marker is best-effort.
+    }
+  }
+
+  function installBootstrapFallbackStatus() {
+    setTimeout(() => {
+      try {
+        const targetWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+        if (targetWindow.HordesKrMod) return;
+        if (document.getElementById("hordes-kr-mod-status-root")) return;
+        showBootstrapFailureBadge("KR Mod 로딩 실패", [
+          "Tampermonkey sandbox에서는 실행됐지만 page-context 주입에 실패했습니다.",
+          "",
+          "확인할 것:",
+          "1. Tampermonkey 사이트 접근 권한이 hordes.io에서 켜져 있는지",
+          "2. 설치된 스크립트가 최신인지",
+          "3. 다른 확장/브라우저 정책이 inline script 주입을 막는지",
+          "",
+          "콘솔에서 HordesKrMod가 undefined면 이 문제입니다.",
+        ]);
+      } catch {
+        // Fallback UI is diagnostic only; never block the page.
+      }
+    }, 1800);
+  }
+
+  function showBootstrapFailureBadge(label, detailLines) {
+    const fallbackId = "hordes-kr-mod-bootstrap-fallback-root";
+
+    const mountFallback = () => {
+      try {
+        if (document.getElementById("hordes-kr-mod-status-root")) return;
+        if (document.getElementById(fallbackId)) return;
+        if (!document.body) {
+          setTimeout(mountFallback, 250);
+          return;
+        }
+
+        const host = document.createElement("div");
+        host.id = fallbackId;
+        host.style.cssText = [
+          "all: initial",
+          "position: fixed",
+          "right: 2px",
+          "bottom: 2px",
+          "z-index: 2147483647",
+          "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          "pointer-events: auto",
+        ].join(";");
+        document.body.appendChild(host);
+
+        const shadow = host.attachShadow({ mode: "open" });
+        shadow.innerHTML = `
+          <style>
+            * { box-sizing: border-box; }
+            button {
+              border: 1px solid rgba(245, 194, 71, 0.75);
+              background: rgba(16, 19, 29, 0.94);
+              color: #f5c247;
+              border-radius: 6px;
+              padding: 7px 10px;
+              font: 800 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              cursor: pointer;
+              box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+            }
+            button:hover { border-color: #ffffff; color: #ffffff; }
+          </style>
+          <button id="fallback" type="button"></button>
+        `;
+
+        const button = shadow.getElementById("fallback");
+        button.textContent = label || "KR Mod 로딩 실패";
+        button.title = "Hordes KR Mod 진단 메시지";
+        button.addEventListener("click", () => {
+          alert((detailLines || ["Hordes KR Mod 초기화에 실패했습니다."]).join("\n"));
+        });
+      } catch {
+        // Fallback UI is diagnostic only.
+      }
+    };
+
+    mountFallback();
   }
 
   function installEarlyClientScriptGate() {
@@ -44,7 +167,7 @@
 
     try {
       if (localStorage.getItem("hordesKrMod.scriptGate.disabled") === "true") return;
-      if (localStorage.getItem("hordesKrMod.scriptGate.enabled") !== "true") return;
+      if (localStorage.getItem("hordesKrMod.scriptGate.enabled") !== "force") return;
       if (document.getElementById("hordes-kr-script-gate")) return;
 
       const root = document.documentElement;
@@ -70,23 +193,315 @@
     }
   }
 
-  const MOD_VERSION = "0.9.7";
+  function installUserscriptOpenAiBridge() {
+    if (typeof GM_xmlhttpRequest !== "function") return;
+    const targetWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+    if (targetWindow.__HORDES_KR_OPENAI_BRIDGE_INSTALLED__) return;
+    targetWindow.__HORDES_KR_OPENAI_BRIDGE_INSTALLED__ = true;
+    window.__HORDES_KR_OPENAI_BRIDGE_INSTALLED__ = true;
+    try {
+      targetWindow.__HORDES_KR_OPENAI_BRIDGE_READY__ = true;
+    } catch {
+      // The page falls back to direct fetch when the bridge marker is unavailable.
+    }
+
+    targetWindow.addEventListener("message", (event) => {
+      if (event.origin && event.origin !== location.origin) return;
+
+      const message = event.data;
+      if (!message || message.type !== "HORDES_KR_MOD_OPENAI_REQUEST") return;
+      if (message.source !== "HordesKrMod") return;
+
+      const requestId = String(message.id || "");
+      const apiKey = String(message.apiKey || "").trim();
+      if (!requestId || !apiKey || !message.body) return;
+
+      const pageSentAt = Number(message.sentAt) || null;
+      const bridgeReceivedAt = Date.now();
+      const gmStartAt = Date.now();
+
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: "https://api.openai.com/v1/responses",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify(message.body),
+        timeout: 12000,
+        onload(response) {
+          const gmEndAt = Date.now();
+          targetWindow.postMessage({
+            source: "HordesKrMod",
+            type: "HORDES_KR_MOD_OPENAI_RESPONSE",
+            id: requestId,
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            responseText: response.responseText || "",
+            timing: {
+              pageSentAt,
+              bridgeReceivedAt,
+              gmStartAt,
+              gmEndAt,
+            },
+          }, location.origin);
+        },
+        ontimeout() {
+          const gmEndAt = Date.now();
+          targetWindow.postMessage({
+            source: "HordesKrMod",
+            type: "HORDES_KR_MOD_OPENAI_RESPONSE",
+            id: requestId,
+            ok: false,
+            status: 0,
+            responseText: "OpenAI request timed out",
+            timing: {
+              pageSentAt,
+              bridgeReceivedAt,
+              gmStartAt,
+              gmEndAt,
+            },
+          }, location.origin);
+        },
+        onerror(error) {
+          const gmEndAt = Date.now();
+          targetWindow.postMessage({
+            source: "HordesKrMod",
+            type: "HORDES_KR_MOD_OPENAI_RESPONSE",
+            id: requestId,
+            ok: false,
+            status: 0,
+            responseText: error && error.error ? String(error.error) : "OpenAI request failed",
+            timing: {
+              pageSentAt,
+              bridgeReceivedAt,
+              gmStartAt,
+              gmEndAt,
+            },
+          }, location.origin);
+        },
+      });
+    });
+  }
+
+  const MOD_VERSION = BOOT_VERSION;
   const ENABLED_KEY = "hordesKrMod.translation.enabled";
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
-  const EVENT_CONFIG_KEY = "hordesKrMod.events.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
+  const FEATURE_CONFIG_KEY = "hordesKrMod.features.config";
+  const PARTY_UI_CONFIG_KEY = "hordesKrMod.partyUi.config";
+  const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
+  const GEAR_PRESET_CONFIG_KEY = "hordesKrMod.gearPreset.config";
+  const SKILL_PRESET_CONFIG_KEY = "hordesKrMod.skillPreset.config";
+  const CHAT_TRANSLATION_API_KEY_KEY = "hordesKrMod.chatTranslation.apiKey";
+  const CHAT_TRANSLATION_MODEL_KEY = "hordesKrMod.chatTranslation.model";
+  const CHAT_TRANSLATION_MODEL_MIGRATION_KEY = "hordesKrMod.chatTranslation.modelMigration";
   const SCRIPT_GATE_DISABLED_KEY = "hordesKrMod.scriptGate.disabled";
   const SCRIPT_GATE_ENABLED_KEY = "hordesKrMod.scriptGate.enabled";
   const HIGHLIGHT_DEFAULTS_VERSION_KEY = "hordesKrMod.highlight.defaultsVersion";
   const HIGHLIGHT_DEFAULTS_VERSION = "2026-05-12-ho2-hmage";
+  const MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY = "hordesKrMod.highlight.minimapListScaleDefaultVersion";
+  const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
-  const HOUR_MS = 60 * 60 * 1000;
-  const MINUTE_MS = 60 * 1000;
   const RUNTIME_OVERLAY_INTERVAL_MS = 100;
+  const RUNTIME_NAME_OVERLAY_REFRESH_MS = 130;
+  const MINIMAP_OVERLAY_REFRESH_MS = 200;
+  const PRESET_QUICKBAR_REFRESH_MS = 500;
+  const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
   const TARGET_DISTANCE_CACHE_MS = 100;
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
+  const INCOMING_SKILL_LIST_MAX_ROWS = 6;
+  const MINIMAP_DEFAULT_SCALE = 0.6;
+  const MINIMAP_LIST_DEFAULT_SCALE = 1.5;
+  const MINIMAP_LIST_MIN_SCALE = 0.75;
+  const CHAT_TRANSLATION_DEFAULT_MODEL = "gpt-4.1-nano";
+  const CHAT_TRANSLATION_MODEL_MIGRATION_VERSION = "2026-05-21-gpt-4.1-nano";
+  const CHAT_TRANSLATION_PREVIOUS_DEFAULT_MODELS = new Set(["gpt-5-nano"]);
+  const CHAT_TRANSLATION_SCAN_DELAY_MS = 20;
+  const CHAT_TRANSLATION_TIMEOUT_MS = 12000;
+  const CHAT_TRANSLATION_SCAN_LIMIT = 10;
+  const CHAT_TRANSLATION_MAX_QUEUE = 12;
+  const CHAT_TRANSLATION_MAX_CACHE = 300;
+  const CHAT_TRANSLATION_CACHE_TTL_MS = 30 * 60 * 1000;
+  const CHAT_TRANSLATION_MAX_CONCURRENT = 4;
+  const CHAT_TRANSLATION_BATCH_SIZE = 1;
+  const CHAT_TRANSLATION_MAX_TEXT_LENGTH = 220;
+  const CHAT_TRANSLATION_TOGGLE_REFRESH_MS = 350;
+  const CHAT_TRANSLATION_ALLOWED_CHANNELS = new Set(["faction", "party", "yell", "whisper"]);
+  const CHAT_TRANSLATION_BRIDGE_REQUEST = "HORDES_KR_MOD_OPENAI_REQUEST";
+  const CHAT_TRANSLATION_BRIDGE_RESPONSE = "HORDES_KR_MOD_OPENAI_RESPONSE";
+  const CHAT_TRANSLATION_LOCAL_EXACT = new Map([
+    ["afk", "잠수요"],
+    ["back", "빠져요"],
+    ["boss", "보스"],
+    ["boss?", "보스?"],
+    ["brb", "잠시만요"],
+    ["can someone summon me", "소환해줄 수 있나요?"],
+    ["come", "와주세요"],
+    ["come here", "여기로 와주세요"],
+    ["enemy pushing east", "적이 동쪽으로 밀고 있어요"],
+    ["enemy pushing mid", "적이 중앙으로 밀고 있어요"],
+    ["enemy pushing middle", "적이 중앙으로 밀고 있어요"],
+    ["enemy pushing north", "적이 북쪽으로 밀고 있어요"],
+    ["enemy pushing south", "적이 남쪽으로 밀고 있어요"],
+    ["enemy pushing west", "적이 서쪽으로 밀고 있어요"],
+    ["fall back", "빠져요"],
+    ["focus", "타겟 집중"],
+    ["focus healer", "힐러부터 집중"],
+    ["focus healer first", "힐러 먼저 집중"],
+    ["focus healer first please", "힐러 먼저 집중"],
+    ["focus heal", "힐러부터 집중"],
+    ["focus heals", "힐러부터 집중"],
+    ["focus heals first", "힐러 먼저 집중"],
+    ["focus heals first please", "힐러 먼저 집중"],
+    ["follow", "따라오세요"],
+    ["follow me", "따라오세요"],
+    ["g", "지금!"],
+    ["gg", "수고했어요"],
+    ["ggs", "수고했어요"],
+    ["gj", "잘했어요"],
+    ["gl", "행운을 빌어요"],
+    ["go", "갑시다"],
+    ["go go", "갑시다"],
+    ["gogo", "갑시다"],
+    ["heal me", "힐 주세요"],
+    ["heal pls", "힐 주세요"],
+    ["heals pls", "힐 주세요"],
+    ["healer oom", "힐러 마나 없어요"],
+    ["healer oom wait", "힐러 마나 없으니 기다려요"],
+    ["hello", "안녕하세요"],
+    ["help", "도와주세요"],
+    ["help me", "도와주세요"],
+    ["hi", "안녕하세요"],
+    ["hey", "안녕하세요"],
+    ["inv", "초대해주세요"],
+    ["inv me", "초대해주세요"],
+    ["invite", "초대해주세요"],
+    ["invite me", "초대해주세요"],
+    ["kill healer", "힐러 먼저 잡아주세요"],
+    ["kill healer first", "힐러 먼저 잡아주세요"],
+    ["kill heals", "힐러 먼저 잡아주세요"],
+    ["kill heals first", "힐러 먼저 잡아주세요"],
+    ["lf boss", "보스 파티 구해요"],
+    ["lfg", "파티 구해요"],
+    ["lfp", "파티원 구해요"],
+    ["lol", "ㅋㅋ"],
+    ["lmao", "ㅋㅋ"],
+    ["mana", "마나 없어요"],
+    ["need heal", "힐 필요해요"],
+    ["need heals", "힐 필요해요"],
+    ["need help", "도움 필요해요"],
+    ["need help at boss", "보스 도움 필요해요"],
+    ["no", "아니요"],
+    ["nope", "아니요"],
+    ["np", "괜찮아요"],
+    ["obelisk", "오벨리스크"],
+    ["obelisk?", "오벨리스크?"],
+    ["omw", "가는 중"],
+    ["oom", "마나 없어요"],
+    ["party", "파티"],
+    ["party?", "파티 가능?"],
+    ["pt", "파티"],
+    ["pt?", "파티 가능?"],
+    ["push", "밀어요"],
+    ["push east now", "지금 동쪽 밀어요"],
+    ["push in", "밀고 들어가요"],
+    ["push mid now", "지금 중앙 밀어요"],
+    ["push middle now", "지금 중앙 밀어요"],
+    ["push north now", "지금 북쪽 밀어요"],
+    ["push south now", "지금 남쪽 밀어요"],
+    ["push west now", "지금 서쪽 밀어요"],
+    ["r", "지금!"],
+    ["r?", "준비됐나요?"],
+    ["raw", "봇들 정리하자"],
+    ["raw left", "왼쪽 봇들 정리하자"],
+    ["raw mid", "중앙 봇들 정리하자"],
+    ["raw middle", "중앙 봇들 정리하자"],
+    ["raw right", "오른쪽 봇들 정리하자"],
+    ["ready", "준비됐어요"],
+    ["ready?", "준비됐나요?"],
+    ["run", "도망쳐요"],
+    ["run away", "도망쳐요"],
+    ["sec", "잠깐만요"],
+    ["stack", "모여요"],
+    ["stop", "멈춰요"],
+    ["sure", "네"],
+    ["thx", "고마워요"],
+    ["thanks", "고마워요"],
+    ["thank you", "고마워요"],
+    ["ty", "고마워요"],
+    ["wait", "잠시만요"],
+    ["wait for healer before push", "힐러 기다렸다가 밀어요"],
+    ["wait please", "잠시만요"],
+    ["wait pls", "잠시만요"],
+    ["deep", "중앙으로 광역스킬"],
+    ["deep mid", "중앙으로 광역스킬"],
+    ["deep, mid", "중앙으로 광역스킬"],
+    ["deep,mid", "중앙으로 광역스킬"],
+    ["mid", "중앙으로 광역스킬"],
+    ["middle", "중앙으로 광역스킬"],
+    ["on me", "내 위로 광역스킬"],
+    ["onme", "내 위로 광역스킬"],
+    ["where", "어디?"],
+    ["where?", "어디?"],
+    ["where are you", "어디세요?"],
+    ["y", "네"],
+    ["yeah", "네"],
+    ["yes", "네"],
+    ["yo", "안녕하세요"],
+  ]);
+  const PARTY_UI_REFRESH_MS = 500;
+  const PARTY_UI_FRAME_WIDTH = 200;
+  const PARTY_UI_FRAME_HEIGHT = 27;
+  const PARTY_UI_GRID_GAP = 4;
+  const TARGET_ORDER_DEFAULT_HOTKEY_CODE = "KeyG";
+  const TARGET_ORDER_PENDING_MS = 3000;
+  const TARGET_ORDER_RECONNECT_MS = 3000;
+  const TARGET_ORDER_ALERT_OFFSET_TOP = "22vh";
+  const GEAR_PRESET_DEFAULT_NAME = "default";
+  const GEAR_PRESET_QUICK_NAMES = ["1", "2", "3"];
+  const SKILL_PRESET_DEFAULT_NAME = "default";
+  const SKILL_PRESET_QUICK_NAMES = ["1", "2", "3"];
+  const GEAR_PRESET_EQUIP_DELAY_MS = 110;
+  const GEAR_PRESET_VERIFY_RETRY_DELAYS_MS = [200, 400, 800, 1400, 2200];
+  const HORDES_CLIENT_COMMAND_HEADER = 5;
+  const HORDES_WEB_SOCKET_OPEN = 1;
+  const GEAR_EQUIP_SLOT_SET = new Set([101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111]);
+  const GEAR_PRESET_EXACT_UNEQUIP_SLOTS = [101, 102, 103, 105, 106, 107, 108, 109, 110, 111];
+  const GEAR_EQUIP_SLOT_BY_TYPE = {
+    hammer: 101,
+    bow: 101,
+    staff: 101,
+    sword: 101,
+    armlet: 102,
+    armor: 103,
+    bag: 104,
+    boot: 105,
+    glove: 106,
+    ring: 107,
+    amulet: 108,
+    quiver: 109,
+    shield: 109,
+    totem: 109,
+    orb: 109,
+    charm: 110,
+  };
+  const GEAR_PRESET_NON_EQUIP_TYPES = new Set([
+    "book",
+    "currency",
+    "material",
+    "misc",
+    "mount",
+    "pet",
+    "potion",
+    "quest",
+    "rune",
+    "scroll",
+    "skillbook",
+    "token",
+  ]);
   const STATUS_UI_KEYBOARD_EVENTS = [
     "keydown",
     "keypress",
@@ -109,23 +524,6 @@
     "touchstart",
     "touchend",
   ];
-  const EVENT_PHASES = {
-    obelisk: {
-      name: "Obelisk",
-      label: "오벨리스크",
-      description: "PvP 이벤트",
-    },
-    gloomfury: {
-      name: "Gloomfury",
-      label: "Gloomfury",
-      description: "월드 보스",
-    },
-    rest: {
-      name: "Rest",
-      label: "휴식",
-      description: "다음 이벤트 준비",
-    },
-  };
   const UI_CONFIG = loadJsonConfig(UI_CONFIG_KEY, {
     x: null,
     y: null,
@@ -133,26 +531,94 @@
     height: null,
     fontScale: 1,
   });
-  const EVENT_CONFIG = loadJsonConfig(EVENT_CONFIG_KEY, {
-    alarmsEnabled: true,
-    soundEnabled: false,
-    browserNotification: false,
-    alarmMinutes: [10, 5, 1],
+  const FEATURE_CONFIG = loadJsonConfig(FEATURE_CONFIG_KEY, {
+    domTranslationEnabled: true,
+    targetDistanceEnabled: true,
+    incomingSkillOverlayEnabled: true,
+    incomingSkillListEnabled: true,
+    incomingTargetWatchEnabled: true,
+    chatTranslationEnabled: false,
   });
+  FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
+  FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
+  FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
+  FEATURE_CONFIG.incomingSkillListEnabled = FEATURE_CONFIG.incomingSkillListEnabled !== false;
+  FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+  FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
+  const PARTY_UI_CONFIG = loadJsonConfig(PARTY_UI_CONFIG_KEY, {
+    enabled: true,
+    preset: "default",
+    x: null,
+    y: null,
+    columns: 1,
+    frameWidth: PARTY_UI_FRAME_WIDTH,
+    gap: PARTY_UI_GRID_GAP,
+  });
+  PARTY_UI_CONFIG.enabled = PARTY_UI_CONFIG.enabled !== false;
+  PARTY_UI_CONFIG.preset = typeof PARTY_UI_CONFIG.preset === "string" ? PARTY_UI_CONFIG.preset : "default";
+  PARTY_UI_CONFIG.columns = clamp(Number(PARTY_UI_CONFIG.columns) || 1, 1, 5);
+  PARTY_UI_CONFIG.frameWidth = clamp(Number(PARTY_UI_CONFIG.frameWidth) || PARTY_UI_FRAME_WIDTH, 150, 240);
+  PARTY_UI_CONFIG.gap = clamp(Number(PARTY_UI_CONFIG.gap) || PARTY_UI_GRID_GAP, 0, 10);
+  const TARGET_ORDER_CONFIG = loadJsonConfig(TARGET_ORDER_CONFIG_KEY, {
+    enabled: false,
+    alertEnabled: true,
+    serverUrl: "",
+    roomId: "",
+    userName: "",
+    clientToken: "",
+    hotkeyCode: TARGET_ORDER_DEFAULT_HOTKEY_CODE,
+  });
+  TARGET_ORDER_CONFIG.enabled = TARGET_ORDER_CONFIG.enabled === true;
+  TARGET_ORDER_CONFIG.alertEnabled = TARGET_ORDER_CONFIG.alertEnabled !== false;
+  TARGET_ORDER_CONFIG.serverUrl = String(TARGET_ORDER_CONFIG.serverUrl || "").trim();
+  TARGET_ORDER_CONFIG.roomId = String(TARGET_ORDER_CONFIG.roomId || "").trim();
+  TARGET_ORDER_CONFIG.userName = String(TARGET_ORDER_CONFIG.userName || "").trim();
+  TARGET_ORDER_CONFIG.clientToken = String(TARGET_ORDER_CONFIG.clientToken || "").trim();
+  TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
+  const GEAR_PRESET_CONFIG = loadJsonConfig(GEAR_PRESET_CONFIG_KEY, {
+    presets: {},
+    lastPreset: GEAR_PRESET_DEFAULT_NAME,
+  });
+  if (!isObject(GEAR_PRESET_CONFIG.presets)) GEAR_PRESET_CONFIG.presets = {};
+  GEAR_PRESET_CONFIG.lastPreset = String(GEAR_PRESET_CONFIG.lastPreset || GEAR_PRESET_DEFAULT_NAME);
+  const SKILL_PRESET_CONFIG = loadJsonConfig(SKILL_PRESET_CONFIG_KEY, {
+    presets: {},
+    lastPreset: SKILL_PRESET_DEFAULT_NAME,
+  });
+  if (!isObject(SKILL_PRESET_CONFIG.presets)) SKILL_PRESET_CONFIG.presets = {};
+  SKILL_PRESET_CONFIG.lastPreset = String(SKILL_PRESET_CONFIG.lastPreset || SKILL_PRESET_DEFAULT_NAME);
   const HIGHLIGHT_CONFIG = loadJsonConfig(HIGHLIGHT_CONFIG_KEY, {
     names: DEFAULT_HIGHLIGHT_NAMES,
     enabled: true,
+    domEnabled: true,
     canvasEnabled: true,
     runtimeOverlayEnabled: true,
+    minimapLabelsEnabled: true,
+    minimapListEnabled: true,
+    minimapListScale: MINIMAP_LIST_DEFAULT_SCALE,
+    minimapListX: null,
+    minimapListY: null,
+    presetBarX: null,
+    presetBarY: null,
     hideClanNames: true,
     nameplateStyle: null,
   });
   if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
+  HIGHLIGHT_CONFIG.domEnabled = HIGHLIGHT_CONFIG.domEnabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
-  HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
+  HIGHLIGHT_CONFIG.runtimeOverlayEnabled = true;
+  HIGHLIGHT_CONFIG.minimapLabelsEnabled = HIGHLIGHT_CONFIG.minimapLabelsEnabled !== false;
+  HIGHLIGHT_CONFIG.minimapListEnabled = HIGHLIGHT_CONFIG.minimapListEnabled !== false;
+  HIGHLIGHT_CONFIG.minimapListScale = normalizeMinimapHighlightListScale(HIGHLIGHT_CONFIG.minimapListScale);
+  HIGHLIGHT_CONFIG.minimapListX = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.minimapListX);
+  HIGHLIGHT_CONFIG.minimapListY = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.minimapListY);
+  HIGHLIGHT_CONFIG.presetBarX = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.presetBarX);
+  HIGHLIGHT_CONFIG.presetBarY = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.presetBarY);
+  clearInvalidDefaultScreenCoordinatePair(HIGHLIGHT_CONFIG, "minimapListX", "minimapListY");
+  clearInvalidDefaultScreenCoordinatePair(HIGHLIGHT_CONFIG, "presetBarX", "presetBarY");
   HIGHLIGHT_CONFIG.hideClanNames = HIGHLIGHT_CONFIG.hideClanNames !== false;
-  applyDefaultHighlightNames();
+  syncGroupedHighlightConfig(HIGHLIGHT_CONFIG.enabled);
   const CACHE = new Map();
   const MOD_STATUS = {
     loadedAt: new Date(),
@@ -172,12 +638,97 @@
     resizeObserver: null,
     dragging: null,
   };
-  const EVENT_STATE = {
-    current: null,
-    next: null,
-    schedule: [],
-    firedAlarms: new Set(),
+  const DOM_TRANSLATION_STATE = {
+    observer: null,
+    dictionary: null,
+    loading: false,
+    pending: false,
+    queuedRoots: new Set(),
+  };
+  const CHAT_TRANSLATION_STATE = {
+    observer: null,
+    quickToggleHost: null,
+    quickToggleTimer: null,
+    quickToggleRenderKey: "",
+    pendingScan: false,
+    activeRequests: 0,
+    queue: [],
+    queuedKeys: new Set(),
+    cache: new Map(),
+    inFlight: new Map(),
+    translatedCount: 0,
+    requestCount: 0,
+    batchRequestCount: 0,
+    localHitCount: 0,
+    cacheHits: 0,
+    skippedCount: 0,
+    droppedCount: 0,
+    lastRequestDurationMs: null,
+    averageRequestDurationMs: null,
+    lastText: "",
+    lastTranslation: "",
+    lastChannel: "",
+    lastTransport: "",
+    lastBridgeTiming: null,
+    lastError: "",
+    lastAt: null,
+  };
+  migrateChatTranslationDefaultModel();
+  const PARTY_UI_STATE = {
+    frame: null,
+    handle: null,
+    observer: null,
     timer: null,
+    pendingUpdate: false,
+    dragging: null,
+    lastAppliedKey: "",
+    lastFrameCount: 0,
+    lastError: "",
+  };
+  const TARGET_ORDER_STATE = {
+    ws: null,
+    reconnectTimer: null,
+    alertTimer: null,
+    pendingCall: null,
+    alertHost: null,
+    lastState: "꺼짐",
+    lastError: "",
+    connectedAt: null,
+    lastReceivedAt: null,
+    lastSentAt: null,
+    sentCount: 0,
+    receivedCount: 0,
+    deniedCount: 0,
+    acceptedCount: 0,
+    users: [],
+    keyboardInstalled: false,
+    hotkeyCaptureActive: false,
+  };
+  const GEAR_PRESET_STATE = {
+    gameSocket: null,
+    socketWrapped: false,
+    running: false,
+    lastState: "대기",
+    lastError: "",
+    lastSavedAt: null,
+    lastRunAt: null,
+    lastResult: null,
+    pendingPresetName: "",
+    lastRequestedPresetName: "",
+    lastVerifiedPresetName: "",
+    progressOverlayHost: null,
+    progressOverlayTimer: null,
+  };
+  const SKILL_PRESET_STATE = {
+    running: false,
+    lastState: "대기",
+    lastError: "",
+    lastSavedAt: null,
+    lastRunAt: null,
+    lastResult: null,
+    pendingPresetName: "",
+    lastRequestedPresetName: "",
+    lastVerifiedPresetName: "",
   };
   const TARGET_DISTANCE_STATE = {
     lastAt: 0,
@@ -185,12 +736,16 @@
     overlayHost: null,
     overlayLabel: null,
     overlayHits: 0,
+    lastOverlayTickAt: 0,
     lastOverlayAt: 0,
     lastOverlayError: "",
     canvasHits: 0,
     lastCanvasAt: 0,
     lastCanvasText: "",
     lastCanvasDrawKey: "",
+    lastCanvasTargetMatch: null,
+    lastSelectedTarget: null,
+    lockedTarget: null,
   };
   const HIGHLIGHT_STATE = {
     observer: null,
@@ -206,13 +761,6 @@
     lastCanvasDrawAt: 0,
     lastCanvasImageDrawKey: "",
     lastCanvasImageDrawAt: 0,
-    canvasDrawSeq: 0,
-    pendingCanvasNames: [],
-    pendingCanvasNameFlushTimer: null,
-    canvasDynamicAlignHits: 0,
-    canvasDeferredNameHits: 0,
-    lastCanvasTextOverlayKey: "",
-    lastCanvasTextOverlayAt: 0,
     canvasInternalDraw: false,
     styleCapture: null,
     scriptHookInstalled: false,
@@ -225,12 +773,70 @@
     runtimeOverlayHost: null,
     runtimeOverlayItems: new Map(),
     runtimeOverlayTimer: null,
+    lastRuntimeOverlayTickAt: 0,
+    runtimeDeepScanCacheKey: "",
+    runtimeDeepScanAt: 0,
+    runtimeDeepScanCandidates: [],
     runtimeOverlayHits: 0,
     lastRuntimeOverlayAt: 0,
     lastRuntimeOverlayError: "",
     lastRuntimeOverlayMatches: [],
+    incomingSkillOverlayHits: 0,
+    lastIncomingSkillOverlayAt: 0,
+    lastIncomingSkillOverlayError: "",
+    lastIncomingSkillOverlayMatches: [],
+    incomingTargetWatchHits: 0,
+    lastIncomingTargetWatchAt: 0,
+    lastIncomingTargetWatchError: "",
+    lastIncomingTargetWatchMatches: [],
+    incomingSkillListHost: null,
+    incomingSkillListHits: 0,
+    lastIncomingSkillListAt: 0,
+    lastIncomingSkillListError: "",
+    lastIncomingSkillListMatches: [],
+    incomingSkillListRenderKey: "",
+    minimapOverlayHost: null,
+    minimapOverlayItems: new Map(),
+    minimapOverlayHits: 0,
+    lastMinimapOverlayTickAt: 0,
+    lastMinimapOverlayAt: 0,
+    lastMinimapOverlayError: "",
+    lastMinimapOverlayMatches: [],
+    minimapListHost: null,
+    minimapListHits: 0,
+    lastMinimapListAt: 0,
+    lastMinimapListError: "",
+    lastMinimapListMatches: [],
+    lastMinimapTargetResult: null,
+    minimapListRenderKey: "",
+    minimapListDragging: null,
+    presetBarHost: null,
+    lastPresetBarTickAt: 0,
+    presetBarRenderKey: "",
+    presetBarDragging: null,
   };
+  const HIGHLIGHT_NAME_CACHE = {
+    key: "",
+    names: [],
+    lowerNames: [],
+    matcherSource: "",
+  };
+  applyMinimapListScaleDefaultMigration();
+  applyDefaultHighlightNames();
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+  const originalFetch = pageWindow.fetch ? pageWindow.fetch.bind(pageWindow) : null;
+  if (!originalFetch) {
+    showBootstrapFailureBadge("KR Mod 초기화 실패", [
+      "window.fetch를 찾지 못해 초기화를 중단했습니다.",
+      "브라우저/확장 환경에서 페이지 전역 fetch가 막혀 있는 상태입니다.",
+      "",
+      "콘솔 진단:",
+      "document.documentElement.getAttribute('data-hordes-kr-userscript-started')",
+    ]);
+    return;
+  }
+
+  initGameScriptRuntimeHook();
 
   const KO_PATCH = {
     factions: {
@@ -1482,62 +2088,77 @@
       },
       charm: {
         0: {
+          name: "작은 종",
           description:
             "종은 선택한 신에게 바치는 헌신의 상징으로 자주 쓰입니다. 이 종 안쪽에는 은으로 새긴 글귀가 있지만, 그 해석은 세월 속에 사라졌습니다.",
         },
         1: {
+          name: "굳어진 알",
           description:
             "화석화된 몬스터 알은 장수의 상징으로 해석되는 경우가 많습니다. 하지만 이 생물들에 대한 기록은 최근 시대 이전에는 남아 있지 않습니다.",
         },
         2: {
+          name: "문신 새겨진 두개골",
           description:
             "오크 부족은 존경의 표시로 강한 적의 두개골을 보관하곤 합니다. 이 두개골에는 생전 그 적이 지녔던 힘을 상징하는 문신이 새겨져 있습니다.",
         },
         3: {
+          name: "함선 깃발",
           description:
             "전함 꼭대기에 게양된 깃발은 pennant라 불렸습니다. 이 선박 깃발은 Headless Landing에 처음 도착한 난파 전함들 중 하나에서 나온 것입니다.",
         },
         4: {
+          name: "푸른 구슬",
           description:
             "마나가 부족하던 시기에 마법사들은 마나를 얻는 대체 수단을 만들었습니다. 이 구슬은 마나 네트워크가 극심한 압박을 받던 Arcane Crisis 시기에 만들어졌습니다.",
         },
         5: {
+          name: "진홍 칼날",
           description:
             "Crimson Volcano의 녹아내린 심장에서 벼려진 이 도끼날은 적들이 앞에 쓰러져야만 만족하던 전사의 이야기를 속삭입니다.",
         },
         6: {
+          name: "갈퀴손아귀",
           description:
             "한밤중, Emdells의 발톱은 그림자조차 따라잡기 힘들 만큼 빠르게 내리쳤다고 전해집니다.",
         },
         7: {
+          name: "피의 의식",
           description:
             "Red Lion이 홀로 무리에 맞섰던 것처럼, 정수가 줄어들수록 결의는 굳어지고 공격은 더 깊어질 것입니다.",
         },
         8: {
+          name: "개구리 허파",
           description:
             "전설은 파도 아래에서도 숨 쉬기를 감행한 개구리 Dehnu를 속삭입니다. 그는 물에 잠기는 어둠에 맞서는 같은 저항의 힘을 여행자들에게 나누어 주었습니다.",
         },
         9: {
+          name: "숲의 장막",
           description:
             "숨겨진 숲 빈터의 수호 정령 Jylia는 속삭이는 숲에서 안식처를 찾는 이들을 감싸지만, 움직임은 그들의 존재를 드러냅니다.",
         },
         10: {
+          name: "요정 버섯",
           description:
             "Dhiwy의 마법에 닿은 이 버섯들은 용감한 이들을, 고대 별빛 아래 밤에 속삭이는 이야기만큼 작은 크기로 줄입니다.",
         },
         11: {
+          name: "유령 촛불",
           description:
             "한 유명한 연금술사는 촛불을 복제하던 중 자신의 의지대로 시간을 휘게 하는 방법을 발견했고, 눈 깜짝할 사이에 주문을 시전할 수 있게 되었습니다.",
         },
         12: {
+          name: "가시 방패",
           description:
             "Aurum Wraiths가 벼려낸 이 방패는 감히 공격하는 자에게 되받아치며, 꺾이지 않는 용기의 증거가 됩니다.",
         },
         13: {
+          name: "오크 두개골",
           description:
             "이야기도 신화도 아닙니다. 그저 오크의 정신을 몸에 담고, 사나운 자들만 이끼 냄새를 맡는 곳을 자유롭게 누비려는 순수한 의지입니다.",
         },
         14: {
+          name: "위험추구자의 도박",
           description:
             "전설적인 행운의 추구자가 한때 운명 그 자체와 도박을 벌였듯, 보유한 재물도 행운과 풍요로 바뀌어 대담한 이들에게 숨겨진 보물을 드러낼 수 있습니다.",
         },
@@ -1751,27 +2372,40 @@
           kills: "처치",
         },
         array: {
+          0: "힘",
+          1: "지구력",
+          2: "민첩",
           3: "지능",
+          4: "지혜",
+          5: "행운",
           6: "생명력",
           7: "마나",
           8: "생명력 재생/5초",
-          9: "MP 재생/5초",
+          9: "마나 재생/5초",
           10: "최소 피해",
           11: "최대 피해",
+          12: "방어력",
           13: "막기",
+          14: "치명타",
           15: "이동 속도",
           16: "가속",
+          17: "공격 속도",
           18: "아이템 발견",
           19: "가방 칸",
           20: "프레스티지",
+          21: "평점",
+          22: "스탯 포인트",
+          23: "스킬 포인트",
           24: "최대 스킬 포인트",
           25: "장비 점수",
+          26: "PvP 레벨",
           27: "크기",
           28: "투명화",
           29: "시야",
           30: "% 피해 증가",
           31: "% 어그로 생성 증가",
           32: "% 이동 속도 감소",
+          33: "치유량 감소",
         },
       },
       stash: {
@@ -1986,17 +2620,27 @@
     },
   };
 
-  const originalFetch = pageWindow.fetch ? pageWindow.fetch.bind(pageWindow) : null;
-  if (!originalFetch) return;
-
-  initCanvasTextHighlighter();
-  initGameScriptRuntimeHook();
-  initStatusUi();
-  installXhrInterceptor();
-  initDomTranslator();
-  initNameHighlighter();
-  initRuntimeNameOverlay();
-  initEventScheduler();
+  try {
+    initCanvasTextHighlighter();
+    initGameWebSocketCapture();
+    initStatusUi();
+    installXhrInterceptor();
+    initDomTranslator();
+    initChatTranslator();
+    initNameHighlighter();
+    initRuntimeNameOverlay();
+    initPartyUiManager();
+    initTargetOrderClient();
+  } catch (error) {
+    showBootstrapFailureBadge("KR Mod 초기화 실패", [
+      "Hordes KR Mod 초기화 중 오류가 발생했습니다.",
+      error && error.message ? error.message : String(error),
+      "",
+      "콘솔 진단:",
+      "document.documentElement.getAttribute('data-hordes-kr-userscript-started')",
+    ]);
+    throw error;
+  }
 
   pageWindow.fetch = async function hordesKrFetch(input, init) {
     const url = toUrl(input);
@@ -2007,25 +2651,13 @@
     return originalFetch(input, init);
   };
 
-	  pageWindow.HordesKrMod = {
+  pageWindow.HordesKrMod = {
     version: MOD_VERSION,
     enable() {
-      localStorage.setItem(ENABLED_KEY, "true");
-      CACHE.clear();
-      setStatus({
-        lastState: "켜짐 - 새로고침 필요",
-        lastError: "",
-      });
-      console.info("[Hordes KR Mod] Korean localization enabled. Refresh the page to apply from startup.");
+      return setTranslationEnabled(true);
     },
     disable() {
-      localStorage.setItem(ENABLED_KEY, "false");
-      CACHE.clear();
-      setStatus({
-        lastState: "꺼짐 - 새로고침 필요",
-        lastError: "",
-      });
-      console.info("[Hordes KR Mod] Korean localization disabled. Refresh the page to restore the game locale.");
+      return setTranslationEnabled(false);
     },
     clearCache() {
       CACHE.clear();
@@ -2036,7 +2668,7 @@
       console.info("[Hordes KR Mod] Localization cache cleared.");
     },
     enableScriptGate() {
-      localStorage.setItem(SCRIPT_GATE_ENABLED_KEY, "true");
+      localStorage.setItem(SCRIPT_GATE_ENABLED_KEY, "force");
       localStorage.removeItem(SCRIPT_GATE_DISABLED_KEY);
       return "스크립트 게이트 켜짐 - 새로고침 필요";
     },
@@ -2067,15 +2699,6 @@
     status() {
       return { ...MOD_STATUS, enabled: isEnabled() };
     },
-    eventStatus() {
-      updateEventState();
-      return {
-        config: { ...EVENT_CONFIG },
-        current: EVENT_STATE.current,
-        next: EVENT_STATE.next,
-        schedule: EVENT_STATE.schedule,
-      };
-    },
     targetDistance() {
       return getTargetDistance(true);
     },
@@ -2085,29 +2708,192 @@
     targetDistanceOverlayStatus() {
       return getTargetDistanceOverlayStatus();
     },
-    toggleEventAlarms() {
-      if (
-        EVENT_CONFIG.alarmsEnabled &&
-        !EVENT_CONFIG.browserNotification &&
-        "Notification" in pageWindow &&
-        pageWindow.Notification.permission === "default"
-      ) {
-        requestNotificationPermission();
-        renderStatusUi();
-        return EVENT_CONFIG.alarmsEnabled;
-      }
-
-      EVENT_CONFIG.alarmsEnabled = !EVENT_CONFIG.alarmsEnabled;
-      saveJsonConfig(EVENT_CONFIG_KEY, EVENT_CONFIG);
-      if (EVENT_CONFIG.alarmsEnabled) requestNotificationPermission();
-      renderStatusUi();
-      return EVENT_CONFIG.alarmsEnabled;
+    lockCurrentTargetDistance() {
+      return lockCurrentTargetDistance();
     },
-    toggleEventSound() {
-      EVENT_CONFIG.soundEnabled = !EVENT_CONFIG.soundEnabled;
-      saveJsonConfig(EVENT_CONFIG_KEY, EVENT_CONFIG);
+    lockTargetDistanceByName(name) {
+      return lockTargetDistanceByName(name);
+    },
+    lockTargetDistanceById(id, name) {
+      return lockTargetDistanceById(id, name, "manualId");
+    },
+    unlockTargetDistance() {
+      return unlockTargetDistance();
+    },
+    selectedTargetId() {
+      return getSelectedTargetIdStatus();
+    },
+    targetDistanceLockStatus() {
+      return getTargetDistanceLockStatus();
+    },
+    toggleTranslation() {
+      return setTranslationEnabled(!isEnabled());
+    },
+    toggleDomTranslation() {
+      return setTranslationEnabled(!isEnabled());
+    },
+    toggleTargetDistanceOverlay() {
+      FEATURE_CONFIG.targetDistanceEnabled = !FEATURE_CONFIG.targetDistanceEnabled;
+      saveFeatureConfig();
+      if (!FEATURE_CONFIG.targetDistanceEnabled) clearTargetDistanceOverlay();
       renderStatusUi();
-      return EVENT_CONFIG.soundEnabled;
+      return FEATURE_CONFIG.targetDistanceEnabled;
+    },
+    toggleIncomingSkillOverlay() {
+      FEATURE_CONFIG.incomingSkillOverlayEnabled = !FEATURE_CONFIG.incomingSkillOverlayEnabled;
+      saveFeatureConfig();
+      if (!isIncomingSkillListEnabled()) clearIncomingSkillList();
+      updateRuntimeNameOverlay();
+      renderStatusUi();
+      return FEATURE_CONFIG.incomingSkillOverlayEnabled;
+    },
+    toggleIncomingSkillList() {
+      FEATURE_CONFIG.incomingSkillListEnabled = !FEATURE_CONFIG.incomingSkillListEnabled;
+      saveFeatureConfig();
+      if (!FEATURE_CONFIG.incomingSkillListEnabled) clearIncomingSkillList();
+      updateRuntimeNameOverlay();
+      renderStatusUi();
+      return FEATURE_CONFIG.incomingSkillListEnabled;
+    },
+    toggleIncomingTargetWatch() {
+      FEATURE_CONFIG.incomingTargetWatchEnabled = !FEATURE_CONFIG.incomingTargetWatchEnabled;
+      saveFeatureConfig();
+      if (!FEATURE_CONFIG.incomingTargetWatchEnabled) {
+        HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
+      }
+      if (!isIncomingSkillListEnabled()) clearIncomingSkillList();
+      updateRuntimeNameOverlay();
+      renderStatusUi();
+      return FEATURE_CONFIG.incomingTargetWatchEnabled;
+    },
+    toggleChatTranslation() {
+      return setChatTranslationEnabled(!isChatTranslationEnabled());
+    },
+    setChatTranslationApiKey(apiKey) {
+      return setChatTranslationApiKey(apiKey);
+    },
+    clearChatTranslationApiKey() {
+      return clearChatTranslationApiKey();
+    },
+    setChatTranslationModel(model) {
+      return setChatTranslationModel(model);
+    },
+    async testChatTranslation(text) {
+      const startedAt = Date.now();
+      const sourceText = String(text || "hello party, focus sage first").trim();
+      const translation = await translateChatMessage(sourceText);
+      return {
+        sourceText,
+        translation,
+        durationMs: Date.now() - startedAt,
+        status: getChatTranslationStatus(),
+      };
+    },
+    chatTranslationStatus() {
+      return getChatTranslationStatus();
+    },
+    toggleTargetOrder() {
+      return setTargetOrderEnabled(!TARGET_ORDER_CONFIG.enabled);
+    },
+    toggleTargetOrderAlert() {
+      TARGET_ORDER_CONFIG.alertEnabled = !TARGET_ORDER_CONFIG.alertEnabled;
+      saveTargetOrderConfig();
+      if (!TARGET_ORDER_CONFIG.alertEnabled) clearTargetOrderAlert();
+      renderStatusUi();
+      return getTargetOrderStatus();
+    },
+    setTargetOrderConfig(config) {
+      return setTargetOrderConfig(config);
+    },
+    targetOrderStatus() {
+      return getTargetOrderStatus();
+    },
+    connectTargetOrder() {
+      return connectTargetOrder(true);
+    },
+    disconnectTargetOrder() {
+      stopTargetOrderClient("수동 연결 해제");
+      renderStatusUi();
+      return getTargetOrderStatus();
+    },
+    sendTargetOrder() {
+      return sendCurrentTargetOrder();
+    },
+    applyPendingTargetOrder() {
+      return applyPendingTargetOrder();
+    },
+    togglePartyUi() {
+      PARTY_UI_CONFIG.enabled = !PARTY_UI_CONFIG.enabled;
+      savePartyUiConfig();
+      updatePartyUi();
+      renderStatusUi();
+      return getPartyUiStatus();
+    },
+    partyUiPreset5x2() {
+      return applyPartyUiPreset5x2();
+    },
+    partyUiReset() {
+      return resetPartyUi();
+    },
+    partyUiStatus() {
+      return getPartyUiStatus();
+    },
+    scanBagGearItems() {
+      return scanVisibleBagGearItems().map(stripGearPresetElement);
+    },
+    scanRuntimeGearItems() {
+      return scanRuntimeGearItems().map(stripGearPresetElement);
+    },
+    scanEquippedGearItems() {
+      return scanRuntimeEquippedGearItems().map(stripGearPresetElement);
+    },
+    saveGearPreset(name) {
+      return saveGearPresetFromCurrentEquipment(name);
+    },
+    saveBagGearPreset(name) {
+      return saveGearPresetFromVisibleBag(name);
+    },
+    saveEquippedGearPreset(name) {
+      return saveGearPresetFromCurrentEquipment(name);
+    },
+    equipGearPreset(name) {
+      return runGearPresetByName(name);
+    },
+    equipVisibleBagGear() {
+      return equipVisibleBagGear();
+    },
+    gearPresetStatus() {
+      return getGearPresetStatus();
+    },
+    gearSocketStatus() {
+      return getGearSocketStatus();
+    },
+    sendItemMove(fromSlot, toSlot) {
+      return sendHordesItemMove(Number(fromSlot), Number(toSlot));
+    },
+    scanActiveSkills() {
+      return scanRuntimeActiveSkillIds();
+    },
+    scanSkillConfig() {
+      return getCurrentSkillConfigSummary();
+    },
+    saveSkillPreset(name) {
+      return saveSkillPresetFromCurrentConfig(name);
+    },
+    applySkillPreset(name) {
+      return runSkillPresetByName(name);
+    },
+    equipSkillPreset(name) {
+      return runSkillPresetByName(name);
+    },
+    skillPresetStatus() {
+      return getSkillPresetStatus();
+    },
+    sendSkillConfig(skillIds) {
+      return sendHordesSkillConfig(Array.isArray(skillIds) ? skillIds : String(skillIds || "").split(","));
+    },
+    featureStatus() {
+      return getFeatureStatus();
     },
     resetUi() {
       resetUiConfig();
@@ -2147,11 +2933,13 @@
       return [];
     },
     toggleNameHighlight() {
-      HIGHLIGHT_CONFIG.enabled = !HIGHLIGHT_CONFIG.enabled;
+      return setNameHighlightEnabled(!HIGHLIGHT_CONFIG.enabled);
+    },
+    toggleDomNameHighlight() {
+      HIGHLIGHT_CONFIG.domEnabled = !HIGHLIGHT_CONFIG.domEnabled;
       saveHighlightConfig();
       refreshNameHighlights();
-      updateRuntimeNameOverlay();
-      return HIGHLIGHT_CONFIG.enabled;
+      return HIGHLIGHT_CONFIG.domEnabled;
     },
     toggleCanvasNameHighlight() {
       HIGHLIGHT_CONFIG.canvasEnabled = !HIGHLIGHT_CONFIG.canvasEnabled;
@@ -2163,6 +2951,21 @@
       saveHighlightConfig();
       updateRuntimeNameOverlay();
       return HIGHLIGHT_CONFIG.runtimeOverlayEnabled;
+    },
+    toggleMinimapNameLabels() {
+      HIGHLIGHT_CONFIG.minimapLabelsEnabled = !HIGHLIGHT_CONFIG.minimapLabelsEnabled;
+      saveHighlightConfig();
+      if (!HIGHLIGHT_CONFIG.minimapLabelsEnabled) clearMinimapNameOverlay();
+      updateRuntimeNameOverlay();
+      return HIGHLIGHT_CONFIG.minimapLabelsEnabled;
+    },
+    toggleMinimapHighlightList() {
+      HIGHLIGHT_CONFIG.minimapListEnabled = !HIGHLIGHT_CONFIG.minimapListEnabled;
+      saveHighlightConfig();
+      if (!HIGHLIGHT_CONFIG.minimapListEnabled) clearMinimapHighlightList();
+      updateRuntimeNameOverlay();
+      renderStatusUi();
+      return HIGHLIGHT_CONFIG.minimapListEnabled;
     },
     toggleClanNameHide() {
       HIGHLIGHT_CONFIG.hideClanNames = !HIGHLIGHT_CONFIG.hideClanNames;
@@ -2178,7 +2981,50 @@
     runtimeOverlayStatus() {
       return getRuntimeOverlayStatus();
     },
+    minimapOverlayStatus() {
+      return getMinimapOverlayStatus();
+    },
+    minimapEntities(options) {
+      return getMinimapEntityReport(options);
+    },
+    minimapHighlightListStatus() {
+      return getMinimapHighlightListStatus();
+    },
+    setMinimapHighlightListScale(scale) {
+      return setMinimapHighlightListScale(scale);
+    },
+    resetMinimapHighlightListPosition() {
+      return resetMinimapHighlightListPosition();
+    },
+    targetMinimapHighlight(id, name) {
+      return targetRuntimeEntityById(id, name, "minimapHighlightList");
+    },
+    targetHighlightedEntity(id, name) {
+      return targetRuntimeEntityById(id, name, "highlightList");
+    },
+    clearHighlightedTarget() {
+      return clearRuntimeTargetSelection();
+    },
+    loadedEntities(options) {
+      return getLoadedEntityReport(options);
+    },
+    targetingMe(options) {
+      return getIncomingTargetReport(options);
+    },
+    whoTargetsMe(options) {
+      return getIncomingTargetReport(options);
+    },
+    targetFieldReport(options) {
+      return getTargetFieldReport(options);
+    },
     runtimeDebug() {
+      return getRuntimeDebugReport();
+    },
+    runtimeDebugText() {
+      return stringifyRuntimeDebugReport();
+    },
+    runtimeProbeNow() {
+      runRuntimeProbeNow();
       return getRuntimeDebugReport();
     },
     inspectRuntime(name) {
@@ -2202,6 +3048,11 @@
 
   Object.assign(pageWindow.HordesKrMod, {
     runtimeDebug: () => getRuntimeDebugReport(),
+    runtimeDebugText: () => stringifyRuntimeDebugReport(),
+    runtimeProbeNow: () => {
+      runRuntimeProbeNow();
+      return getRuntimeDebugReport();
+    },
     debugRuntime: () => getRuntimeDebugReport(),
     diagnostics: () => getRuntimeDebugReport(),
   });
@@ -2228,6 +3079,220 @@
 
   function isEnabled() {
     return localStorage.getItem(ENABLED_KEY) !== "false";
+  }
+
+  function setTranslationEnabled(nextEnabled) {
+    const enabled = Boolean(nextEnabled);
+    localStorage.setItem(ENABLED_KEY, enabled ? "true" : "false");
+    FEATURE_CONFIG.domTranslationEnabled = enabled;
+    saveFeatureConfig();
+    CACHE.clear();
+
+    if (enabled) {
+      initDomTranslator();
+    } else {
+      stopDomTranslator();
+    }
+
+    setStatus({
+      lastState: enabled ? "켜짐 - 새로고침 필요" : "꺼짐 - 새로고침 필요",
+      lastError: "",
+    });
+
+    console.info(
+      enabled
+        ? "[Hordes KR Mod] Korean localization enabled. Refresh the page to apply from startup."
+        : "[Hordes KR Mod] Korean localization disabled. Refresh the page to restore the game locale."
+    );
+    return enabled;
+  }
+
+  function saveFeatureConfig() {
+    saveJsonConfig(FEATURE_CONFIG_KEY, FEATURE_CONFIG);
+  }
+
+  function savePartyUiConfig() {
+    saveJsonConfig(PARTY_UI_CONFIG_KEY, PARTY_UI_CONFIG);
+  }
+
+  function isDomTranslationEnabled() {
+    return isEnabled() && FEATURE_CONFIG.domTranslationEnabled !== false;
+  }
+
+  function isTargetDistanceEnabled() {
+    return FEATURE_CONFIG.targetDistanceEnabled !== false;
+  }
+
+  function isIncomingSkillOverlayEnabled() {
+    return FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
+  }
+
+  function isIncomingSkillListEnabled() {
+    return FEATURE_CONFIG.incomingSkillListEnabled !== false &&
+      (isIncomingSkillOverlayEnabled() || isIncomingTargetWatchEnabled());
+  }
+
+  function isIncomingTargetWatchEnabled() {
+    return FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+  }
+
+  function isChatTranslationEnabled() {
+    return FEATURE_CONFIG.chatTranslationEnabled === true;
+  }
+
+  function getChatTranslationApiKey() {
+    try {
+      return String(localStorage.getItem(CHAT_TRANSLATION_API_KEY_KEY) || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function hasChatTranslationApiKey() {
+    return Boolean(getChatTranslationApiKey());
+  }
+
+  function setChatTranslationEnabled(nextEnabled) {
+    const enabled = Boolean(nextEnabled);
+
+    if (enabled && !hasChatTranslationApiKey()) {
+      FEATURE_CONFIG.chatTranslationEnabled = false;
+      saveFeatureConfig();
+      stopChatTranslator();
+      CHAT_TRANSLATION_STATE.lastError = "API 키 없음";
+      setStatus({
+        lastState: "채팅번역 키 없음",
+        lastError: "콘솔에서 HordesKrMod.setChatTranslationApiKey(\"...\")로 API 키를 저장하세요.",
+      });
+      updateChatTranslationQuickToggle(true);
+      return false;
+    }
+
+    FEATURE_CONFIG.chatTranslationEnabled = enabled;
+    saveFeatureConfig();
+
+    if (enabled) {
+      CHAT_TRANSLATION_STATE.lastError = "";
+      startChatTranslator();
+      setStatus({
+        lastState: "채팅번역 켜짐",
+        lastError: "",
+      });
+    } else {
+      stopChatTranslator();
+      restoreChatTranslations();
+      setStatus({
+        lastState: "채팅번역 꺼짐",
+        lastError: "",
+      });
+    }
+
+    updateChatTranslationQuickToggle(true);
+    return FEATURE_CONFIG.chatTranslationEnabled;
+  }
+
+  function setChatTranslationApiKey(apiKey) {
+    const normalized = String(apiKey || "").trim();
+    try {
+      if (normalized) {
+        localStorage.setItem(CHAT_TRANSLATION_API_KEY_KEY, normalized);
+      } else {
+        localStorage.removeItem(CHAT_TRANSLATION_API_KEY_KEY);
+      }
+    } catch {
+      CHAT_TRANSLATION_STATE.lastError = "API 키 저장 실패";
+      return false;
+    }
+
+    CHAT_TRANSLATION_STATE.lastError = "";
+    if (!normalized && isChatTranslationEnabled()) {
+      FEATURE_CONFIG.chatTranslationEnabled = false;
+      saveFeatureConfig();
+      stopChatTranslator();
+      restoreChatTranslations();
+    }
+
+    if (normalized && isChatTranslationEnabled()) startChatTranslator();
+    setStatus({
+      lastState: normalized ? "채팅번역 API 키 저장됨" : "채팅번역 API 키 삭제됨",
+      lastError: "",
+    });
+    updateChatTranslationQuickToggle(true);
+    return Boolean(normalized);
+  }
+
+  function clearChatTranslationApiKey() {
+    return !setChatTranslationApiKey("");
+  }
+
+  function getChatTranslationModel() {
+    try {
+      return String(localStorage.getItem(CHAT_TRANSLATION_MODEL_KEY) || CHAT_TRANSLATION_DEFAULT_MODEL).trim() || CHAT_TRANSLATION_DEFAULT_MODEL;
+    } catch {
+      return CHAT_TRANSLATION_DEFAULT_MODEL;
+    }
+  }
+
+  function migrateChatTranslationDefaultModel() {
+    try {
+      const migratedVersion = localStorage.getItem(CHAT_TRANSLATION_MODEL_MIGRATION_KEY);
+      if (migratedVersion === CHAT_TRANSLATION_MODEL_MIGRATION_VERSION) return;
+
+      const currentModel = String(localStorage.getItem(CHAT_TRANSLATION_MODEL_KEY) || "").trim();
+      if (!currentModel || CHAT_TRANSLATION_PREVIOUS_DEFAULT_MODELS.has(currentModel)) {
+        localStorage.setItem(CHAT_TRANSLATION_MODEL_KEY, CHAT_TRANSLATION_DEFAULT_MODEL);
+      }
+      localStorage.setItem(CHAT_TRANSLATION_MODEL_MIGRATION_KEY, CHAT_TRANSLATION_MODEL_MIGRATION_VERSION);
+    } catch {
+      // Model migration is best-effort; getChatTranslationModel still has a safe default.
+    }
+  }
+
+  function setChatTranslationModel(model) {
+    const normalized = String(model || "").trim() || CHAT_TRANSLATION_DEFAULT_MODEL;
+    try {
+      localStorage.setItem(CHAT_TRANSLATION_MODEL_KEY, normalized);
+    } catch {
+      CHAT_TRANSLATION_STATE.lastError = "모델 저장 실패";
+      return getChatTranslationModel();
+    }
+    return normalized;
+  }
+
+  function syncGroupedHighlightConfig(enabled) {
+    HIGHLIGHT_CONFIG.enabled = Boolean(enabled);
+    HIGHLIGHT_CONFIG.domEnabled = HIGHLIGHT_CONFIG.enabled;
+    HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.enabled;
+    HIGHLIGHT_CONFIG.hideClanNames = HIGHLIGHT_CONFIG.enabled;
+    HIGHLIGHT_CONFIG.runtimeOverlayEnabled = true;
+  }
+
+  function setNameHighlightEnabled(nextEnabled) {
+    syncGroupedHighlightConfig(nextEnabled);
+    saveHighlightConfig();
+    refreshNameHighlights();
+    updateRuntimeNameOverlay();
+    renderStatusUi();
+    return HIGHLIGHT_CONFIG.enabled;
+  }
+
+  function shouldRunDomNameHighlight() {
+    return (
+      HIGHLIGHT_CONFIG.enabled &&
+      HIGHLIGHT_CONFIG.domEnabled !== false &&
+      HIGHLIGHT_CONFIG.names.length > 0
+    );
+  }
+
+  function shouldRunRuntimeNameOverlay() {
+    return (
+      HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false &&
+      (
+        (HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0) ||
+        isIncomingSkillOverlayEnabled() ||
+        isIncomingTargetWatchEnabled()
+      )
+    );
   }
 
   function toUrl(input) {
@@ -2443,8 +3508,14 @@
   }
 
   async function initDomTranslator() {
-    if (!isEnabled()) return;
+    if (!isDomTranslationEnabled()) return;
+    if (DOM_TRANSLATION_STATE.loading) return;
+    if (DOM_TRANSLATION_STATE.dictionary) {
+      startDomTranslator();
+      return;
+    }
 
+    DOM_TRANSLATION_STATE.loading = true;
     try {
       const enUrl = new URL("/data/loc/en.json", location.origin);
       const [enResponse, koLoc] = await Promise.all([
@@ -2456,6 +3527,7 @@
 
       const enLoc = await enResponse.json();
       const dictionary = buildTextDictionary(enLoc, koLoc);
+      DOM_TRANSLATION_STATE.dictionary = dictionary;
 
       setStatus({
         lastState: "DOM 번역 준비됨",
@@ -2463,51 +3535,8 @@
         lastError: "",
       });
 
-      const apply = () => {
-        if (!isEnabled()) return;
-        if (!document.body) return;
-        const replaced = translateDomTree(document.body, dictionary);
-        if (replaced > 0) {
-          setStatus({
-            lastState: "DOM 번역 적용됨",
-            domReplacedCount: MOD_STATUS.domReplacedCount + replaced,
-            lastAppliedAt: new Date(),
-            lastError: "",
-          });
-        }
-      };
-
       const start = () => {
-        apply();
-        const observer = new MutationObserver((mutations) => {
-          if (!isEnabled()) return;
-
-          let replaced = 0;
-          for (const mutation of mutations) {
-            if (mutation.type === "characterData") {
-              replaced += translateTextNode(mutation.target, dictionary);
-            } else {
-              mutation.addedNodes.forEach((node) => {
-                replaced += translateDomTree(node, dictionary);
-              });
-            }
-          }
-
-          if (replaced > 0) {
-            setStatus({
-              lastState: "DOM 번역 적용됨",
-              domReplacedCount: MOD_STATUS.domReplacedCount + replaced,
-              lastAppliedAt: new Date(),
-              lastError: "",
-            });
-          }
-        });
-
-        observer.observe(document.body, {
-          childList: true,
-          characterData: true,
-          subtree: true,
-        });
+        startDomTranslator();
       };
 
       if (document.body) {
@@ -2520,7 +3549,2415 @@
         lastState: "DOM 번역 오류",
         lastError: error && error.message ? error.message : String(error),
       });
+    } finally {
+      DOM_TRANSLATION_STATE.loading = false;
     }
+  }
+
+  function startDomTranslator() {
+    const dictionary = DOM_TRANSLATION_STATE.dictionary;
+    if (!isDomTranslationEnabled() || !dictionary || !document.body) return;
+
+    applyDomTranslation(document.body);
+    if (DOM_TRANSLATION_STATE.observer) return;
+
+    DOM_TRANSLATION_STATE.observer = new MutationObserver((mutations) => {
+      if (!isDomTranslationEnabled()) return;
+
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") {
+          DOM_TRANSLATION_STATE.queuedRoots.add(mutation.target);
+        } else {
+          mutation.addedNodes.forEach((node) => {
+            DOM_TRANSLATION_STATE.queuedRoots.add(node);
+          });
+        }
+      }
+
+      scheduleDomTranslationFlush();
+    });
+
+    DOM_TRANSLATION_STATE.observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
+
+  function stopDomTranslator() {
+    if (DOM_TRANSLATION_STATE.observer) {
+      DOM_TRANSLATION_STATE.observer.disconnect();
+      DOM_TRANSLATION_STATE.observer = null;
+    }
+
+    DOM_TRANSLATION_STATE.pending = false;
+    DOM_TRANSLATION_STATE.queuedRoots.clear();
+  }
+
+  function initChatTranslator() {
+    const start = () => {
+      installChatTranslationStyle();
+      ensureChatTranslationQuickToggleHost();
+      updateChatTranslationQuickToggle();
+      startChatTranslationQuickTogglePositioner();
+      if (isChatTranslationEnabled()) startChatTranslator();
+    };
+
+    if (document.body) {
+      start();
+    } else {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    }
+  }
+
+  function startChatTranslator() {
+    if (!isChatTranslationEnabled() || !document.body) return;
+    if (!hasChatTranslationApiKey()) {
+      FEATURE_CONFIG.chatTranslationEnabled = false;
+      saveFeatureConfig();
+      stopChatTranslator();
+      CHAT_TRANSLATION_STATE.lastError = "API 키 없음";
+      setStatus({
+        lastState: "채팅번역 키 없음",
+        lastError: "콘솔에서 HordesKrMod.setChatTranslationApiKey(\"...\")로 API 키를 저장하세요.",
+      });
+      updateChatTranslationQuickToggle(true);
+      return;
+    }
+    installChatTranslationStyle();
+
+    if (!CHAT_TRANSLATION_STATE.observer) {
+      CHAT_TRANSLATION_STATE.observer = new MutationObserver((mutations) => {
+        if (!isChatTranslationEnabled()) return;
+
+        for (const mutation of mutations) {
+          if (mutation.type === "childList") {
+            mutation.addedNodes.forEach((node) => {
+              if (isChatTranslationNode(node)) return;
+              if (isNodeInsideChat(node)) scheduleChatTranslationScan();
+            });
+          } else if (mutation.type === "characterData" && isNodeInsideChat(mutation.target)) {
+            if (isChatTranslationNode(mutation.target)) continue;
+            scheduleChatTranslationScan();
+          }
+        }
+      });
+
+      CHAT_TRANSLATION_STATE.observer.observe(document.body, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }
+
+    scheduleChatTranslationScan();
+  }
+
+  function stopChatTranslator() {
+    if (CHAT_TRANSLATION_STATE.observer) {
+      CHAT_TRANSLATION_STATE.observer.disconnect();
+      CHAT_TRANSLATION_STATE.observer = null;
+    }
+
+    CHAT_TRANSLATION_STATE.pendingScan = false;
+    CHAT_TRANSLATION_STATE.queue.length = 0;
+    CHAT_TRANSLATION_STATE.queuedKeys.clear();
+  }
+
+  function scheduleChatTranslationScan() {
+    if (!isChatTranslationEnabled() || CHAT_TRANSLATION_STATE.pendingScan) return;
+    if (!hasChatTranslationApiKey()) {
+      CHAT_TRANSLATION_STATE.lastError = "API 키 없음";
+      renderStatusUi();
+      return;
+    }
+    CHAT_TRANSLATION_STATE.pendingScan = true;
+
+    setTimeout(() => {
+      CHAT_TRANSLATION_STATE.pendingScan = false;
+      if (!isChatTranslationEnabled()) return;
+      scanChatForTranslations();
+      processChatTranslationQueue();
+    }, CHAT_TRANSLATION_SCAN_DELAY_MS);
+  }
+
+  function scanChatForTranslations() {
+    const roots = getChatRoots();
+    for (const root of roots) {
+      const elements = getChatMessageElements(root);
+      const recentBottomFirst = elements.slice(-CHAT_TRANSLATION_SCAN_LIMIT).reverse();
+      for (const element of recentBottomFirst) {
+        enqueueChatTranslation(element);
+      }
+    }
+    prioritizeChatTranslationQueue();
+    trimChatTranslationQueue();
+  }
+
+  function getChatRoots() {
+    if (!document.body) return [];
+
+    const primary = document.getElementById("chat");
+    if (primary && !shouldSkipChatRoot(primary)) {
+      return [primary];
+    }
+
+    const selectors = [
+      ".chat",
+      "[class*='chat']",
+      "[id*='chat']",
+      "[class*='Chat']",
+      "[id*='Chat']",
+    ];
+    const roots = [];
+    const seen = new WeakSet();
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((element) => {
+        if (!element || seen.has(element) || shouldSkipChatRoot(element)) return;
+        seen.add(element);
+        roots.push(element);
+      });
+    }
+
+    return roots.slice(0, 8);
+  }
+
+  function shouldSkipChatRoot(element) {
+    if (!element || element.closest("#hordes-kr-mod-status-root")) return true;
+    if (element.closest("#hordes-kr-chat-translation-toggle")) return true;
+    if (element.id === "chatinput" || element.closest("#chatinput")) return true;
+    if (element.matches(".chatsection, .commandlist, [class*='commandlist'], [class*='CommandList']")) return true;
+    if (element.matches("input, textarea, button, select, option, canvas, script, style")) return true;
+    if (element.closest("input, textarea, canvas")) return true;
+    const text = normalizeText(element.textContent || "");
+    return text.length < 2;
+  }
+
+  function getChatMessageElements(root) {
+    const linewrapNodes = [
+      ...(root.matches && root.matches(".linewrap") ? [root] : []),
+      ...getRecentChatElements(root, ".linewrap"),
+    ];
+    const linewraps = linewrapNodes
+      .slice(-(CHAT_TRANSLATION_SCAN_LIMIT * 3))
+      .filter(isLikelyChatMessageElement);
+    if (linewraps.length > 0) return linewraps;
+
+    const preferredSelectors = [
+      "[class*='message']",
+      "[class*='Message']",
+      "[class*='msg']",
+      "[class*='Msg']",
+      "[class*='line']",
+      "[class*='Line']",
+      "[class*='entry']",
+      "[class*='Entry']",
+    ];
+    const preferred = [];
+    const seen = new WeakSet();
+
+    for (const selector of preferredSelectors) {
+      getRecentChatElements(root, selector).forEach((element) => {
+        if (!seen.has(element) && isLikelyChatMessageElement(element)) {
+          seen.add(element);
+          preferred.push(element);
+        }
+      });
+    }
+
+    if (preferred.length > 0) return preferred;
+
+    const children = Array.from(root.children || []);
+    const direct = children.filter(isLikelyChatMessageElement);
+    if (direct.length > 0) return direct;
+
+    return getRecentChatElements(root, "div, li, p")
+      .filter(isLikelyChatMessageElement);
+  }
+
+  function getRecentChatElements(root, selector) {
+    if (!root || typeof root.querySelectorAll !== "function") return [];
+    return Array.from(root.querySelectorAll(selector)).slice(-(CHAT_TRANSLATION_SCAN_LIMIT * 3));
+  }
+
+  function isLikelyChatMessageElement(element) {
+    if (!element || element.closest("#hordes-kr-mod-status-root")) return false;
+    if (element.closest("#hordes-kr-chat-translation-toggle")) return false;
+    if (element.matches("input, textarea, button, select, option, canvas, script, style")) return false;
+    if (element.querySelector(".hordes-kr-chat-translation")) return false;
+
+    const payload = extractChatMessagePayload(element);
+    return shouldTranslateChatPayload(payload);
+  }
+
+  function enqueueChatTranslation(element) {
+    if (!element || element.dataset.hordesKrChatTranslation === "done") return;
+    if (element.dataset.hordesKrChatTranslation === "pending") return;
+    if (element.dataset.hordesKrChatTranslation === "skip") return;
+
+    const payload = extractChatMessagePayload(element);
+    if (!shouldTranslateChatPayload(payload)) {
+      element.dataset.hordesKrChatTranslation = "skip";
+      CHAT_TRANSLATION_STATE.skippedCount++;
+      return;
+    }
+
+    const key = normalizeChatTranslationKey(`${payload.channel}:${payload.text}`);
+    const cached = getCachedChatTranslation(key);
+    if (cached) {
+      CHAT_TRANSLATION_STATE.cacheHits++;
+      appendChatTranslation(element, cached, payload.text);
+      return;
+    }
+
+    if (CHAT_TRANSLATION_STATE.queuedKeys.has(key)) return;
+
+    element.dataset.hordesKrChatTranslation = "pending";
+    CHAT_TRANSLATION_STATE.queuedKeys.add(key);
+    CHAT_TRANSLATION_STATE.queue.push({
+      element,
+      text: payload.text,
+      channel: payload.channel,
+      key,
+      rawText: payload.rawText,
+      mode: payload.mode,
+      enqueuedAt: Date.now(),
+    });
+    trimChatTranslationQueue();
+  }
+
+  function processChatTranslationQueue() {
+    if (!isChatTranslationEnabled()) return;
+
+    prioritizeChatTranslationQueue();
+    trimChatTranslationQueue();
+
+    while (
+      CHAT_TRANSLATION_STATE.activeRequests < CHAT_TRANSLATION_MAX_CONCURRENT &&
+      CHAT_TRANSLATION_STATE.queue.length > 0
+    ) {
+      const batch = takeChatTranslationBatch();
+      if (batch.length === 0) continue;
+
+      CHAT_TRANSLATION_STATE.activeRequests++;
+      processChatTranslationBatch(batch).finally(() => {
+        CHAT_TRANSLATION_STATE.activeRequests = Math.max(0, CHAT_TRANSLATION_STATE.activeRequests - 1);
+        renderStatusUi();
+        processChatTranslationQueue();
+      });
+    }
+  }
+
+  function takeChatTranslationBatch() {
+    const batch = [];
+    while (CHAT_TRANSLATION_STATE.queue.length > 0 && batch.length < CHAT_TRANSLATION_BATCH_SIZE) {
+      const item = CHAT_TRANSLATION_STATE.queue.shift();
+      if (!item) continue;
+
+      CHAT_TRANSLATION_STATE.queuedKeys.delete(item.key);
+      if (!isQueuedChatTranslationItemUsable(item)) continue;
+      batch.push(item);
+    }
+    return batch;
+  }
+
+  function isQueuedChatTranslationItemUsable(item) {
+    if (!item || !item.element || !document.contains(item.element)) return false;
+    if (item.element.dataset.hordesKrChatTranslation === "done") return false;
+    if (item.element.dataset.hordesKrChatTranslation === "skip") return false;
+    return true;
+  }
+
+  function prioritizeChatTranslationQueue() {
+    CHAT_TRANSLATION_STATE.queue.sort(compareChatTranslationQueueItems);
+  }
+
+  function compareChatTranslationQueueItems(left, right) {
+    if (left.element && right.element && left.element !== right.element && typeof left.element.compareDocumentPosition === "function") {
+      const relation = left.element.compareDocumentPosition(right.element);
+      const NodeCtor = pageWindow.Node || Node;
+      if (relation & NodeCtor.DOCUMENT_POSITION_FOLLOWING) return 1;
+      if (relation & NodeCtor.DOCUMENT_POSITION_PRECEDING) return -1;
+    }
+
+    return (right.enqueuedAt || 0) - (left.enqueuedAt || 0);
+  }
+
+  function trimChatTranslationQueue() {
+    while (CHAT_TRANSLATION_STATE.queue.length > CHAT_TRANSLATION_MAX_QUEUE) {
+      const dropped = CHAT_TRANSLATION_STATE.queue.pop();
+      if (!dropped) return;
+
+      CHAT_TRANSLATION_STATE.queuedKeys.delete(dropped.key);
+      if (
+        dropped.element &&
+        dropped.element.dataset &&
+        dropped.element.dataset.hordesKrChatTranslation === "pending"
+      ) {
+        dropped.element.dataset.hordesKrChatTranslation = "skip";
+      }
+      CHAT_TRANSLATION_STATE.droppedCount++;
+    }
+  }
+
+  async function processChatTranslationItem(item) {
+    try {
+      CHAT_TRANSLATION_STATE.lastChannel = item.channel || "";
+      const translation = await translateChatMessage(item.text);
+      if (!isChatTranslationEnabled() || !document.contains(item.element)) return;
+      rememberChatTranslation(item.key, translation);
+      appendChatTranslation(item.element, translation, item.text);
+    } catch (error) {
+      item.element.dataset.hordesKrChatTranslation = "error";
+      CHAT_TRANSLATION_STATE.lastError = error && error.message ? error.message : String(error);
+    }
+  }
+
+  async function processChatTranslationBatch(batch) {
+    if (!Array.isArray(batch) || batch.length === 0) return;
+    if (batch.length === 1) {
+      await processChatTranslationItem(batch[0]);
+      return;
+    }
+
+    try {
+      CHAT_TRANSLATION_STATE.lastChannel = batch[0].channel || "";
+      const translations = await translateChatMessages(batch.map((item) => item.text));
+
+      batch.forEach((item, index) => {
+        const translation = translations[index] || "";
+        if (!translation || !isChatTranslationEnabled() || !document.contains(item.element)) return;
+        rememberChatTranslation(item.key, translation);
+        appendChatTranslation(item.element, translation, item.text);
+      });
+    } catch (error) {
+      for (const item of batch) {
+        if (item.element && item.element.dataset) {
+          item.element.dataset.hordesKrChatTranslation = "error";
+        }
+      }
+      CHAT_TRANSLATION_STATE.lastError = error && error.message ? error.message : String(error);
+    }
+  }
+
+  async function translateChatMessage(text) {
+    const normalizedText = String(text || "").trim();
+    if (!normalizedText) throw new Error("번역할 채팅이 비어 있습니다.");
+
+    CHAT_TRANSLATION_STATE.lastText = normalizedText.slice(0, 220);
+
+    const localTranslation = translateChatMessageLocally(normalizedText);
+    if (localTranslation) {
+      recordChatTranslationResult(localTranslation, true);
+      return localTranslation;
+    }
+
+    const apiKey = getChatTranslationApiKey();
+    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. HordesKrMod.setChatTranslationApiKey(...)로 저장하세요.");
+
+    const inFlightKey = normalizeChatTranslationKey(normalizedText);
+    const existingRequest = CHAT_TRANSLATION_STATE.inFlight.get(inFlightKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async () => {
+      const response = await requestOpenAiChatTranslation(apiKey, normalizedText);
+      const translation = sanitizeChatTranslation(extractOpenAiText(response));
+      if (!translation) throw new Error("번역 결과가 비어 있습니다.");
+      recordChatTranslationResult(translation, false);
+      return translation;
+    })();
+
+    CHAT_TRANSLATION_STATE.inFlight.set(inFlightKey, request);
+    try {
+      return await request;
+    } finally {
+      CHAT_TRANSLATION_STATE.inFlight.delete(inFlightKey);
+    }
+  }
+
+  function recordChatTranslationResult(translation, localHit) {
+    CHAT_TRANSLATION_STATE.translatedCount++;
+    if (localHit) {
+      CHAT_TRANSLATION_STATE.localHitCount++;
+      CHAT_TRANSLATION_STATE.lastTransport = "local";
+      CHAT_TRANSLATION_STATE.lastRequestDurationMs = 0;
+    }
+    CHAT_TRANSLATION_STATE.lastTranslation = String(translation || "").slice(0, 220);
+    CHAT_TRANSLATION_STATE.lastAt = new Date();
+    CHAT_TRANSLATION_STATE.lastError = "";
+  }
+
+  function translateChatMessageLocally(text) {
+    const normalized = normalizeLocalChatPhrase(text);
+    if (!normalized) return "";
+
+    const warOrder = translateWarOrderLocally(normalized);
+    if (warOrder) return warOrder;
+
+    const exact = CHAT_TRANSLATION_LOCAL_EXACT.get(normalized);
+    if (exact) return exact;
+
+    const focusFirstMatch = normalized.match(/^focus\s+(.{2,36})\s+first$/);
+    if (focusFirstMatch) return `${restoreLocalChatTermCase(text, focusFirstMatch[1])} 먼저 집중`;
+
+    const killFirstMatch = normalized.match(/^kill\s+(.{2,36})\s+first$/);
+    if (killFirstMatch) return `${restoreLocalChatTermCase(text, killFirstMatch[1])} 먼저 처치`;
+
+    const focusMatch = normalized.match(/^focus\s+(.{2,40})$/);
+    if (focusMatch) return `${restoreLocalChatTermCase(text, focusMatch[1])} 집중`;
+
+    const killMatch = normalized.match(/^kill\s+(.{2,40})$/);
+    if (killMatch) return `${restoreLocalChatTermCase(text, killMatch[1])} 처치`;
+
+    const needMatch = normalized.match(/^need\s+(.{2,40})$/);
+    if (needMatch) return `${restoreLocalChatTermCase(text, needMatch[1])} 필요해요`;
+
+    const whereMatch = normalized.match(/^where\s+(?:is|are)\s+(.{2,40})\??$/);
+    if (whereMatch) return `${restoreLocalChatTermCase(text, whereMatch[1])} 어디인가요?`;
+
+    return "";
+  }
+
+  function translateWarOrderLocally(normalized) {
+    const text = String(normalized || "")
+      .replace(/[!]+$/g, "")
+      .replace(/\s*,\s*/g, " ")
+      .trim();
+    if (!text) return "";
+
+    if (/^(?:g|r)$/.test(text)) return "지금!";
+    if (/^on\s*me$/.test(text)) return "내 위로 광역스킬";
+
+    const rawOrder = parseWarOrderParts(text, "raw", new Set(["left", "right", "mid", "middle"]));
+    if (rawOrder) {
+      const direction = formatWarOrderDirection(rawOrder.direction);
+      const prefix = rawOrder.seconds ? `${rawOrder.seconds}초 뒤 ` : "";
+      return `${prefix}${direction ? `${direction} ` : ""}봇들 정리하자`;
+    }
+
+    const aoeOrder = parseWarOrderParts(text, null, new Set(["deep", "mid", "middle"]));
+    if (aoeOrder && aoeOrder.hasAnyDirection) {
+      const prefix = aoeOrder.seconds ? `${aoeOrder.seconds}초 뒤 ` : "";
+      return `${prefix}중앙으로 광역스킬`;
+    }
+
+    return "";
+  }
+
+  function parseWarOrderParts(text, requiredCommand, allowedWords) {
+    const parts = String(text || "").split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return null;
+
+    if (requiredCommand) {
+      if (parts[0] !== requiredCommand) return null;
+      parts.shift();
+    }
+
+    let seconds = "";
+    let direction = "";
+    let hasAnyDirection = false;
+
+    for (const part of parts) {
+      if (/^\d{1,2}$/.test(part) && !seconds) {
+        seconds = part;
+      } else if (allowedWords.has(part) && !direction) {
+        direction = part;
+        hasAnyDirection = true;
+      } else if (allowedWords.has(part)) {
+        hasAnyDirection = true;
+      } else {
+        return null;
+      }
+    }
+
+    return { seconds, direction, hasAnyDirection };
+  }
+
+  function formatWarOrderDirection(direction) {
+    if (direction === "left") return "왼쪽";
+    if (direction === "right") return "오른쪽";
+    if (direction === "mid" || direction === "middle") return "중앙";
+    return "";
+  }
+
+  function normalizeLocalChatPhrase(text) {
+    return String(text || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[“”]/g, "\"")
+      .replace(/[‘’]/g, "'")
+      .replace(/\s+/g, " ")
+      .replace(/\s+([?!.,])$/g, "$1")
+      .replace(/[.]+$/g, "")
+      .trim();
+  }
+
+  function restoreLocalChatTermCase(sourceText, normalizedTerm) {
+    const term = String(normalizedTerm || "").trim();
+    if (!term) return "";
+
+    const source = String(sourceText || "");
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = source.match(new RegExp(escaped, "i"));
+    return (match ? match[0] : term).trim();
+  }
+
+  async function translateChatMessages(texts) {
+    const normalizedTexts = texts
+      .map((text) => String(text || "").trim())
+      .filter(Boolean);
+    if (normalizedTexts.length === 0) return [];
+    if (normalizedTexts.length === 1) return [await translateChatMessage(normalizedTexts[0])];
+
+    const results = new Array(normalizedTexts.length);
+    const remoteItems = [];
+    normalizedTexts.forEach((text, index) => {
+      const localTranslation = translateChatMessageLocally(text);
+      if (localTranslation) {
+        results[index] = localTranslation;
+        recordChatTranslationResult(localTranslation, true);
+      } else {
+        remoteItems.push({ index, text });
+      }
+    });
+
+    if (remoteItems.length === 0) return results;
+
+    const apiKey = getChatTranslationApiKey();
+    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. HordesKrMod.setChatTranslationApiKey(...)로 저장하세요.");
+
+    CHAT_TRANSLATION_STATE.lastText = remoteItems[0].text.slice(0, 220);
+    const response = await requestOpenAiChatTranslations(apiKey, remoteItems.map((item) => item.text));
+    const translations = extractOpenAiTranslationArray(response, remoteItems.length)
+      .map(sanitizeChatTranslation);
+
+    if (translations.length !== remoteItems.length || translations.some((translation) => !translation)) {
+      throw new Error("번역 결과 배열이 올바르지 않습니다.");
+    }
+
+    translations.forEach((translation, index) => {
+      const item = remoteItems[index];
+      results[item.index] = translation;
+      recordChatTranslationResult(translation, false);
+    });
+
+    return results;
+  }
+
+  async function requestOpenAiChatTranslation(apiKey, text) {
+    const model = getChatTranslationModel();
+    const body = {
+      model,
+      instructions:
+        "Translate the MMORPG chat message into natural Korean. Keep player names, item names, skill names, place names, numbers, abbreviations, URLs, slash commands, and emojis unchanged. Return only the translation. Be brief.",
+      input: text,
+      max_output_tokens: 60,
+      store: false,
+    };
+    configureFastChatTranslationRequestBody(body, model);
+
+    const raw = await requestTimedOpenAiResponses(apiKey, body);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("OpenAI 응답 JSON 파싱 실패");
+    }
+
+    if (parsed.error) {
+      throw new Error(parsed.error.message || "OpenAI API 오류");
+    }
+
+    return parsed;
+  }
+
+  async function requestOpenAiChatTranslations(apiKey, texts) {
+    const model = getChatTranslationModel();
+    const body = {
+      model,
+      instructions:
+        "Translate MMORPG chat messages into natural Korean. Keep player names, item names, skill names, place names, numbers, abbreviations, URLs, slash commands, and emojis unchanged. Return only a valid JSON array of brief Korean translations. The array length must match the input length.",
+      input: JSON.stringify(texts.map((text, index) => ({ id: index + 1, text }))),
+      max_output_tokens: Math.min(260, Math.max(80, texts.length * 55)),
+      store: false,
+    };
+    configureFastChatTranslationRequestBody(body, model);
+
+    CHAT_TRANSLATION_STATE.batchRequestCount++;
+    const raw = await requestTimedOpenAiResponses(apiKey, body);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("OpenAI 응답 JSON 파싱 실패");
+    }
+
+    if (parsed.error) {
+      throw new Error(parsed.error.message || "OpenAI API 오류");
+    }
+
+    return parsed;
+  }
+
+  function configureFastChatTranslationRequestBody(body, model) {
+    if (!body || !model) return;
+
+    if (/^gpt-5\.(?:4|5)/i.test(model)) {
+      body.reasoning = { effort: "none" };
+      body.text = { verbosity: "low" };
+      return;
+    }
+
+    if (/^gpt-5/i.test(model)) {
+      body.reasoning = { effort: "minimal" };
+    }
+  }
+
+  async function requestTimedOpenAiResponses(apiKey, body) {
+    CHAT_TRANSLATION_STATE.requestCount++;
+    const startedAt = Date.now();
+    try {
+      return await requestOpenAiResponses(apiKey, body);
+    } finally {
+      const duration = Date.now() - startedAt;
+      CHAT_TRANSLATION_STATE.lastRequestDurationMs = duration;
+      CHAT_TRANSLATION_STATE.averageRequestDurationMs = CHAT_TRANSLATION_STATE.averageRequestDurationMs === null
+        ? duration
+        : Math.round((CHAT_TRANSLATION_STATE.averageRequestDurationMs * 0.75) + (duration * 0.25));
+    }
+  }
+
+  function requestOpenAiResponses(apiKey, body) {
+    if (typeof GM_xmlhttpRequest === "function") {
+      CHAT_TRANSLATION_STATE.lastTransport = "gm";
+      return requestOpenAiViaGm(apiKey, body);
+    }
+
+    if (isOpenAiBridgeAvailable()) {
+      CHAT_TRANSLATION_STATE.lastTransport = "bridge";
+      return requestOpenAiViaBridge(apiKey, body).catch(() => {
+        CHAT_TRANSLATION_STATE.lastTransport = "fetch-fallback";
+        return requestOpenAiViaFetch(apiKey, body);
+      });
+    }
+
+    CHAT_TRANSLATION_STATE.lastTransport = "fetch";
+    return requestOpenAiViaFetch(apiKey, body);
+  }
+
+  function isOpenAiBridgeAvailable() {
+    return Boolean(
+      pageWindow.__HORDES_KR_OPENAI_BRIDGE_READY__ &&
+      pageWindow.__HORDES_KR_OPENAI_BRIDGE_INSTALLED__
+    );
+  }
+
+  function requestOpenAiViaGm(apiKey, body) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: "https://api.openai.com/v1/responses",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify(body),
+        timeout: CHAT_TRANSLATION_TIMEOUT_MS,
+        onload(response) {
+          if (response.status >= 200 && response.status < 300) {
+            resolve(response.responseText || "");
+          } else {
+            reject(new Error(`OpenAI API 오류: ${response.status} ${response.responseText || ""}`.slice(0, 260)));
+          }
+        },
+        ontimeout() {
+          reject(new Error("OpenAI 요청 시간 초과"));
+        },
+        onerror(error) {
+          reject(new Error(error && error.error ? String(error.error) : "OpenAI 요청 실패"));
+        },
+      });
+    });
+  }
+
+  function requestOpenAiViaBridge(apiKey, body) {
+    return new Promise((resolve, reject) => {
+      const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      const pageSentAt = Date.now();
+      const timer = setTimeout(() => {
+        pageWindow.removeEventListener("message", onMessage);
+        reject(new Error("OpenAI 브리지 시간 초과"));
+      }, CHAT_TRANSLATION_TIMEOUT_MS + 700);
+
+      function onMessage(event) {
+        const pageReceivedAt = Date.now();
+        if (event.source !== pageWindow) return;
+        const message = event.data;
+        if (!message || message.source !== "HordesKrMod") return;
+        if (message.type !== CHAT_TRANSLATION_BRIDGE_RESPONSE || message.id !== id) return;
+
+        clearTimeout(timer);
+        pageWindow.removeEventListener("message", onMessage);
+        CHAT_TRANSLATION_STATE.lastBridgeTiming = buildOpenAiBridgeTiming(message.timing, pageSentAt, pageReceivedAt);
+        if (message.ok) {
+          resolve(message.responseText || "");
+        } else {
+          reject(new Error(`OpenAI 브리지 오류: ${message.status || 0} ${message.responseText || ""}`.slice(0, 260)));
+        }
+      }
+
+      pageWindow.addEventListener("message", onMessage);
+      pageWindow.postMessage({
+        source: "HordesKrMod",
+        type: CHAT_TRANSLATION_BRIDGE_REQUEST,
+        id,
+        apiKey,
+        body,
+        sentAt: pageSentAt,
+      }, location.origin);
+    });
+  }
+
+  function buildOpenAiBridgeTiming(timing, fallbackSentAt, pageReceivedAt) {
+    const pageSentAt = Number(timing && timing.pageSentAt) || fallbackSentAt || null;
+    const bridgeReceivedAt = Number(timing && timing.bridgeReceivedAt) || null;
+    const gmStartAt = Number(timing && timing.gmStartAt) || null;
+    const gmEndAt = Number(timing && timing.gmEndAt) || null;
+
+    return {
+      pageToBridgeMs: pageSentAt && bridgeReceivedAt ? bridgeReceivedAt - pageSentAt : null,
+      bridgeQueueMs: bridgeReceivedAt && gmStartAt ? gmStartAt - bridgeReceivedAt : null,
+      gmRequestMs: gmStartAt && gmEndAt ? gmEndAt - gmStartAt : null,
+      bridgeToPageMs: gmEndAt && pageReceivedAt ? pageReceivedAt - gmEndAt : null,
+      pageBridgeTotalMs: pageSentAt && pageReceivedAt ? pageReceivedAt - pageSentAt : null,
+    };
+  }
+
+  async function requestOpenAiViaFetch(apiKey, body) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CHAT_TRANSLATION_TIMEOUT_MS);
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`OpenAI fetch 오류: ${response.status} ${text}`.slice(0, 260));
+      return text;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function extractOpenAiText(response) {
+    if (!response) return "";
+    if (typeof response.output_text === "string") return response.output_text;
+
+    const chunks = [];
+    for (const output of response.output || []) {
+      for (const content of output.content || []) {
+        if (typeof content.text === "string") chunks.push(content.text);
+      }
+    }
+    return chunks.join("\n").trim();
+  }
+
+  function extractOpenAiTranslationArray(response, expectedLength) {
+    const text = extractOpenAiText(response);
+    const parsed = parseOpenAiJsonPayload(text);
+    const values = Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray(parsed.translations)
+        ? parsed.translations
+        : [];
+
+    return values
+      .slice(0, expectedLength)
+      .map((value) => typeof value === "string" ? value : String(value && value.text ? value.text : ""));
+  }
+
+  function parseOpenAiJsonPayload(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return null;
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      const match = raw.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+      if (!match) return null;
+      try {
+        return JSON.parse(match[1]);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  function sanitizeChatTranslation(text) {
+    return String(text || "")
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+      .replace(/^\s*(?:번역|Translation|KR)\s*[:：]\s*/i, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 260);
+  }
+
+  function rememberChatTranslation(key, translation) {
+    CHAT_TRANSLATION_STATE.cache.set(key, {
+      translation,
+      expiresAt: Date.now() + CHAT_TRANSLATION_CACHE_TTL_MS,
+    });
+    if (CHAT_TRANSLATION_STATE.cache.size <= CHAT_TRANSLATION_MAX_CACHE) return;
+
+    const firstKey = CHAT_TRANSLATION_STATE.cache.keys().next().value;
+    CHAT_TRANSLATION_STATE.cache.delete(firstKey);
+  }
+
+  function getCachedChatTranslation(key) {
+    const entry = CHAT_TRANSLATION_STATE.cache.get(key);
+    if (!entry) return "";
+
+    if (typeof entry === "string") return entry;
+    if (!entry || typeof entry !== "object") {
+      CHAT_TRANSLATION_STATE.cache.delete(key);
+      return "";
+    }
+
+    if (Number(entry.expiresAt) <= Date.now()) {
+      CHAT_TRANSLATION_STATE.cache.delete(key);
+      return "";
+    }
+
+    return String(entry.translation || "");
+  }
+
+  function appendChatTranslation(element, translation, sourceText) {
+    if (!element || !translation) return;
+    if (element.dataset.hordesKrChatTranslation === "done") return;
+
+    const scroller = getChatScrollContainer(element);
+    const shouldKeepBottom = shouldKeepChatScrolledToBottom(scroller);
+    const messageBody = getChatMessageBodyElement(element);
+
+    if (messageBody) {
+      element.querySelectorAll(".hordes-kr-chat-translation").forEach((node) => node.remove());
+      if (!messageBody.dataset.hordesKrOriginalText) {
+        messageBody.dataset.hordesKrOriginalText = String(sourceText || messageBody.textContent || "").trim();
+      }
+      messageBody.dataset.hordesKrTranslatedText = translation;
+      messageBody.textContent = translation;
+      messageBody.title = `원문: ${messageBody.dataset.hordesKrOriginalText}`;
+      messageBody.classList.add("hordes-kr-chat-inline-translation");
+      element.classList.add("hordes-kr-chat-line-translated");
+      element.title = messageBody.title;
+    } else {
+      const line = document.createElement("span");
+      line.className = "hordes-kr-chat-translation";
+      line.dataset.source = normalizeChatTranslationKey(sourceText).slice(0, 80);
+      line.textContent = `↳ ${translation}`;
+      line.title = `원문: ${String(sourceText || "").trim()}`;
+      element.appendChild(line);
+    }
+
+    element.dataset.hordesKrChatTranslation = "done";
+
+    if (shouldKeepBottom) {
+      scheduleChatScrollToBottom(scroller);
+    }
+  }
+
+  function restoreChatTranslations(root = document) {
+    const scope = root && typeof root.querySelectorAll === "function" ? root : document;
+    scope.querySelectorAll(".hordes-kr-chat-line-translated, [data-hordes-kr-chat-translation='done']").forEach((element) => {
+      restoreChatTranslationLine(element);
+    });
+    scope.querySelectorAll(".hordes-kr-chat-translation").forEach((node) => node.remove());
+  }
+
+  function restoreChatTranslationLine(element) {
+    if (!element || !element.dataset) return;
+
+    const body = element.querySelector(".hordes-kr-chat-inline-translation") || getChatMessageBodyElement(element);
+    if (body && body.dataset && body.dataset.hordesKrOriginalText) {
+      body.textContent = body.dataset.hordesKrOriginalText;
+      body.classList.remove("hordes-kr-chat-inline-translation");
+      body.title = "";
+      delete body.dataset.hordesKrTranslatedText;
+    }
+
+    element.querySelectorAll(".hordes-kr-chat-translation").forEach((node) => node.remove());
+    element.classList.remove("hordes-kr-chat-line-translated");
+    element.title = "";
+    delete element.dataset.hordesKrChatTranslation;
+  }
+
+  function getChatMessageBodyElement(element) {
+    const line = getChatLineElement(element);
+    if (!line) return null;
+
+    const directChildren = Array.from(line.children || []);
+    for (let index = directChildren.length - 1; index >= 0; index--) {
+      const child = directChildren[index];
+      if (!child || child.matches(".hordes-kr-chat-translation")) continue;
+      if (isChatMetadataElement(child)) continue;
+      if (child.matches("input, textarea, button, select, option, canvas, script, style")) continue;
+
+      const text = normalizeText(child.textContent || "");
+      if (text) return child;
+    }
+
+    return null;
+  }
+
+  function getChatScrollContainer(element) {
+    const root = element && typeof element.closest === "function"
+      ? element.closest("#chat")
+      : document.getElementById("chat");
+    let current = element;
+    let best = null;
+
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (isScrollableChatElement(current)) best = current;
+      if (current === root) break;
+      current = current.parentElement;
+    }
+
+    if (best) return best;
+    if (isScrollableChatElement(root)) return root;
+    return root || null;
+  }
+
+  function isScrollableChatElement(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const scrollGap = Number(element.scrollHeight) - Number(element.clientHeight);
+    if (scrollGap <= 4) return false;
+
+    const style = pageWindow.getComputedStyle ? pageWindow.getComputedStyle(element) : null;
+    const overflowY = style ? style.overflowY : "";
+    return /auto|scroll|overlay|hidden/i.test(overflowY) || element.scrollTop > 0;
+  }
+
+  function shouldKeepChatScrolledToBottom(scroller) {
+    if (!scroller) return false;
+    const distanceFromBottom = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+    return distanceFromBottom <= Math.max(48, scroller.clientHeight * 0.18);
+  }
+
+  function scheduleChatScrollToBottom(scroller) {
+    if (!scroller) return;
+    const scroll = () => {
+      try {
+        scroller.scrollTop = scroller.scrollHeight;
+      } catch {
+        // Some game-controlled containers can reject writes during layout.
+      }
+    };
+
+    scroll();
+    pageWindow.requestAnimationFrame(scroll);
+    setTimeout(scroll, 40);
+  }
+
+  function isChatTranslationNode(node) {
+    const element = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+    return !!(element && element.closest && element.closest(".hordes-kr-chat-translation, .hordes-kr-chat-inline-translation"));
+  }
+
+  function extractChatMessageText(element) {
+    return extractChatMessagePayload(element).text;
+  }
+
+  function extractChatMessagePayload(element) {
+    if (!element) {
+      return {
+        text: "",
+        rawText: "",
+        channel: "",
+        mode: "empty",
+      };
+    }
+
+    const line = getChatLineElement(element);
+    const source = line || element;
+    const rawText = normalizeText(source.textContent || "");
+    const channel = extractChatMessageChannel(source, rawText);
+    const structured = line ? extractStructuredChatBody(line) : "";
+    if (structured) {
+      return {
+        text: structured,
+        rawText,
+        channel,
+        mode: "structured",
+      };
+    }
+
+    const clone = source.cloneNode(true);
+    clone.querySelectorAll(".hordes-kr-chat-translation, input, textarea, button, select, option, script, style").forEach((node) => node.remove());
+    const fallbackRawText = normalizeText(clone.textContent || "");
+    const text = stripChatMetadata(fallbackRawText, channel);
+
+    return {
+      text,
+      rawText: fallbackRawText || rawText,
+      channel,
+      mode: "fallback",
+    };
+  }
+
+  function getChatLineElement(element) {
+    if (!element || !element.matches) return null;
+    if (element.matches(".linewrap")) return element;
+    return element.querySelector ? element.querySelector(".linewrap") : null;
+  }
+
+  function extractChatMessageChannel(element, rawText) {
+    const line = element.matches && element.matches(".linewrap")
+      ? element
+      : element.querySelector && element.querySelector(".linewrap");
+    const channelElement = line && line.querySelector(".channel, [class*='channel'], [class*='Channel']");
+    const fromElement = normalizeChatChannelName(channelElement && channelElement.textContent);
+    if (fromElement) return fromElement;
+
+    const fromClass = extractChatChannelFromClasses(line || element);
+    if (fromClass) return fromClass;
+
+    const text = normalizeText(rawText || "");
+    const patterns = [
+      /^\d{1,2}[.:]\d{2}\s+([A-Za-z]+)\b/,
+      /^[\[(]?([A-Za-z]+)[\])]?[:\s]/,
+      /^\/([A-Za-z]+)\b/,
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      const channel = normalizeChatChannelName(match && match[1]);
+      if (channel) return channel;
+    }
+
+    return "";
+  }
+
+  function extractChatChannelFromClasses(element) {
+    if (!element) return "";
+
+    const elements = [element, ...Array.from(element.querySelectorAll("[class*='text']") || [])];
+    for (const item of elements) {
+      const className = String(item.className || "");
+      const match = className.match(/(?:^|\s)text(party|faction|yell|whisper|clan|system|lvlup)(?:\s|$)/i);
+      const channel = normalizeChatChannelName(match && match[1]);
+      if (channel) return channel;
+    }
+
+    return "";
+  }
+
+  function normalizeChatChannelName(value) {
+    const text = String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "")
+      .trim();
+
+    if (!text) return "";
+    if (text === "w" || text === "pm" || text === "tell") return "whisper";
+    return text;
+  }
+
+  function extractStructuredChatBody(element) {
+    const line = element.matches && element.matches(".linewrap")
+      ? element
+      : element.querySelector && element.querySelector(".linewrap");
+    if (!line) return "";
+
+    const directChildren = Array.from(line.children || []);
+    for (let index = directChildren.length - 1; index >= 0; index--) {
+      const child = directChildren[index];
+      if (isChatMetadataElement(child)) continue;
+
+      const text = normalizeText(child.textContent || "");
+      if (text) return text;
+    }
+
+    const clone = line.cloneNode(true);
+    clone.querySelectorAll(".time, .content, .sender, .channel, .capitalize, .hordes-kr-chat-translation").forEach((node) => node.remove());
+    return normalizeText(clone.textContent || "");
+  }
+
+  function isChatMetadataElement(element) {
+    if (!element || !element.classList) return false;
+
+    return (
+      element.classList.contains("time") ||
+      element.classList.contains("content") ||
+      element.classList.contains("sender") ||
+      element.classList.contains("channel") ||
+      element.classList.contains("capitalize")
+    );
+  }
+
+  function stripChatMetadata(text, channel) {
+    let value = normalizeText(text);
+    if (!value) return "";
+
+    value = value.replace(/^\d{1,2}[.:]\d{2}\s*/, "");
+    if (channel) {
+      value = value.replace(new RegExp(`^${escapeRegExp(channel)}\\s+`, "i"), "");
+    } else {
+      value = value.replace(/^(?:party|clan|faction|pvp|yell|inv|whisper|local|system)\s+/i, "");
+    }
+    value = value.replace(/^\d{1,3}\s+/, "");
+
+    return value.trim();
+  }
+
+  function shouldTranslateChatPayload(payload) {
+    if (!payload || !isAllowedChatTranslationChannel(payload.channel)) return false;
+    if (translateChatMessageLocally(payload.text)) return true;
+    return shouldTranslateChatText(payload.text);
+  }
+
+  function isAllowedChatTranslationChannel(channel) {
+    return CHAT_TRANSLATION_ALLOWED_CHANNELS.has(normalizeChatChannelName(channel));
+  }
+
+  function shouldTranslateChatText(text) {
+    const normalized = normalizeText(text);
+    if (normalized.length < 2 || normalized.length > CHAT_TRANSLATION_MAX_TEXT_LENGTH) return false;
+    if (/^\s*[/>!]/.test(normalized)) return false;
+    if (/^https?:\/\//i.test(normalized)) return false;
+    if (/^(?:\[[^\]]+\]\s*)+$/.test(normalized)) return false;
+    if (/\b(?:joined|left|online|offline)\b/i.test(normalized) && normalized.length < 28) return false;
+    if (!/[A-Za-z]/.test(normalized)) return false;
+
+    const hangul = (normalized.match(/[가-힣]/g) || []).length;
+    const latin = (normalized.match(/[A-Za-z]/g) || []).length;
+    return hangul < Math.max(3, latin * 0.35);
+  }
+
+  function normalizeChatTranslationKey(text) {
+    return normalizeText(text).toLowerCase();
+  }
+
+  function isNodeInsideChat(node) {
+    const element = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+    if (!element || element.closest("#hordes-kr-mod-status-root")) return false;
+    if (element.closest("#chatinput, .commandlist, [class*='commandlist'], [class*='CommandList']")) return false;
+    return Boolean(element.closest("#chat"));
+  }
+
+  function installChatTranslationStyle() {
+    if (document.getElementById("hordes-kr-chat-translation-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "hordes-kr-chat-translation-style";
+    style.textContent = `
+      .hordes-kr-chat-translation {
+        display: block !important;
+        width: fit-content !important;
+        max-width: calc(100% - 12px) !important;
+        margin: 3px 0 2px 12px !important;
+        padding: 2px 6px 3px 7px !important;
+        border-left: 3px solid #f5c247 !important;
+        border-radius: 3px !important;
+        background: rgba(6, 11, 18, 0.78) !important;
+        color: #fff2a6 !important;
+        font-size: 1.04em !important;
+        font-weight: 900 !important;
+        line-height: 1.28 !important;
+        opacity: 1 !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.36) !important;
+        text-shadow:
+          1px 0 0 rgba(0, 0, 0, 0.95),
+          -1px 0 0 rgba(0, 0, 0, 0.95),
+          0 1px 0 rgba(0, 0, 0, 0.95),
+          0 -1px 0 rgba(0, 0, 0, 0.95),
+          0 1px 3px rgba(0, 0, 0, 0.9) !important;
+      }
+      .hordes-kr-chat-inline-translation {
+        color: #fff3a8 !important;
+        font-weight: 900 !important;
+        opacity: 1 !important;
+        text-shadow:
+          1px 0 0 rgba(0, 0, 0, 0.96),
+          -1px 0 0 rgba(0, 0, 0, 0.96),
+          0 1px 0 rgba(0, 0, 0, 0.96),
+          0 -1px 0 rgba(0, 0, 0, 0.96),
+          0 1px 3px rgba(0, 0, 0, 0.92) !important;
+      }
+      .hordes-kr-chat-line-translated {
+        min-height: 18px !important;
+      }
+      #hordes-kr-chat-translation-toggle {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        pointer-events: auto !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        line-height: 1 !important;
+        touch-action: manipulation !important;
+      }
+      #hordes-kr-chat-translation-toggle[hidden] {
+        display: none !important;
+      }
+      #hordes-kr-chat-translation-toggle button {
+        min-width: 92px !important;
+        height: 24px !important;
+        box-sizing: border-box !important;
+        border: 1px solid rgba(166, 220, 213, 0.42) !important;
+        border-radius: 5px !important;
+        background: rgba(16, 19, 29, 0.9) !important;
+        color: #a6dcd5 !important;
+        padding: 0 8px !important;
+        font: 900 11px/22px Arial, Helvetica, sans-serif !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.36) !important;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95) !important;
+      }
+      #hordes-kr-chat-translation-toggle button.enabled {
+        border-color: rgba(52, 203, 73, 0.78) !important;
+        color: #d8ffdf !important;
+        background: rgba(15, 64, 35, 0.9) !important;
+      }
+      #hordes-kr-chat-translation-toggle button.busy {
+        border-color: rgba(245, 194, 71, 0.84) !important;
+        color: #fff3b0 !important;
+      }
+      #hordes-kr-chat-translation-toggle button.missing {
+        border-color: rgba(244, 41, 41, 0.62) !important;
+        color: #ffd2d2 !important;
+        background: rgba(72, 20, 24, 0.88) !important;
+      }
+      #hordes-kr-chat-translation-toggle button:hover {
+        border-color: rgba(245, 194, 71, 0.9) !important;
+        color: #ffffff !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function ensureChatTranslationQuickToggleHost() {
+    if (CHAT_TRANSLATION_STATE.quickToggleHost && document.contains(CHAT_TRANSLATION_STATE.quickToggleHost)) {
+      return CHAT_TRANSLATION_STATE.quickToggleHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-chat-translation-toggle";
+    host.hidden = true;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "채팅번역";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setChatTranslationEnabled(!isChatTranslationEnabled());
+      updateChatTranslationQuickToggle(true);
+      renderStatusUi();
+    });
+
+    [...HIGHLIGHT_INPUT_POINTER_EVENTS, "pointerup", "pointermove", "contextmenu", "wheel"].forEach((type) => {
+      button.addEventListener(type, (event) => {
+        event.stopPropagation();
+      });
+    });
+
+    host.appendChild(button);
+    document.body.appendChild(host);
+    CHAT_TRANSLATION_STATE.quickToggleHost = host;
+    CHAT_TRANSLATION_STATE.quickToggleRenderKey = "";
+    return host;
+  }
+
+  function startChatTranslationQuickTogglePositioner() {
+    if (CHAT_TRANSLATION_STATE.quickToggleTimer) return;
+
+    CHAT_TRANSLATION_STATE.quickToggleTimer = setInterval(
+      updateChatTranslationQuickToggle,
+      CHAT_TRANSLATION_TOGGLE_REFRESH_MS
+    );
+    pageWindow.addEventListener("resize", updateChatTranslationQuickToggle);
+  }
+
+  function updateChatTranslationQuickToggle(force = false) {
+    const host = ensureChatTranslationQuickToggleHost();
+    if (!host) return;
+
+    const chat = getChatPanelRect();
+    if (!chat) {
+      host.hidden = true;
+      CHAT_TRANSLATION_STATE.quickToggleRenderKey = "";
+      return;
+    }
+
+    const button = host.querySelector("button");
+    if (!button) return;
+
+    const hostRect = host.getBoundingClientRect();
+    const width = Math.max(96, Math.round(hostRect.width || 96));
+    const height = Math.max(24, Math.round(hostRect.height || 24));
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    const left = Math.round(clamp(chat.left + 4, 2, viewportWidth - width - 2));
+    const preferredTop = chat.top - height - 4;
+    const top = Math.round(clamp(preferredTop >= 2 ? preferredTop : chat.top + 4, 2, viewportHeight - height - 2));
+
+    const hasKey = hasChatTranslationApiKey();
+    const enabled = isChatTranslationEnabled();
+    const busy = enabled && (CHAT_TRANSLATION_STATE.activeRequests > 0 || CHAT_TRANSLATION_STATE.queue.length > 0);
+    const text = hasKey
+      ? busy
+        ? "채팅번역 중"
+        : `채팅번역 ${enabled ? "ON" : "OFF"}`
+      : "채팅번역 키없음";
+    const title = hasKey
+      ? `채팅 번역 ${enabled ? "켜짐" : "꺼짐"}`
+      : '콘솔에서 HordesKrMod.setChatTranslationApiKey("...")로 API 키를 저장하세요.';
+
+    const renderKey = [
+      left,
+      top,
+      text,
+      title,
+      enabled ? "1" : "0",
+      busy ? "1" : "0",
+      hasKey ? "1" : "0",
+    ].join("|");
+    if (!force && CHAT_TRANSLATION_STATE.quickToggleRenderKey === renderKey && !host.hidden) return;
+    CHAT_TRANSLATION_STATE.quickToggleRenderKey = renderKey;
+
+    host.hidden = false;
+    host.style.left = `${left}px`;
+    host.style.top = `${top}px`;
+    button.textContent = text;
+    button.title = title;
+    button.className = [
+      enabled ? "enabled" : "",
+      busy ? "busy" : "",
+      hasKey ? "" : "missing",
+    ].filter(Boolean).join(" ");
+  }
+
+  function getChatTranslationStatus() {
+    return {
+      enabled: isChatTranslationEnabled(),
+      hasApiKey: Boolean(getChatTranslationApiKey()),
+      model: getChatTranslationModel(),
+      transport: {
+        last: CHAT_TRANSLATION_STATE.lastTransport,
+        gm: typeof GM_xmlhttpRequest === "function",
+        bridgeReady: Boolean(pageWindow.__HORDES_KR_OPENAI_BRIDGE_READY__),
+        bridgeInstalled: Boolean(pageWindow.__HORDES_KR_OPENAI_BRIDGE_INSTALLED__),
+        bridgeUsable: isOpenAiBridgeAvailable(),
+      },
+      bridgeTiming: CHAT_TRANSLATION_STATE.lastBridgeTiming,
+      queue: CHAT_TRANSLATION_STATE.queue.length,
+      activeRequests: CHAT_TRANSLATION_STATE.activeRequests,
+      inFlightRequests: CHAT_TRANSLATION_STATE.inFlight.size,
+      limits: {
+        scanRecentMessages: CHAT_TRANSLATION_SCAN_LIMIT,
+        queue: CHAT_TRANSLATION_MAX_QUEUE,
+        cache: CHAT_TRANSLATION_MAX_CACHE,
+        cacheTtlMs: CHAT_TRANSLATION_CACHE_TTL_MS,
+        concurrent: CHAT_TRANSLATION_MAX_CONCURRENT,
+        batch: CHAT_TRANSLATION_BATCH_SIZE,
+        textLength: CHAT_TRANSLATION_MAX_TEXT_LENGTH,
+      },
+      allowedChannels: [...CHAT_TRANSLATION_ALLOWED_CHANNELS],
+      translatedCount: CHAT_TRANSLATION_STATE.translatedCount,
+      requestCount: CHAT_TRANSLATION_STATE.requestCount,
+      batchRequestCount: CHAT_TRANSLATION_STATE.batchRequestCount,
+      localHitCount: CHAT_TRANSLATION_STATE.localHitCount,
+      cacheSize: CHAT_TRANSLATION_STATE.cache.size,
+      cacheHits: CHAT_TRANSLATION_STATE.cacheHits,
+      skippedCount: CHAT_TRANSLATION_STATE.skippedCount,
+      droppedCount: CHAT_TRANSLATION_STATE.droppedCount,
+      lastRequestDurationMs: CHAT_TRANSLATION_STATE.lastRequestDurationMs,
+      averageRequestDurationMs: CHAT_TRANSLATION_STATE.averageRequestDurationMs,
+      lastChannel: CHAT_TRANSLATION_STATE.lastChannel,
+      lastText: CHAT_TRANSLATION_STATE.lastText,
+      lastTranslation: CHAT_TRANSLATION_STATE.lastTranslation,
+      lastError: CHAT_TRANSLATION_STATE.lastError,
+      lastAt: CHAT_TRANSLATION_STATE.lastAt,
+      quickToggle: {
+        host: Boolean(CHAT_TRANSLATION_STATE.quickToggleHost && document.contains(CHAT_TRANSLATION_STATE.quickToggleHost)),
+        hidden: CHAT_TRANSLATION_STATE.quickToggleHost ? CHAT_TRANSLATION_STATE.quickToggleHost.hidden : true,
+      },
+    };
+  }
+
+  function initTargetOrderClient() {
+    installTargetOrderStyle();
+    installTargetOrderKeyboardHandler();
+    const start = () => {
+      if (TARGET_ORDER_CONFIG.enabled) connectTargetOrder(false);
+    };
+
+    if (document.body) {
+      start();
+    } else {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    }
+  }
+
+  function installTargetOrderKeyboardHandler() {
+    if (TARGET_ORDER_STATE.keyboardInstalled) return;
+    TARGET_ORDER_STATE.keyboardInstalled = true;
+
+    const handler = (event) => {
+      if (!TARGET_ORDER_CONFIG.enabled) return;
+      if (event.repeat || TARGET_ORDER_STATE.hotkeyCaptureActive) return;
+      if (!isTargetOrderHotkeyEvent(event)) return;
+      if (shouldIgnoreTargetOrderHotkey(event)) return;
+
+      const pending = getActiveTargetOrderCall();
+      const result = pending ? applyPendingTargetOrder() : sendCurrentTargetOrder();
+      if (result && result.ok !== false) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+
+    pageWindow.addEventListener("keydown", handler, true);
+    document.addEventListener("keydown", handler, true);
+  }
+
+  function isTargetOrderHotkeyEvent(event) {
+    const configured = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
+    return event.code === configured;
+  }
+
+  function shouldIgnoreTargetOrderHotkey(event) {
+    const target = event && event.target;
+    const active = document.activeElement;
+    return isEditableTargetOrderElement(target) || isEditableTargetOrderElement(active) || isStatusUiKeyboardEvent(event);
+  }
+
+  function isEditableTargetOrderElement(element) {
+    if (!element || element === document.body) return false;
+    if (element.closest && element.closest("#chatinput, input, textarea, select, [contenteditable='true'], #hordes-kr-mod-status-root")) return true;
+    return Boolean(element.isContentEditable);
+  }
+
+  function setTargetOrderEnabled(enabled) {
+    TARGET_ORDER_CONFIG.enabled = Boolean(enabled);
+    saveTargetOrderConfig();
+    if (TARGET_ORDER_CONFIG.enabled) {
+      connectTargetOrder(true);
+    } else {
+      stopTargetOrderClient("꺼짐");
+      clearTargetOrderAlert();
+    }
+    renderStatusUi();
+    return getTargetOrderStatus();
+  }
+
+  function setTargetOrderConfig(config) {
+    if (config && typeof config === "object") {
+      if ("enabled" in config) TARGET_ORDER_CONFIG.enabled = Boolean(config.enabled);
+      if ("alertEnabled" in config) TARGET_ORDER_CONFIG.alertEnabled = config.alertEnabled !== false;
+      if ("serverUrl" in config) TARGET_ORDER_CONFIG.serverUrl = normalizeTargetOrderServerUrl(config.serverUrl);
+      if ("roomId" in config) TARGET_ORDER_CONFIG.roomId = normalizeTargetOrderConfigText(config.roomId, 48);
+      if ("userName" in config) TARGET_ORDER_CONFIG.userName = normalizeTargetOrderConfigText(config.userName, 32);
+      if ("clientToken" in config) TARGET_ORDER_CONFIG.clientToken = String(config.clientToken || "").trim();
+      if ("hotkeyCode" in config) {
+        TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(config.hotkeyCode) || TARGET_ORDER_CONFIG.hotkeyCode || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
+      }
+    }
+
+    saveTargetOrderConfig();
+    if (TARGET_ORDER_CONFIG.enabled) connectTargetOrder(true);
+    renderStatusUi();
+    return getTargetOrderStatus();
+  }
+
+  function saveTargetOrderConfig() {
+    TARGET_ORDER_CONFIG.serverUrl = normalizeTargetOrderServerUrl(TARGET_ORDER_CONFIG.serverUrl);
+    TARGET_ORDER_CONFIG.roomId = normalizeTargetOrderConfigText(TARGET_ORDER_CONFIG.roomId, 48);
+    TARGET_ORDER_CONFIG.userName = normalizeTargetOrderConfigText(TARGET_ORDER_CONFIG.userName, 32);
+    TARGET_ORDER_CONFIG.clientToken = String(TARGET_ORDER_CONFIG.clientToken || "").trim();
+    TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
+    saveJsonConfig(TARGET_ORDER_CONFIG_KEY, TARGET_ORDER_CONFIG);
+  }
+
+  function normalizeTargetOrderServerUrl(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    if (/^https:\/\//i.test(text)) return text.replace(/^https:/i, "wss:");
+    if (/^http:\/\//i.test(text)) return text.replace(/^http:/i, "ws:");
+    return text;
+  }
+
+  function normalizeTargetOrderConfigText(value, maxLength) {
+    return String(value || "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+  }
+
+  function normalizeKeyboardCode(code) {
+    const value = String(code || "").trim();
+    if (!value) return "";
+    if (/^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|Numpad[0-9]|Arrow(?:Up|Down|Left|Right)|Space|Tab|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/i.test(value)) {
+      if (/^key[a-z]$/i.test(value)) return `Key${value.slice(-1).toUpperCase()}`;
+      if (/^digit[0-9]$/i.test(value)) return `Digit${value.slice(-1)}`;
+      return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    if (/^[a-z]$/i.test(value)) return `Key${value.toUpperCase()}`;
+    if (/^[0-9]$/.test(value)) return `Digit${value}`;
+    return "";
+  }
+
+  function formatKeyboardCode(code) {
+    const normalized = normalizeKeyboardCode(code) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
+    if (/^Key[A-Z]$/.test(normalized)) return normalized.slice(3);
+    if (/^Digit[0-9]$/.test(normalized)) return normalized.slice(5);
+    return normalized;
+  }
+
+  function isTargetOrderConfigReady() {
+    return Boolean(TARGET_ORDER_CONFIG.serverUrl && TARGET_ORDER_CONFIG.roomId && TARGET_ORDER_CONFIG.userName && TARGET_ORDER_CONFIG.clientToken);
+  }
+
+  function connectTargetOrder(force) {
+    if (!TARGET_ORDER_CONFIG.enabled) return getTargetOrderStatus();
+    if (!isTargetOrderConfigReady()) {
+      TARGET_ORDER_STATE.lastState = "설정 필요";
+      TARGET_ORDER_STATE.lastError = "서버 URL, 방 코드, 닉네임, 유저 토큰이 필요합니다.";
+      renderStatusUi();
+      return getTargetOrderStatus();
+    }
+
+    if (!force && TARGET_ORDER_STATE.ws && TARGET_ORDER_STATE.ws.readyState === WebSocket.OPEN) {
+      return getTargetOrderStatus();
+    }
+
+    stopTargetOrderSocketOnly();
+    TARGET_ORDER_STATE.lastState = "연결 중";
+    TARGET_ORDER_STATE.lastError = "";
+    renderStatusUi();
+
+    try {
+      const ws = new pageWindow.WebSocket(TARGET_ORDER_CONFIG.serverUrl);
+      TARGET_ORDER_STATE.ws = ws;
+      ws.addEventListener("open", () => {
+        TARGET_ORDER_STATE.connectedAt = new Date();
+        TARGET_ORDER_STATE.lastState = "인증 중";
+        sendTargetOrderSocketMessage({
+          type: "join",
+          roomId: TARGET_ORDER_CONFIG.roomId,
+          userName: TARGET_ORDER_CONFIG.userName,
+          clientToken: TARGET_ORDER_CONFIG.clientToken,
+          version: MOD_VERSION,
+        });
+        renderStatusUi();
+      });
+      ws.addEventListener("message", (event) => {
+        handleTargetOrderSocketMessage(event.data);
+      });
+      ws.addEventListener("close", () => {
+        if (TARGET_ORDER_STATE.ws === ws) TARGET_ORDER_STATE.ws = null;
+        TARGET_ORDER_STATE.users = [];
+        TARGET_ORDER_STATE.lastState = TARGET_ORDER_CONFIG.enabled ? "연결 끊김" : "꺼짐";
+        renderStatusUi();
+        scheduleTargetOrderReconnect();
+      });
+      ws.addEventListener("error", () => {
+        TARGET_ORDER_STATE.lastError = "WebSocket 오류";
+        renderStatusUi();
+      });
+    } catch (error) {
+      TARGET_ORDER_STATE.lastState = "연결 실패";
+      TARGET_ORDER_STATE.lastError = error && error.message ? error.message : String(error);
+      scheduleTargetOrderReconnect();
+      renderStatusUi();
+    }
+
+    return getTargetOrderStatus();
+  }
+
+  function stopTargetOrderClient(reason) {
+    TARGET_ORDER_CONFIG.enabled = false;
+    saveTargetOrderConfig();
+    stopTargetOrderSocketOnly();
+    TARGET_ORDER_STATE.lastState = reason || "꺼짐";
+    TARGET_ORDER_STATE.users = [];
+  }
+
+  function stopTargetOrderSocketOnly() {
+    if (TARGET_ORDER_STATE.reconnectTimer) {
+      clearTimeout(TARGET_ORDER_STATE.reconnectTimer);
+      TARGET_ORDER_STATE.reconnectTimer = null;
+    }
+    const ws = TARGET_ORDER_STATE.ws;
+    TARGET_ORDER_STATE.ws = null;
+    if (ws && ws.readyState <= WebSocket.OPEN) {
+      try {
+        ws.close(1000, "client reconnect");
+      } catch {
+        // Ignore close races.
+      }
+    }
+  }
+
+  function scheduleTargetOrderReconnect() {
+    if (!TARGET_ORDER_CONFIG.enabled || !isTargetOrderConfigReady()) return;
+    if (TARGET_ORDER_STATE.reconnectTimer) return;
+    TARGET_ORDER_STATE.reconnectTimer = setTimeout(() => {
+      TARGET_ORDER_STATE.reconnectTimer = null;
+      connectTargetOrder(false);
+    }, TARGET_ORDER_RECONNECT_MS);
+  }
+
+  function handleTargetOrderSocketMessage(raw) {
+    let message;
+    try {
+      message = JSON.parse(String(raw || ""));
+    } catch {
+      return;
+    }
+
+    if (!message || typeof message !== "object") return;
+    if (message.type === "joined") {
+      TARGET_ORDER_STATE.lastState = message.allowedOrder ? "연결됨 / 오더 가능" : "연결됨";
+      TARGET_ORDER_STATE.lastError = "";
+      TARGET_ORDER_STATE.users = Array.isArray(message.users) ? message.users : [];
+    } else if (message.type === "user-list") {
+      TARGET_ORDER_STATE.users = Array.isArray(message.users) ? message.users : [];
+    } else if (message.type === "target-call") {
+      receiveTargetOrderCall(message);
+    } else if (message.type === "target-call-accepted") {
+      TARGET_ORDER_STATE.acceptedCount++;
+      TARGET_ORDER_STATE.lastState = "오더 전송됨";
+      TARGET_ORDER_STATE.lastError = "";
+    } else if (message.type === "target-call-denied") {
+      TARGET_ORDER_STATE.deniedCount++;
+      TARGET_ORDER_STATE.lastState = "오더 거부됨";
+      TARGET_ORDER_STATE.lastError = message.reason || "서버 권한 없음";
+      showTargetOrderToast("타겟 오더 거부", TARGET_ORDER_STATE.lastError, "권한 없음");
+    } else if (message.type === "error") {
+      TARGET_ORDER_STATE.lastState = "오류";
+      TARGET_ORDER_STATE.lastError = message.message || message.reason || "서버 오류";
+    }
+    renderStatusUi();
+  }
+
+  function sendTargetOrderSocketMessage(message) {
+    const ws = TARGET_ORDER_STATE.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(message));
+    return true;
+  }
+
+  function sendCurrentTargetOrder() {
+    if (!TARGET_ORDER_CONFIG.enabled) return { ok: false, reason: "타겟오더가 꺼져 있습니다." };
+    if (!isTargetOrderSocketReady()) {
+      connectTargetOrder(false);
+      TARGET_ORDER_STATE.lastError = "서버에 연결되지 않았습니다.";
+      renderStatusUi();
+      return { ok: false, reason: TARGET_ORDER_STATE.lastError };
+    }
+
+    const payload = buildCurrentTargetOrderPayload();
+    if (!payload.ok) {
+      TARGET_ORDER_STATE.lastError = payload.reason || "현재 타겟을 찾지 못했습니다.";
+      showTargetOrderToast("타겟 오더 실패", TARGET_ORDER_STATE.lastError, "현재 타겟 없음");
+      renderStatusUi();
+      return payload;
+    }
+
+    const sent = sendTargetOrderSocketMessage({
+      type: "target-call",
+      roomId: TARGET_ORDER_CONFIG.roomId,
+      targetId: payload.targetId,
+      targetName: payload.targetName,
+      targetPosition: payload.targetPosition,
+      visualPosition: payload.visualPosition,
+      distance: payload.distance,
+      sentAt: Date.now(),
+    });
+    if (!sent) return { ok: false, reason: "WebSocket 전송 실패" };
+
+    TARGET_ORDER_STATE.sentCount++;
+    TARGET_ORDER_STATE.lastSentAt = new Date();
+    TARGET_ORDER_STATE.lastState = "오더 전송 중";
+    setStatus({ lastState: `타겟 오더: ${payload.targetName}`, lastError: "" });
+    renderStatusUi();
+    return { ok: true, ...payload };
+  }
+
+  function buildCurrentTargetOrderPayload() {
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const target = runtime && self ? findSelectedTargetEntity(runtime, self.entity) : null;
+    if (!runtime || !self) return { ok: false, reason: "내 캐릭터 런타임을 찾지 못했습니다." };
+    if (!target) return { ok: false, reason: "현재 선택된 타겟이 없습니다." };
+
+    const targetPosition = getRuntimeWorldPosition(target.entity);
+    const targetCombatPosition = getRuntimeCombatPosition(target.entity) || targetPosition;
+    if (!targetPosition || !targetCombatPosition) return { ok: false, reason: "타겟 좌표를 찾지 못했습니다." };
+
+    const selfPosition = getRuntimeCombatPosition(self.entity) || getRuntimeWorldPosition(self.entity);
+    const range = selfPosition
+      ? getRuntimeCombatRangeDistance(self.entity, target.entity, selfPosition.position, targetCombatPosition.position)
+      : null;
+    const id = getRuntimeEntityId(target.entity);
+    const name = getRuntimeEntityLabel(target.entity);
+
+    return {
+      ok: true,
+      targetId: id !== undefined ? String(id) : "",
+      targetName: name,
+      targetPosition: targetCombatPosition.position.map(roundCoord),
+      visualPosition: targetPosition.position.map(roundCoord),
+      distance: range ? roundCoord(range.distance) : null,
+    };
+  }
+
+  function receiveTargetOrderCall(message) {
+    if (!TARGET_ORDER_CONFIG.enabled || !TARGET_ORDER_CONFIG.alertEnabled) return;
+    if (String(message.senderName || "") === TARGET_ORDER_CONFIG.userName) return;
+
+    const call = normalizeTargetOrderCall(message);
+    if (!call) return;
+
+    TARGET_ORDER_STATE.pendingCall = call;
+    TARGET_ORDER_STATE.receivedCount++;
+    TARGET_ORDER_STATE.lastReceivedAt = new Date();
+    TARGET_ORDER_STATE.lastState = "오더 수신";
+    showTargetOrderAlert(call);
+    renderStatusUi();
+  }
+
+  function normalizeTargetOrderCall(message) {
+    const targetName = normalizeTargetOrderConfigText(message.targetName, 48);
+    if (!targetName) return null;
+
+    return {
+      id: String(message.id || message.callId || `${Date.now()}:${Math.random().toString(36).slice(2)}`),
+      senderName: normalizeTargetOrderConfigText(message.senderName, 32),
+      targetId: String(message.targetId || ""),
+      targetName,
+      targetPosition: Array.isArray(message.targetPosition) ? message.targetPosition.slice(0, 3).map(Number) : null,
+      visualPosition: Array.isArray(message.visualPosition) ? message.visualPosition.slice(0, 3).map(Number) : null,
+      receivedAt: Date.now(),
+      expiresAt: Date.now() + TARGET_ORDER_PENDING_MS,
+    };
+  }
+
+  function getActiveTargetOrderCall() {
+    const call = TARGET_ORDER_STATE.pendingCall;
+    if (!call) return null;
+    if (Date.now() > call.expiresAt) {
+      clearTargetOrderAlert();
+      return null;
+    }
+    return call;
+  }
+
+  function applyPendingTargetOrder() {
+    const call = getActiveTargetOrderCall();
+    if (!call) return { ok: false, reason: "적용할 타겟 오더가 없습니다." };
+
+    const result = applyTargetOrderCall(call);
+    if (result.ok) {
+      clearTargetOrderAlert();
+      showTargetOrderToast("타겟 적용됨", call.targetName, call.senderName || "오더");
+    } else {
+      showTargetOrderToast("타겟 적용 실패", call.targetName, result.reason || "대상 없음");
+    }
+    renderStatusUi();
+    return result;
+  }
+
+  function applyTargetOrderCall(call) {
+    if (call.targetId) {
+      const byId = targetRuntimeEntityById(call.targetId, call.targetName, "targetOrder");
+      if (byId.ok) return byId;
+    }
+
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const byName = runtime ? findRuntimeEntityForTargetOrderCall(runtime, call, self && self.entity) : null;
+    if (!byName) {
+      return { ok: false, reason: "현재 클라이언트에서 대상 엔티티를 찾지 못했습니다." };
+    }
+
+    const id = getRuntimeEntityId(byName.entity);
+    if (id === undefined || id === null || id === "") {
+      return { ok: false, reason: "대상 id를 찾지 못했습니다." };
+    }
+    return targetRuntimeEntityById(id, call.targetName, "targetOrderNameFallback");
+  }
+
+  function findRuntimeEntityForTargetOrderCall(runtime, call, selfEntity) {
+    const candidates = collectRuntimeOverlayEntities([call.targetName], {
+      limit: 20,
+      maxDepth: 7,
+      maxObjects: 9000,
+    }).filter((candidate) => !isSameRuntimeEntity(candidate.entity, selfEntity));
+
+    if (candidates.length === 0) return null;
+    const referencePosition = Array.isArray(call.targetPosition) && call.targetPosition.every(Number.isFinite)
+      ? call.targetPosition
+      : null;
+    if (!referencePosition) return candidates[0];
+
+    return candidates
+      .map((candidate) => ({
+        ...candidate,
+        orderDistance: getHorizontalRuntimeDistance(referencePosition, candidate.position),
+      }))
+      .sort((left, right) => left.orderDistance - right.orderDistance)[0];
+  }
+
+  function isTargetOrderSocketReady() {
+    return Boolean(TARGET_ORDER_STATE.ws && TARGET_ORDER_STATE.ws.readyState === WebSocket.OPEN);
+  }
+
+  function showTargetOrderAlert(call) {
+    const host = ensureTargetOrderAlertHost();
+    if (!host) return;
+
+    host.className = "hordes-kr-target-order-alert";
+    host.innerHTML = "";
+    const sender = document.createElement("div");
+    const target = document.createElement("div");
+    const hint = document.createElement("div");
+    sender.className = "sender";
+    target.className = "target";
+    hint.className = "hint";
+    sender.textContent = `${call.senderName || "Unknown"} 타겟 요청`;
+    target.textContent = call.targetName;
+    hint.textContent = `${formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode)} 입력 시 타겟`;
+    host.append(sender, target, hint);
+    host.hidden = false;
+
+    if (TARGET_ORDER_STATE.alertTimer) clearTimeout(TARGET_ORDER_STATE.alertTimer);
+    TARGET_ORDER_STATE.alertTimer = setTimeout(() => {
+      if (TARGET_ORDER_STATE.pendingCall && TARGET_ORDER_STATE.pendingCall.id === call.id) {
+        clearTargetOrderAlert();
+      }
+    }, TARGET_ORDER_PENDING_MS);
+  }
+
+  function showTargetOrderToast(title, targetName, hint) {
+    const host = ensureTargetOrderAlertHost();
+    if (!host) return;
+
+    host.className = "hordes-kr-target-order-alert compact";
+    host.innerHTML = "";
+    const sender = document.createElement("div");
+    const target = document.createElement("div");
+    const info = document.createElement("div");
+    sender.className = "sender";
+    target.className = "target";
+    info.className = "hint";
+    sender.textContent = title;
+    target.textContent = targetName || "-";
+    info.textContent = hint || "";
+    host.append(sender, target, info);
+    host.hidden = false;
+
+    if (TARGET_ORDER_STATE.alertTimer) clearTimeout(TARGET_ORDER_STATE.alertTimer);
+    TARGET_ORDER_STATE.alertTimer = setTimeout(() => {
+      host.hidden = true;
+    }, 1400);
+  }
+
+  function ensureTargetOrderAlertHost() {
+    if (TARGET_ORDER_STATE.alertHost && document.contains(TARGET_ORDER_STATE.alertHost)) {
+      return TARGET_ORDER_STATE.alertHost;
+    }
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-target-order-alert";
+    host.hidden = true;
+    document.body.appendChild(host);
+    TARGET_ORDER_STATE.alertHost = host;
+    return host;
+  }
+
+  function clearTargetOrderAlert() {
+    if (TARGET_ORDER_STATE.alertTimer) {
+      clearTimeout(TARGET_ORDER_STATE.alertTimer);
+      TARGET_ORDER_STATE.alertTimer = null;
+    }
+    TARGET_ORDER_STATE.pendingCall = null;
+    if (TARGET_ORDER_STATE.alertHost) TARGET_ORDER_STATE.alertHost.hidden = true;
+  }
+
+  function installTargetOrderStyle() {
+    if (document.getElementById("hordes-kr-target-order-style")) return;
+    const style = document.createElement("style");
+    style.id = "hordes-kr-target-order-style";
+    style.textContent = `
+      #hordes-kr-target-order-alert {
+        position: fixed !important;
+        top: ${TARGET_ORDER_ALERT_OFFSET_TOP} !important;
+        left: 50% !important;
+        transform: translateX(-50%) !important;
+        z-index: 2147483647 !important;
+        pointer-events: none !important;
+        min-width: 260px !important;
+        max-width: min(520px, calc(100vw - 32px)) !important;
+        padding: 10px 16px 12px !important;
+        border: 1px solid rgba(245, 194, 71, 0.72) !important;
+        border-radius: 8px !important;
+        background: rgba(8, 12, 20, 0.9) !important;
+        color: #f5c247 !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        text-align: center !important;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42), inset 0 0 20px rgba(245, 194, 71, 0.08) !important;
+      }
+      #hordes-kr-target-order-alert[hidden] {
+        display: none !important;
+      }
+      #hordes-kr-target-order-alert .sender {
+        color: #a6dcd5 !important;
+        font-size: 13px !important;
+        line-height: 1.1 !important;
+        font-weight: 900 !important;
+      }
+      #hordes-kr-target-order-alert .target {
+        color: #ffffff !important;
+        font-size: 28px !important;
+        line-height: 1.08 !important;
+        font-weight: 1000 !important;
+        margin-top: 4px !important;
+        text-shadow:
+          2px 0 0 rgba(0, 0, 0, 0.95),
+          -2px 0 0 rgba(0, 0, 0, 0.95),
+          0 2px 0 rgba(0, 0, 0, 0.95),
+          0 -2px 0 rgba(0, 0, 0, 0.95),
+          0 0 8px rgba(245, 194, 71, 0.82) !important;
+      }
+      #hordes-kr-target-order-alert .hint {
+        color: #f5c247 !important;
+        font-size: 13px !important;
+        line-height: 1.15 !important;
+        font-weight: 900 !important;
+        margin-top: 6px !important;
+      }
+      #hordes-kr-target-order-alert.compact .target {
+        font-size: 22px !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function getTargetOrderStatus() {
+    return {
+      enabled: TARGET_ORDER_CONFIG.enabled,
+      alertEnabled: TARGET_ORDER_CONFIG.alertEnabled,
+      connected: isTargetOrderSocketReady(),
+      state: TARGET_ORDER_STATE.lastState,
+      lastError: TARGET_ORDER_STATE.lastError,
+      serverUrl: TARGET_ORDER_CONFIG.serverUrl,
+      roomId: TARGET_ORDER_CONFIG.roomId,
+      userName: TARGET_ORDER_CONFIG.userName,
+      hasToken: Boolean(TARGET_ORDER_CONFIG.clientToken),
+      hotkey: formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode),
+      pendingCall: getActiveTargetOrderCall(),
+      users: [...TARGET_ORDER_STATE.users],
+      sentCount: TARGET_ORDER_STATE.sentCount,
+      receivedCount: TARGET_ORDER_STATE.receivedCount,
+      acceptedCount: TARGET_ORDER_STATE.acceptedCount,
+      deniedCount: TARGET_ORDER_STATE.deniedCount,
+      lastSentAt: TARGET_ORDER_STATE.lastSentAt,
+      lastReceivedAt: TARGET_ORDER_STATE.lastReceivedAt,
+    };
+  }
+
+  function initPartyUiManager() {
+    const start = () => {
+      installPartyUiStyle();
+      updatePartyUi();
+
+      if (!PARTY_UI_STATE.observer) {
+        PARTY_UI_STATE.observer = new MutationObserver(() => {
+          schedulePartyUiUpdate();
+        });
+        PARTY_UI_STATE.observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+      }
+
+      if (!PARTY_UI_STATE.timer) {
+        PARTY_UI_STATE.timer = setInterval(schedulePartyUiUpdate, PARTY_UI_REFRESH_MS);
+      }
+    };
+
+    const delayedStart = () => {
+      setTimeout(start, 1200);
+    };
+
+    if (document.readyState === "complete") {
+      delayedStart();
+    } else {
+      pageWindow.addEventListener("load", delayedStart, { once: true });
+    }
+  }
+
+  function schedulePartyUiUpdate() {
+    if (PARTY_UI_STATE.pendingUpdate) return;
+    PARTY_UI_STATE.pendingUpdate = true;
+
+    requestAnimationFrame(() => {
+      PARTY_UI_STATE.pendingUpdate = false;
+      updatePartyUi();
+    });
+  }
+
+  function updatePartyUi() {
+    try {
+      const frame = findPartyFrameElement();
+      if (!frame) {
+        removePartyUiHandle();
+        PARTY_UI_STATE.frame = null;
+        PARTY_UI_STATE.lastFrameCount = 0;
+        return;
+      }
+
+      PARTY_UI_STATE.frame = frame;
+      PARTY_UI_STATE.lastFrameCount = frame.children ? frame.children.length : 0;
+
+      if (!PARTY_UI_CONFIG.enabled) {
+        restorePartyFrame(frame);
+        removePartyUiHandle();
+        return;
+      }
+
+      const layout = getPartyUiLayout(frame);
+      applyPartyFrameLayout(frame, layout);
+      updatePartyUiHandle(frame, layout);
+      PARTY_UI_STATE.lastError = "";
+    } catch (error) {
+      PARTY_UI_STATE.lastError = error && error.message ? error.message : String(error);
+    }
+  }
+
+  function findPartyFrameElement() {
+    return document.querySelector(".partyframes");
+  }
+
+  function getPartyUiLayout(frame) {
+    if (PARTY_UI_CONFIG.preset === "self5x2") {
+      return getPartyUiSelf5x2Layout();
+    }
+
+    const rect = frame.getBoundingClientRect();
+    const columns = clamp(Math.round(Number(PARTY_UI_CONFIG.columns) || 1), 1, 5);
+    const width = getPartyUiGridWidth(columns);
+    const height = getPartyUiGridHeight(frame.children ? frame.children.length : 1, columns);
+    const x = Number.isFinite(PARTY_UI_CONFIG.x)
+      ? PARTY_UI_CONFIG.x
+      : rect.left;
+    const y = Number.isFinite(PARTY_UI_CONFIG.y)
+      ? PARTY_UI_CONFIG.y
+      : rect.top;
+
+    return {
+      x: clamp(Math.round(x), 0, Math.max(0, window.innerWidth - width)),
+      y: clamp(Math.round(y), 0, Math.max(0, window.innerHeight - height)),
+      columns,
+      width,
+      height,
+    };
+  }
+
+  function getPartyUiSelf5x2Layout() {
+    const columns = 5;
+    const width = getPartyUiGridWidth(columns);
+    const height = getPartyUiGridHeight(10, columns);
+    const selfFrame = document.querySelector("#ufplayer");
+    const rect = selfFrame ? selfFrame.getBoundingClientRect() : null;
+    const fallbackX = Math.round((window.innerWidth - width) / 2);
+    const fallbackY = Math.round(window.innerHeight - 250);
+    const x = rect
+      ? Math.round(rect.left + rect.width / 2 - width / 2)
+      : fallbackX;
+    const y = rect
+      ? Math.round(rect.top - height - 28)
+      : fallbackY;
+
+    return {
+      x: clamp(x, 0, Math.max(0, window.innerWidth - width)),
+      y: clamp(y, 0, Math.max(0, window.innerHeight - height)),
+      columns,
+      width,
+      height,
+    };
+  }
+
+  function getPartyUiGridWidth(columns) {
+    const count = clamp(Math.round(columns), 1, 5);
+    return Math.round(count * PARTY_UI_CONFIG.frameWidth + Math.max(0, count - 1) * PARTY_UI_CONFIG.gap);
+  }
+
+  function getPartyUiGridHeight(count, columns) {
+    const rows = Math.max(1, Math.ceil(Math.max(1, count) / Math.max(1, columns)));
+    return Math.round(rows * PARTY_UI_FRAME_HEIGHT + Math.max(0, rows - 1) * PARTY_UI_CONFIG.gap);
+  }
+
+  function applyPartyFrameLayout(frame, layout) {
+    if (!frame.dataset.hordesKrPartyOriginalStyle) {
+      frame.dataset.hordesKrPartyOriginalStyle = frame.getAttribute("style") || "";
+    }
+
+    const key = [
+      layout.x,
+      layout.y,
+      layout.columns,
+      layout.width,
+      PARTY_UI_CONFIG.frameWidth,
+      PARTY_UI_CONFIG.gap,
+      frame.children ? frame.children.length : 0,
+    ].join("|");
+    if (PARTY_UI_STATE.lastAppliedKey === key && frame.dataset.hordesKrPartyUi === "1") return;
+    PARTY_UI_STATE.lastAppliedKey = key;
+
+    frame.dataset.hordesKrPartyUi = "1";
+    frame.style.setProperty("position", "fixed", "important");
+    frame.style.setProperty("left", `${layout.x}px`, "important");
+    frame.style.setProperty("top", `${layout.y}px`, "important");
+    frame.style.setProperty("width", `${layout.width}px`, "important");
+    frame.style.setProperty("max-width", `${layout.width}px`, "important");
+    frame.style.setProperty("display", "grid", "important");
+    frame.style.setProperty("grid-template-columns", `repeat(${layout.columns}, ${PARTY_UI_CONFIG.frameWidth}px)`, "important");
+    frame.style.setProperty("grid-auto-rows", `${PARTY_UI_FRAME_HEIGHT}px`, "important");
+    frame.style.setProperty("gap", `${PARTY_UI_CONFIG.gap}px`, "important");
+    frame.style.setProperty("z-index", "2147483200", "important");
+    frame.style.setProperty("pointer-events", "none", "important");
+  }
+
+  function restorePartyFrame(frame) {
+    if (!frame) return;
+
+    if (frame.dataset.hordesKrPartyOriginalStyle !== undefined) {
+      frame.setAttribute("style", frame.dataset.hordesKrPartyOriginalStyle);
+    } else {
+      frame.removeAttribute("style");
+    }
+
+    delete frame.dataset.hordesKrPartyUi;
+    delete frame.dataset.hordesKrPartyOriginalStyle;
+    PARTY_UI_STATE.lastAppliedKey = "";
+  }
+
+  function updatePartyUiHandle(frame, layout) {
+    const handle = ensurePartyUiHandle();
+    handle.style.left = `${layout.x}px`;
+    handle.style.top = `${Math.max(0, layout.y - 20)}px`;
+    handle.textContent = PARTY_UI_CONFIG.preset === "self5x2" ? "파티 5x2 이동" : "파티 이동";
+    handle.title = "드래그해서 파티창을 이동합니다.";
+  }
+
+  function ensurePartyUiHandle() {
+    if (PARTY_UI_STATE.handle && document.contains(PARTY_UI_STATE.handle)) {
+      return PARTY_UI_STATE.handle;
+    }
+
+    const handle = document.createElement("button");
+    handle.id = "hordes-kr-party-ui-handle";
+    handle.type = "button";
+    handle.addEventListener("pointerdown", startPartyUiDrag);
+    document.body.appendChild(handle);
+    PARTY_UI_STATE.handle = handle;
+    return handle;
+  }
+
+  function removePartyUiHandle() {
+    if (PARTY_UI_STATE.handle) {
+      PARTY_UI_STATE.handle.remove();
+      PARTY_UI_STATE.handle = null;
+    }
+    PARTY_UI_STATE.dragging = null;
+  }
+
+  function startPartyUiDrag(event) {
+    if (event.button !== 0) return;
+
+    const frame = findPartyFrameElement();
+    if (!frame) return;
+
+    const rect = frame.getBoundingClientRect();
+    PARTY_UI_STATE.dragging = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: rect.left,
+      originY: rect.top,
+    };
+
+    PARTY_UI_CONFIG.enabled = true;
+    PARTY_UI_CONFIG.preset = "custom";
+    PARTY_UI_CONFIG.columns = PARTY_UI_CONFIG.columns || 1;
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handlePartyUiDrag(event) {
+    const dragging = PARTY_UI_STATE.dragging;
+    if (!dragging || dragging.pointerId !== event.pointerId) return;
+
+    const columns = clamp(Math.round(Number(PARTY_UI_CONFIG.columns) || 1), 1, 5);
+    const width = getPartyUiGridWidth(columns);
+    const count = PARTY_UI_STATE.frame && PARTY_UI_STATE.frame.children ? PARTY_UI_STATE.frame.children.length : 1;
+    const height = getPartyUiGridHeight(count, columns);
+    PARTY_UI_CONFIG.x = clamp(Math.round(dragging.originX + event.clientX - dragging.startX), 0, Math.max(0, window.innerWidth - width));
+    PARTY_UI_CONFIG.y = clamp(Math.round(dragging.originY + event.clientY - dragging.startY), 0, Math.max(0, window.innerHeight - height));
+    updatePartyUi();
+    event.preventDefault();
+  }
+
+  function finishPartyUiDrag(event) {
+    const dragging = PARTY_UI_STATE.dragging;
+    if (!dragging || dragging.pointerId !== event.pointerId) return;
+
+    PARTY_UI_STATE.dragging = null;
+    savePartyUiConfig();
+    renderStatusUi();
+    event.preventDefault();
+  }
+
+  function applyPartyUiPreset5x2() {
+    PARTY_UI_CONFIG.enabled = true;
+    PARTY_UI_CONFIG.preset = "self5x2";
+    PARTY_UI_CONFIG.columns = 5;
+    PARTY_UI_CONFIG.frameWidth = PARTY_UI_FRAME_WIDTH;
+    PARTY_UI_CONFIG.gap = PARTY_UI_GRID_GAP;
+    PARTY_UI_CONFIG.x = null;
+    PARTY_UI_CONFIG.y = null;
+    savePartyUiConfig();
+    updatePartyUi();
+    renderStatusUi();
+    return getPartyUiStatus();
+  }
+
+  function resetPartyUi() {
+    const frame = findPartyFrameElement();
+    if (frame) restorePartyFrame(frame);
+    removePartyUiHandle();
+    PARTY_UI_CONFIG.enabled = true;
+    PARTY_UI_CONFIG.preset = "default";
+    PARTY_UI_CONFIG.x = null;
+    PARTY_UI_CONFIG.y = null;
+    PARTY_UI_CONFIG.columns = 1;
+    PARTY_UI_CONFIG.frameWidth = PARTY_UI_FRAME_WIDTH;
+    PARTY_UI_CONFIG.gap = PARTY_UI_GRID_GAP;
+    savePartyUiConfig();
+    updatePartyUi();
+    renderStatusUi();
+    return getPartyUiStatus();
+  }
+
+  function getPartyUiStatus() {
+    const frame = findPartyFrameElement();
+    const rect = frame ? frame.getBoundingClientRect() : null;
+    return {
+      enabled: PARTY_UI_CONFIG.enabled,
+      preset: PARTY_UI_CONFIG.preset,
+      columns: PARTY_UI_CONFIG.columns,
+      x: Number.isFinite(PARTY_UI_CONFIG.x) ? PARTY_UI_CONFIG.x : null,
+      y: Number.isFinite(PARTY_UI_CONFIG.y) ? PARTY_UI_CONFIG.y : null,
+      frameFound: Boolean(frame),
+      frameCount: frame && frame.children ? frame.children.length : 0,
+      rect: rect
+        ? {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          }
+        : null,
+      lastError: PARTY_UI_STATE.lastError,
+    };
+  }
+
+  function installPartyUiStyle() {
+    if (document.getElementById("hordes-kr-party-ui-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "hordes-kr-party-ui-style";
+    style.textContent = `
+      #hordes-kr-party-ui-handle {
+        position: fixed !important;
+        z-index: 2147483201 !important;
+        min-width: 64px !important;
+        height: 18px !important;
+        padding: 1px 6px !important;
+        border: 1px solid rgba(245, 194, 71, 0.78) !important;
+        border-radius: 4px !important;
+        background: rgba(16, 19, 29, 0.86) !important;
+        color: #f5d46b !important;
+        font: 700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+        line-height: 14px !important;
+        cursor: move !important;
+        pointer-events: auto !important;
+        user-select: none !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35) !important;
+      }
+      .partyframes[data-hordes-kr-party-ui="1"] > * {
+        width: ${PARTY_UI_FRAME_WIDTH}px !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+
+    pageWindow.addEventListener("pointermove", handlePartyUiDrag, true);
+    pageWindow.addEventListener("pointerup", finishPartyUiDrag, true);
+    pageWindow.addEventListener("pointercancel", finishPartyUiDrag, true);
+  }
+
+  function scheduleDomTranslationFlush() {
+    if (DOM_TRANSLATION_STATE.pending) return;
+    DOM_TRANSLATION_STATE.pending = true;
+
+    setTimeout(() => {
+      DOM_TRANSLATION_STATE.pending = false;
+      if (!isDomTranslationEnabled() || !DOM_TRANSLATION_STATE.dictionary) {
+        DOM_TRANSLATION_STATE.queuedRoots.clear();
+        return;
+      }
+
+      let replaced = 0;
+      const roots = Array.from(DOM_TRANSLATION_STATE.queuedRoots).slice(0, 160);
+      DOM_TRANSLATION_STATE.queuedRoots.clear();
+      roots.forEach((root) => {
+        replaced += translateDomTree(root, DOM_TRANSLATION_STATE.dictionary);
+      });
+      updateDomTranslationStatus(replaced);
+    }, 80);
+  }
+
+  function applyDomTranslation(root) {
+    if (!isDomTranslationEnabled() || !DOM_TRANSLATION_STATE.dictionary) return 0;
+
+    const replaced = translateDomTree(root, DOM_TRANSLATION_STATE.dictionary);
+    updateDomTranslationStatus(replaced);
+    return replaced;
+  }
+
+  function updateDomTranslationStatus(replaced) {
+    if (replaced <= 0) return;
+
+    setStatus({
+      lastState: "DOM 번역 적용됨",
+      domReplacedCount: MOD_STATUS.domReplacedCount + replaced,
+      lastAppliedAt: new Date(),
+      lastError: "",
+    });
   }
 
   function buildTextDictionary(enLoc, koLoc) {
@@ -2629,6 +6066,11 @@
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return false;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
+    if (element.closest("#hordes-kr-chat-translation-toggle")) return true;
+    if (element.closest(".hordes-kr-chat-inline-translation")) return true;
+    if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
+    if (element.closest("#hordes-kr-target-distance-overlay")) return true;
+    if (element.closest("#hordes-kr-minimap-name-overlay")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
     if (element.closest("#chat, #chatinput, .chat, [class*='chat']")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
@@ -2639,6 +6081,7 @@
       if (!document.body) return;
 
       HIGHLIGHT_STATE.observer = new MutationObserver(() => {
+        if (!shouldRunDomNameHighlight()) return;
         scheduleNameHighlightRefresh();
       });
       installNameHighlightStyle();
@@ -2654,6 +6097,7 @@
   }
 
   function scheduleNameHighlightRefresh() {
+    if (!shouldRunDomNameHighlight()) return;
     if (HIGHLIGHT_STATE.pending) return;
     HIGHLIGHT_STATE.pending = true;
 
@@ -2668,10 +6112,10 @@
 
     disconnectNameHighlights();
     unwrapNameHighlights(document.body);
-    if (HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0) {
+    if (shouldRunDomNameHighlight()) {
       highlightNamesInTree(document.body);
+      observeNameHighlights();
     }
-    observeNameHighlights();
   }
 
   function observeNameHighlights() {
@@ -2777,26 +6221,45 @@
     if (!element) return true;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
     if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
+    if (element.closest("#hordes-kr-target-distance-overlay")) return true;
+    if (element.closest("#hordes-kr-minimap-name-overlay")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
   }
 
   function buildHighlightMatcher() {
-    const names = HIGHLIGHT_CONFIG.names
-      .map(normalizeHighlightName)
-      .filter(Boolean)
-      .sort((a, b) => b.length - a.length);
-
-    if (names.length === 0) return null;
-    return new RegExp(names.map(escapeRegExp).join("|"), "gi");
+    const { matcherSource } = getHighlightNameCache();
+    return matcherSource ? new RegExp(matcherSource, "gi") : null;
   }
 
   function normalizeHighlightName(name) {
     return String(name || "").trim();
   }
 
+  function getHighlightNameCache() {
+    const names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names).sort((a, b) => b.length - a.length);
+    const key = names.join("\u0001");
+    if (HIGHLIGHT_NAME_CACHE.key === key) return HIGHLIGHT_NAME_CACHE;
+
+    HIGHLIGHT_NAME_CACHE.key = key;
+    HIGHLIGHT_NAME_CACHE.names = names;
+    HIGHLIGHT_NAME_CACHE.lowerNames = names.map((name) => name.toLowerCase());
+    HIGHLIGHT_NAME_CACHE.matcherSource = names.map(escapeRegExp).join("|");
+    return HIGHLIGHT_NAME_CACHE;
+  }
+
+  function invalidateHighlightNameCache() {
+    HIGHLIGHT_NAME_CACHE.key = "";
+    HIGHLIGHT_NAME_CACHE.names = [];
+    HIGHLIGHT_NAME_CACHE.lowerNames = [];
+    HIGHLIGHT_NAME_CACHE.matcherSource = "";
+  }
+
   function saveHighlightConfig() {
     HIGHLIGHT_CONFIG.names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names);
+    invalidateHighlightNameCache();
+    HIGHLIGHT_STATE.runtimeDeepScanCacheKey = "";
+    HIGHLIGHT_STATE.runtimeDeepScanCandidates = [];
     saveJsonConfig(HIGHLIGHT_CONFIG_KEY, HIGHLIGHT_CONFIG);
   }
 
@@ -2868,9 +6331,15 @@
         rememberCanvasTextSource(this, text);
         recordCanvasNameStyle("fillText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
-        const result = originalFillText.apply(this, arguments);
-        drawCanvasNameTextOverlay(this, text, x, y, maxWidth, originalFillText, originalStrokeText);
-        return result;
+        if (shouldHideStandaloneCanvasClanTag(text)) {
+          rememberHiddenCanvasClanTag(text);
+          return undefined;
+        }
+        if (shouldReplaceCanvasNameText(text)) {
+          HIGHLIGHT_STATE.lastCanvasText = String(text ?? "").slice(0, 80);
+          return undefined;
+        }
+        return originalFillText.apply(this, arguments);
       };
     }
 
@@ -2883,9 +6352,15 @@
         rememberCanvasTextSource(this, text);
         recordCanvasNameStyle("strokeText", this, text, x, y, maxWidth);
         drawCanvasNameHighlight(this, text, x, y, maxWidth);
-        const result = originalStrokeText.apply(this, arguments);
-        drawCanvasNameTextOverlay(this, text, x, y, maxWidth, originalFillText, originalStrokeText);
-        return result;
+        if (shouldHideStandaloneCanvasClanTag(text)) {
+          rememberHiddenCanvasClanTag(text);
+          return undefined;
+        }
+        if (shouldReplaceCanvasNameText(text)) {
+          HIGHLIGHT_STATE.lastCanvasText = String(text ?? "").slice(0, 80);
+          return undefined;
+        }
+        return originalStrokeText.apply(this, arguments);
       };
     }
 
@@ -2895,19 +6370,17 @@
           return originalDrawImage.apply(this, arguments);
         }
 
-        const seq = ++HIGHLIGHT_STATE.canvasDrawSeq;
-        const now = getHighlighterTime();
-        flushStalePendingCanvasNames(now, seq);
-
         const imageText = getCanvasImageText(arguments[0]);
         const dest = getDrawImageDestination(arguments);
-        const highlightedName = getCanvasHighlightedName(imageText);
-        if (highlightedName) {
-          queuePendingCanvasName(this, arguments, highlightedName, originalDrawImage, originalFillText, originalStrokeText, dest, now, seq);
+        if (shouldHideStandaloneCanvasClanTag(imageText)) {
+          rememberHiddenCanvasClanTag(imageText);
           return undefined;
         }
 
-        if (resolvePendingCanvasNameWithClan(this, imageText, dest, now, seq)) {
+        const highlightedName = getCanvasHighlightedName(imageText);
+        if (highlightedName) {
+          HIGHLIGHT_STATE.lastCanvasImageText = String(imageText || "").slice(0, 80);
+          drawCanvasTargetDistanceOverlay(this, highlightedName, dest, originalFillText, originalStrokeText);
           return undefined;
         }
 
@@ -2981,13 +6454,29 @@
     HIGHLIGHT_STATE.lastCanvasText = rawText.slice(0, 80);
   }
 
+  function shouldReplaceCanvasNameText(text) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
+
+    const rawText = String(text ?? "").trim();
+    return Boolean(rawText && getMatchingHighlightName(rawText));
+  }
+
+  function shouldHideStandaloneCanvasClanTag(text) {
+    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled || !HIGHLIGHT_CONFIG.hideClanNames) return false;
+
+    const rawText = String(text ?? "").trim();
+    if (!rawText || getMatchingHighlightName(rawText)) return false;
+    return /^#[A-Za-z0-9가-힣_-]{1,12}$/.test(rawText);
+  }
+
+  function rememberHiddenCanvasClanTag(text) {
+    HIGHLIGHT_STATE.canvasClanHiddenHits++;
+    HIGHLIGHT_STATE.lastCanvasClanText = String(text || "").slice(0, 80);
+  }
+
   function getCanvasFontSize(font) {
     const match = String(font || "").match(/(\d+(?:\.\d+)?)px/);
     return match ? Math.max(8, Number(match[1])) : 14;
-  }
-
-  function getBoostedCanvasFontSize(fontSize) {
-    return Math.max(fontSize + 3, Math.round(fontSize * 1.24));
   }
 
   function getCanvasFontFamily(font) {
@@ -2997,128 +6486,15 @@
     return family;
   }
 
-  function getCapturedCanvasFont(font, fontSize, targetSize) {
-    const captured = HIGHLIGHT_CONFIG.nameplateStyle;
-    const family = getCanvasFontFamily((captured && captured.font) || font);
-    return `900 ${targetSize || fontSize}px ${family}`;
-  }
-
-  function getFittedCanvasFontSize(ctx, text, maxWidth, fontSize) {
-    let targetSize = getTargetCanvasFontSize(fontSize);
-    const widthLimit = Number(maxWidth);
-    if (!Number.isFinite(widthLimit) || widthLimit <= 0) return targetSize;
-
-    try {
-      const originalFont = ctx.font;
-      while (targetSize > fontSize) {
-        ctx.font = getCapturedCanvasFont(originalFont, fontSize, targetSize);
-        if (ctx.measureText(String(text)).width <= widthLimit * 0.98) break;
-        targetSize--;
-      }
-      ctx.font = originalFont;
-    } catch {
-      // Measuring text can fail on unusual canvas contexts. Use the default target size.
-    }
-
-    return Math.max(fontSize, targetSize);
-  }
-
-  function getTargetCanvasFontSize(fontSize) {
-    const captured = HIGHLIGHT_CONFIG.nameplateStyle;
-    const capturedSize = captured && Number(captured.fontSize);
-    if (Number.isFinite(capturedSize) && capturedSize > 0) {
-      return Math.max(fontSize, Math.round(capturedSize));
-    }
-
-    return getBoostedCanvasFontSize(fontSize);
-  }
-
-  function drawCanvasNameTextOverlay(ctx, text, x, y, maxWidth, originalFillText, originalStrokeText) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
-    if (typeof originalFillText !== "function") return;
-
-    const rawText = String(text ?? "");
-    if (!getMatchingHighlightName(rawText)) return;
-
-    const numberX = Number(x);
-    const numberY = Number(y);
-    if (!Number.isFinite(numberX) || !Number.isFinite(numberY)) return;
-
-    const now = pageWindow.performance && pageWindow.performance.now
-      ? pageWindow.performance.now()
-      : Date.now();
-    const overlayKey = [
-      rawText,
-      Math.round(numberX),
-      Math.round(numberY),
-      ctx.font,
-      ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
-    ].join("|");
-    if (
-      HIGHLIGHT_STATE.lastCanvasTextOverlayKey === overlayKey &&
-      now - HIGHLIGHT_STATE.lastCanvasTextOverlayAt < 12
-    ) {
-      return;
-    }
-    HIGHLIGHT_STATE.lastCanvasTextOverlayKey = overlayKey;
-    HIGHLIGHT_STATE.lastCanvasTextOverlayAt = now;
-
-    const fontSize = getCanvasFontSize(ctx.font);
-
-    try {
-      ctx.save();
-      const capturedStyle = HIGHLIGHT_CONFIG.nameplateStyle || {};
-      const widthLimit = Number(maxWidth);
-      const capturedMaxWidth = Number(capturedStyle.maxWidth);
-      const overlayMaxWidth = Number.isFinite(capturedMaxWidth) && capturedMaxWidth > 0
-        ? capturedMaxWidth
-        : Number.isFinite(widthLimit) && widthLimit > 0
-          ? widthLimit
-          : undefined;
-      const targetFontSize = getFittedCanvasFontSize(ctx, rawText, overlayMaxWidth, fontSize);
-      ctx.font = getCapturedCanvasFont(ctx.font, fontSize, targetFontSize);
-      ctx.globalAlpha = 1;
-      if (capturedStyle.textAlign) ctx.textAlign = capturedStyle.textAlign;
-      if (capturedStyle.textBaseline) ctx.textBaseline = capturedStyle.textBaseline;
-      ctx.lineJoin = "round";
-      ctx.miterLimit = 2;
-      ctx.shadowColor = capturedStyle.shadowColor || "rgba(8, 15, 29, 0.85)";
-      ctx.shadowBlur = Math.max(Number(capturedStyle.shadowBlur) || 0, Math.round(targetFontSize * 0.12));
-
-      if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(Number(capturedStyle.lineWidth) || 0, Math.round(targetFontSize * 0.26), 4);
-        ctx.strokeStyle = capturedStyle.strokeStyle || "rgba(6, 12, 24, 1)";
-        drawCanvasTextCall(originalStrokeText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-      }
-
-      ctx.fillStyle = capturedStyle.fillStyle || "#ffffff";
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX + 0.35, numberY, overlayMaxWidth);
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX - 0.35, numberY, overlayMaxWidth);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      drawCanvasTextCall(originalFillText, ctx, rawText, numberX, numberY - 0.35, overlayMaxWidth);
-      ctx.restore();
-    } catch {
-      try {
-        ctx.restore();
-      } catch {
-        // Ignore canvas state recovery failures from third-party contexts.
-      }
-    }
-  }
-
-  function drawCanvasTextCall(drawText, ctx, text, x, y, maxWidth) {
-    if (maxWidth !== undefined) {
-      drawText.call(ctx, text, x, y, maxWidth);
-      return;
-    }
-
-    drawText.call(ctx, text, x, y);
+  function getCanvasHighlightDisplayText(text) {
+    const rawText = String(text ?? "").trim();
+    const matchedName = getMatchingHighlightName(rawText);
+    return normalizeHighlightName(matchedName);
   }
 
   function getCanvasHighlightedName(imageText) {
     const rawText = String(imageText || "").trim();
-    return getMatchingHighlightName(rawText) ? rawText : "";
+    return getCanvasHighlightDisplayText(rawText);
   }
 
   function drawCanvasImageAt(ctx, args, originalDrawImage, dest) {
@@ -3143,179 +6519,16 @@
     return originalDrawImage.apply(ctx, nextArgs);
   }
 
-  function queuePendingCanvasName(ctx, args, name, originalDrawImage, originalFillText, originalStrokeText, dest, now, seq) {
-    if (!dest) {
-      drawCanvasImageAt(ctx, args, originalDrawImage, dest);
-      return;
-    }
-
-    HIGHLIGHT_STATE.pendingCanvasNames.push({
-      ctx,
-      canvas: ctx && ctx.canvas ? ctx.canvas : null,
-      args: Array.prototype.slice.call(args),
-      text: String(name || "").trim(),
-      originalDrawImage,
-      originalFillText,
-      originalStrokeText,
-      dest: { ...dest },
-      at: now,
-      seq,
-    });
-    HIGHLIGHT_STATE.canvasDeferredNameHits++;
-
-    if (HIGHLIGHT_STATE.pendingCanvasNames.length > 12) {
-      flushPendingCanvasName(HIGHLIGHT_STATE.pendingCanvasNames.shift());
-    }
-
-    schedulePendingCanvasNameFlush();
-  }
-
-  function schedulePendingCanvasNameFlush() {
-    if (HIGHLIGHT_STATE.pendingCanvasNameFlushTimer !== null) return;
-
-    HIGHLIGHT_STATE.pendingCanvasNameFlushTimer = pageWindow.setTimeout(() => {
-      HIGHLIGHT_STATE.pendingCanvasNameFlushTimer = null;
-      flushPendingCanvasNames(true);
-    }, 0);
-  }
-
-  function flushStalePendingCanvasNames(now, seq) {
-    const remaining = [];
-    HIGHLIGHT_STATE.pendingCanvasNames.forEach((pending) => {
-      if (!pending || now - pending.at > 50 || seq - pending.seq > 10) {
-        flushPendingCanvasName(pending);
-      } else {
-        remaining.push(pending);
-      }
-    });
-    HIGHLIGHT_STATE.pendingCanvasNames = remaining;
-  }
-
-  function flushPendingCanvasNames(force) {
-    const now = Date.now();
-    const seq = HIGHLIGHT_STATE.canvasDrawSeq;
-    const remaining = [];
-
-    HIGHLIGHT_STATE.pendingCanvasNames.forEach((pending) => {
-      if (force || !pending || now - pending.at > 50 || seq - pending.seq > 10) {
-        flushPendingCanvasName(pending);
-      } else {
-        remaining.push(pending);
-      }
-    });
-    HIGHLIGHT_STATE.pendingCanvasNames = remaining;
-  }
-
-  function flushPendingCanvasName(pending, nextDest) {
-    if (!pending) return;
-
-    const dest = nextDest || pending.dest;
-    drawCanvasImageAt(pending.ctx, pending.args, pending.originalDrawImage, dest);
-    drawCanvasImageNameOverlay(
-      pending.ctx,
-      pending.args,
-      pending.text,
-      pending.originalFillText,
-      pending.originalStrokeText,
-      dest
-    );
-    drawCanvasTargetDistanceOverlay(
-      pending.ctx,
-      pending.text,
-      dest,
-      pending.originalFillText,
-      pending.originalStrokeText
-    );
-  }
-
-  function drawCanvasImageNameOverlay(ctx, args, imageText, originalFillText, originalStrokeText, knownDest) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
-    if (HIGHLIGHT_STATE.canvasInternalDraw) return false;
-    if (typeof originalFillText !== "function") return false;
-
-    const rawText = String(imageText || "").trim();
-    const matchedName = getMatchingHighlightName(rawText);
-    if (!matchedName) return false;
-
-    const dest = knownDest || getDrawImageDestination(args);
-    if (!dest) return false;
-
-    const now = pageWindow.performance && pageWindow.performance.now
-      ? pageWindow.performance.now()
-      : Date.now();
-    const drawKey = [
-      rawText,
-      Math.round(dest.x),
-      Math.round(dest.y),
-      Math.round(dest.width),
-      Math.round(dest.height),
-      ctx.canvas ? `${ctx.canvas.width}x${ctx.canvas.height}` : "",
-    ].join("|");
-    const shouldCount =
-      HIGHLIGHT_STATE.lastCanvasImageDrawKey !== drawKey ||
-      now - HIGHLIGHT_STATE.lastCanvasImageDrawAt >= 40;
-    if (shouldCount) {
-      HIGHLIGHT_STATE.lastCanvasImageDrawKey = drawKey;
-      HIGHLIGHT_STATE.lastCanvasImageDrawAt = now;
-      HIGHLIGHT_STATE.canvasImageHits++;
-    }
-    HIGHLIGHT_STATE.lastCanvasImageText = rawText.slice(0, 80);
-
-    try {
-      HIGHLIGHT_STATE.canvasInternalDraw = true;
-      ctx.save();
-      ctx.globalAlpha = 1;
-      ctx.textBaseline = "bottom";
-      ctx.textAlign = "center";
-      ctx.lineJoin = "round";
-      ctx.miterLimit = 2;
-
-      const fontSize = clamp(Math.round(dest.height * 1.16), 18, 30);
-      const fontFamily = getCanvasFontFamily(String(ctx.font || "")) || "hordes, Arial, sans-serif";
-      ctx.font = `900 ${fontSize}px ${fontFamily}`;
-      ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
-      ctx.shadowBlur = Math.max(2, Math.round(fontSize * 0.16));
-      ctx.shadowOffsetX = 1;
-      ctx.shadowOffsetY = 1;
-
-      const x = Math.round(dest.x + dest.width / 2);
-      const y = Math.round(dest.y + dest.height + 1);
-
-      if (typeof originalStrokeText === "function") {
-        ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
-        ctx.strokeStyle = "rgba(5, 10, 22, 0.98)";
-        originalStrokeText.call(ctx, rawText, x, y);
-      }
-
-      ctx.fillStyle = "#ffffff";
-      originalFillText.call(ctx, rawText, x, y);
-      originalFillText.call(ctx, rawText, x + 0.35, y);
-      originalFillText.call(ctx, rawText, x - 0.35, y);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      originalFillText.call(ctx, rawText, x, y - 0.35);
-      ctx.restore();
-      return true;
-    } catch {
-      try {
-        ctx.restore();
-      } catch {
-        // Ignore canvas state recovery failures.
-      }
-      return false;
-    } finally {
-      HIGHLIGHT_STATE.canvasInternalDraw = false;
-    }
-  }
-
   function drawCanvasTargetDistanceOverlay(ctx, imageText, dest, originalFillText, originalStrokeText) {
     if (!dest || HIGHLIGHT_STATE.canvasInternalDraw || typeof originalFillText !== "function") return false;
+    if (!isTargetDistanceEnabled()) return false;
 
     const result = getTargetDistance(false);
-    if (!result.available || !result.target || !isCanvasTextForTarget(imageText, result.target.name)) {
+    if (!isCanvasDrawForSelectedTarget(ctx, imageText, dest, result)) {
       return false;
     }
 
-    const text = formatTargetDistance(result.distance);
+    const text = `${result.stale ? "~" : ""}${formatTargetDistance(result.distance)}`;
     const drawKey = [
       result.target.name,
       text,
@@ -3325,14 +6538,11 @@
       Math.round(dest.height),
     ].join("|");
     const now = Date.now();
-    if (TARGET_DISTANCE_STATE.lastCanvasDrawKey === drawKey && now - TARGET_DISTANCE_STATE.lastCanvasAt < 16) {
-      return false;
-    }
-
+    const shouldCount = TARGET_DISTANCE_STATE.lastCanvasDrawKey !== drawKey || now - TARGET_DISTANCE_STATE.lastCanvasAt >= 80;
     TARGET_DISTANCE_STATE.lastCanvasDrawKey = drawKey;
     TARGET_DISTANCE_STATE.lastCanvasAt = now;
     TARGET_DISTANCE_STATE.lastCanvasText = text;
-    TARGET_DISTANCE_STATE.canvasHits++;
+    if (shouldCount) TARGET_DISTANCE_STATE.canvasHits++;
 
     try {
       HIGHLIGHT_STATE.canvasInternalDraw = true;
@@ -3384,89 +6594,60 @@
     return Boolean(text && name && (text === name || text.includes(name) || name.includes(text)));
   }
 
-  function resolvePendingCanvasNameWithClan(ctx, imageText, dest, now, seq) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled || !HIGHLIGHT_CONFIG.hideClanNames) {
-      return false;
-    }
-    if (!dest) return false;
+  function isCanvasDrawForSelectedTarget(ctx, imageText, dest, result) {
+    if (!result || !result.available || !result.target) return false;
+    if (!isCanvasTextForTarget(imageText, result.target.name)) return false;
 
-    const rawText = String(imageText || "").trim();
-    if (!rawText || rawText.length > 80) return false;
-    if (getMatchingHighlightName(rawText)) return false;
-    if (!looksLikeCanvasClanText(rawText)) return false;
+    const canvasPoint = result.target.canvas || getCanvasPointFromScreen(ctx && ctx.canvas, result.target.screen);
+    if (!canvasPoint) return false;
 
-    const match = findPendingCanvasNameForClan(ctx, dest, now, seq);
-    if (!match) return false;
+    const centerX = Number(dest.x) + Number(dest.width) / 2;
+    const centerY = Number(dest.y) + Number(dest.height) / 2;
+    if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) return false;
 
-    const pending = HIGHLIGHT_STATE.pendingCanvasNames.splice(match.index, 1)[0];
-    const alignedDest = getCenteredCanvasNameDest(pending.dest, dest);
-    flushPendingCanvasName(pending, alignedDest);
-    rememberHiddenCanvasClan(rawText);
-    HIGHLIGHT_STATE.canvasDynamicAlignHits++;
-    return true;
+    const toleranceX = Math.max(36, Number(dest.width) * 0.85);
+    const toleranceY = Math.max(28, Number(dest.height) * 2.2);
+    const dx = Math.abs(centerX - canvasPoint.x);
+    const dy = Math.abs(centerY - canvasPoint.y);
+    const matched = dx <= toleranceX && dy <= toleranceY;
+
+    TARGET_DISTANCE_STATE.lastCanvasTargetMatch = {
+      matched,
+      dx: roundCoord(dx),
+      dy: roundCoord(dy),
+      toleranceX: roundCoord(toleranceX),
+      toleranceY: roundCoord(toleranceY),
+      dest: {
+        x: roundCoord(dest.x),
+        y: roundCoord(dest.y),
+        width: roundCoord(dest.width),
+        height: roundCoord(dest.height),
+      },
+      target: {
+        x: roundCoord(canvasPoint.x),
+        y: roundCoord(canvasPoint.y),
+        source: canvasPoint.source || "projectedScreen",
+      },
+    };
+
+    return matched;
   }
 
-  function looksLikeCanvasClanText(text) {
-    return /[A-Za-z가-힣]/.test(String(text || ""));
-  }
+  function getCanvasPointFromScreen(canvas, screen) {
+    const x = Number(screen && screen.x);
+    const y = Number(screen && screen.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (!canvas || typeof canvas.getBoundingClientRect !== "function") return { x, y };
 
-  function findPendingCanvasNameForClan(ctx, clanDest, now, seq) {
-    const canvas = ctx && ctx.canvas ? ctx.canvas : null;
-    let best = null;
-    let bestScore = Infinity;
-
-    for (let index = HIGHLIGHT_STATE.pendingCanvasNames.length - 1; index >= 0; index--) {
-      const pending = HIGHLIGHT_STATE.pendingCanvasNames[index];
-      if (!pending || !pending.dest) continue;
-      if (pending.canvas && canvas && pending.canvas !== canvas) continue;
-      if (now - pending.at > 80 || seq - pending.seq > 10) continue;
-      if (!isLikelyClanForPendingCanvasName(pending.dest, clanDest)) continue;
-
-      const pendingCenterY = pending.dest.y + pending.dest.height / 2;
-      const clanCenterY = clanDest.y + clanDest.height / 2;
-      const score = Math.abs(seq - pending.seq) * 100 + Math.abs(pendingCenterY - clanCenterY);
-      if (score < bestScore) {
-        best = { index, pending };
-        bestScore = score;
-      }
-    }
-
-    return best;
-  }
-
-  function isLikelyClanForPendingCanvasName(nameDest, clanDest) {
-    const nameCenterY = nameDest.y + nameDest.height / 2;
-    const clanCenterY = clanDest.y + clanDest.height / 2;
-    const sameRow = Math.abs(nameCenterY - clanCenterY) <= Math.max(24, (nameDest.height + clanDest.height) * 0.8);
-    const clanRight = clanDest.x + clanDest.width;
-    const leftOfName = clanDest.x < nameDest.x + nameDest.width * 0.35;
-    const closeToName = Math.abs(clanRight - nameDest.x) <= Math.max(90, (nameDest.width + clanDest.width) * 0.85);
-    return sameRow && leftOfName && closeToName;
-  }
-
-  function getCenteredCanvasNameDest(nameDest, clanDest) {
-    const minX = Math.min(nameDest.x, clanDest.x);
-    const maxX = Math.max(nameDest.x + nameDest.width, clanDest.x + clanDest.width);
-    const centerX = minX + (maxX - minX) / 2;
-    const nextX = Math.round(centerX - nameDest.width / 2);
-    const shiftX = nextX - nameDest.x;
-    const maxShift = Math.max(16, Math.min(180, clanDest.width + 24));
-
-    if (shiftX >= -2 || Math.abs(shiftX) > maxShift) {
-      return nameDest;
-    }
+    const rect = canvas.getBoundingClientRect();
+    const width = Number(canvas.width);
+    const height = Number(canvas.height);
+    if (!rect || rect.width <= 0 || rect.height <= 0 || width <= 0 || height <= 0) return { x, y };
 
     return {
-      x: nextX,
-      y: nameDest.y,
-      width: nameDest.width,
-      height: nameDest.height,
+      x: (x - rect.left) * (width / rect.width),
+      y: (y - rect.top) * (height / rect.height),
     };
-  }
-
-  function rememberHiddenCanvasClan(text) {
-    HIGHLIGHT_STATE.canvasClanHiddenHits++;
-    HIGHLIGHT_STATE.lastCanvasClanText = String(text || "").slice(0, 80);
   }
 
   function getHighlighterTime() {
@@ -3644,17 +6825,53 @@
     const haystack = String(text || "").toLowerCase();
     if (!haystack) return "";
 
-    return HIGHLIGHT_CONFIG.names.find((name) => {
-      const normalized = normalizeHighlightName(name).toLowerCase();
-      return normalized && haystack.includes(normalized);
-    }) || "";
+    const { names, lowerNames } = getHighlightNameCache();
+    for (let index = 0; index < lowerNames.length; index++) {
+      if (haystack.includes(lowerNames[index])) return names[index];
+    }
+
+    return "";
+  }
+
+  function getFeatureStatus() {
+    return {
+      translation: isEnabled(),
+      highlight: {
+        enabled: HIGHLIGHT_CONFIG.enabled,
+        names: [...HIGHLIGHT_CONFIG.names],
+      },
+      minimap: HIGHLIGHT_CONFIG.minimapLabelsEnabled,
+      highlightList: HIGHLIGHT_CONFIG.minimapListEnabled,
+      incomingSkill: isIncomingSkillOverlayEnabled(),
+      incomingTargetWatch: isIncomingTargetWatchEnabled(),
+      incomingWarningList: isIncomingSkillListEnabled(),
+      targetDistance: isTargetDistanceEnabled(),
+      chatTranslation: getChatTranslationStatus(),
+      partyUi: getPartyUiStatus(),
+      advanced: {
+        domTranslation: isDomTranslationEnabled(),
+        domHighlight: HIGHLIGHT_CONFIG.domEnabled,
+        canvasHighlight: HIGHLIGHT_CONFIG.canvasEnabled,
+        runtimeOverlay: HIGHLIGHT_CONFIG.runtimeOverlayEnabled,
+        hideClanNames: HIGHLIGHT_CONFIG.hideClanNames,
+      },
+      runtimeHook: getScriptHookStatus(),
+    };
   }
 
   function getHighlightStatus() {
     return {
       enabled: HIGHLIGHT_CONFIG.enabled,
+      domEnabled: HIGHLIGHT_CONFIG.domEnabled,
       canvasEnabled: HIGHLIGHT_CONFIG.canvasEnabled,
       runtimeOverlayEnabled: HIGHLIGHT_CONFIG.runtimeOverlayEnabled,
+      minimapLabelsEnabled: HIGHLIGHT_CONFIG.minimapLabelsEnabled,
+      minimapListEnabled: HIGHLIGHT_CONFIG.minimapListEnabled,
+      targetDistanceEnabled: FEATURE_CONFIG.targetDistanceEnabled,
+      incomingSkillOverlayEnabled: FEATURE_CONFIG.incomingSkillOverlayEnabled,
+      incomingTargetWatchEnabled: FEATURE_CONFIG.incomingTargetWatchEnabled,
+      incomingSkillListEnabled: FEATURE_CONFIG.incomingSkillListEnabled,
+      domTranslationEnabled: FEATURE_CONFIG.domTranslationEnabled,
       hideClanNames: HIGHLIGHT_CONFIG.hideClanNames,
       names: [...HIGHLIGHT_CONFIG.names],
       domHighlights: countDomHighlightElements(),
@@ -3662,15 +6879,14 @@
       canvasHits: HIGHLIGHT_STATE.canvasHits,
       canvasImageHits: HIGHLIGHT_STATE.canvasImageHits,
       canvasClanHiddenHits: HIGHLIGHT_STATE.canvasClanHiddenHits,
-      pendingCanvasNames: HIGHLIGHT_STATE.pendingCanvasNames.length,
-      canvasDynamicAlignHits: HIGHLIGHT_STATE.canvasDynamicAlignHits,
-      canvasDeferredNameHits: HIGHLIGHT_STATE.canvasDeferredNameHits,
       lastCanvasText: HIGHLIGHT_STATE.lastCanvasText,
       lastCanvasImageText: HIGHLIGHT_STATE.lastCanvasImageText,
       lastCanvasClanText: HIGHLIGHT_STATE.lastCanvasClanText,
       nameplateStyle: getNameplateStyleStatus(),
       scriptHook: getScriptHookStatus(),
       runtimeOverlay: getRuntimeOverlayStatus(),
+      minimapOverlay: getMinimapOverlayStatus(),
+      minimapHighlightList: getMinimapHighlightListStatus(),
     };
   }
 
@@ -3678,7 +6894,9 @@
     if (HIGHLIGHT_STATE.scriptHookInstalled) return;
     HIGHLIGHT_STATE.scriptHookInstalled = true;
 
+    installClientOnloadGuard();
     installClientScriptGate();
+    installSynchronousClientScriptInterceptor();
     patchCanvasContextCapture();
 
     const scan = () => scanGameClientScripts();
@@ -3720,6 +6938,75 @@
     );
 
     scan();
+  }
+
+  function installClientOnloadGuard() {
+    if (!shouldPatchCurrentPageClientScript()) return;
+    if (pageWindow.__hordesKrClientOnloadGuardInstalled) return;
+
+    try {
+      let descriptorOwner = pageWindow;
+      let descriptor = null;
+      while (descriptorOwner && !descriptor) {
+        descriptor = Object.getOwnPropertyDescriptor(descriptorOwner, "onload");
+        descriptorOwner = Object.getPrototypeOf(descriptorOwner);
+      }
+      if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function") return;
+
+      const state = {
+        patchedOnload: null,
+        lastOriginalOnload: null,
+        assignments: [],
+      };
+
+      Object.defineProperty(pageWindow, "__hordesKrClientOnloadGuardState", {
+        configurable: true,
+        value: state,
+      });
+
+      Object.defineProperty(pageWindow, "onload", {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return descriptor.get.call(pageWindow);
+        },
+        set(value) {
+          const text = typeof value === "function" ? String(value) : "";
+          const isGameOnload = text.includes("N3(new Fh({}))") || text.includes("N3(new Fh({}));");
+          const isPatchedOnload = text.includes("clientOnload") || text.includes("__HORDES_KR_RUNTIME__");
+          let nextValue = value;
+
+          if (isGameOnload) {
+            if (isPatchedOnload) {
+              state.patchedOnload = value;
+            } else {
+              state.lastOriginalOnload = value;
+              if (state.patchedOnload) nextValue = state.patchedOnload;
+            }
+
+            rememberOnloadGuardAssignment(state, {
+              at: Date.now(),
+              patched: isPatchedOnload,
+              replaced: nextValue !== value,
+            });
+          }
+
+          descriptor.set.call(pageWindow, nextValue);
+        },
+      });
+
+      Object.defineProperty(pageWindow, "__hordesKrClientOnloadGuardInstalled", {
+        configurable: true,
+        value: true,
+      });
+    } catch (error) {
+      recordScriptHookError(error, "onload-guard");
+    }
+  }
+
+  function rememberOnloadGuardAssignment(state, assignment) {
+    state.assignments.push(assignment);
+    while (state.assignments.length > 12) state.assignments.shift();
   }
 
   function installClientScriptGate() {
@@ -3765,16 +7052,71 @@
   }
 
   function shouldInstallClientScriptGate() {
-    if (!/^\/play(?:\/|$)/.test(location.pathname)) return false;
+    if (!shouldPatchCurrentPageClientScript()) return false;
 
     try {
       return (
         localStorage.getItem(SCRIPT_GATE_DISABLED_KEY) !== "true" &&
-        localStorage.getItem(SCRIPT_GATE_ENABLED_KEY) === "true"
+        localStorage.getItem(SCRIPT_GATE_ENABLED_KEY) === "force"
       );
     } catch {
       return false;
     }
+  }
+
+  function shouldPatchCurrentPageClientScript() {
+    return /^\/play(?:\/|$)/.test(location.pathname);
+  }
+
+  function installSynchronousClientScriptInterceptor() {
+    const NodeProto = pageWindow.Node && pageWindow.Node.prototype;
+    if (!NodeProto || NodeProto.__hordesKrScriptInsertPatched) return;
+
+    const originalAppendChild = NodeProto.appendChild;
+    const originalInsertBefore = NodeProto.insertBefore;
+    const originalReplaceChild = NodeProto.replaceChild;
+
+    if (typeof originalAppendChild === "function") {
+      NodeProto.appendChild = function hordesKrAppendChild(node) {
+        if (interceptGameClientScriptBeforeInsert(this, node, null)) return node;
+        return originalAppendChild.apply(this, arguments);
+      };
+    }
+
+    if (typeof originalInsertBefore === "function") {
+      NodeProto.insertBefore = function hordesKrInsertBefore(node, child) {
+        if (interceptGameClientScriptBeforeInsert(this, node, child)) return node;
+        return originalInsertBefore.apply(this, arguments);
+      };
+    }
+
+    if (typeof originalReplaceChild === "function") {
+      NodeProto.replaceChild = function hordesKrReplaceChild(node, child) {
+        if (interceptGameClientScriptBeforeInsert(this, node, child)) {
+          if (child && child.parentNode === this) child.remove();
+          return child;
+        }
+        return originalReplaceChild.apply(this, arguments);
+      };
+    }
+
+    Object.defineProperty(NodeProto, "__hordesKrScriptInsertPatched", {
+      configurable: true,
+      value: true,
+    });
+  }
+
+  function interceptGameClientScriptBeforeInsert(parent, node, nextSibling) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE || node.tagName !== "SCRIPT") return false;
+    if (!node.getAttribute || node.dataset.hordesKrRuntimeHooked) return false;
+
+    const url = toUrl(node.getAttribute("src"));
+    if (!url || !shouldPatchGameClientScript(url)) return false;
+
+    node.dataset.hordesKrRuntimeHooked = "sync-blocked";
+    rememberScriptHookValue("scriptHookAttemptedScripts", shortScriptUrl(url));
+    loadAndPatchGameClientScript(parent, nextSibling, url, node.getAttribute("type") || "");
+    return true;
   }
 
   function patchCanvasContextCapture() {
@@ -3983,10 +7325,188 @@
       "try{r.overlayCanvas=Ln}catch(i){r.debug.overlayCanvasReadError=(i&&i.message)||String(i)}",
       "try{r.renderState=tt}catch(i){r.debug.renderStateReadError=(i&&i.message)||String(i)}",
       "try{r.settings=fe}catch(i){r.debug.settingsReadError=(i&&i.message)||String(i)}",
+      "try{r.minimap={canvas:xo,scale:xr,enlarged:Yd,width:Tl,height:El,offsetX:Xd,offsetY:Qd}}catch(i){r.debug.minimapReadError=(i&&i.message)||String(i)}",
       "r.delta=t;r.frameTime=e;",
       "}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientFrameLoop:\"+((o&&o.message)||o))}catch(i){}}",
     ].join("");
     const exposeClientRuntimeCall = `(function(){${exposeClientRuntime}})()`;
+    const installClientRuntimeProbe = [
+      "try{",
+      "var __hkrRuntimeProbe=function(){",
+      "try{",
+      "var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "var g=null,p=null;",
+      "r.updatedAt=Date.now();",
+      "r.hookHits=r.hookHits||{};",
+      "r.hookHits.runtimeProbe=(r.hookHits.runtimeProbe||0)+1;",
+      "r.debug=r.debug||{};",
+      "r.debug.runtimeProbeAt=r.updatedAt;",
+      "try{g=I}catch(i){r.debug.runtimeProbeEngineReadError=(i&&i.message)||String(i)}",
+      "r.engine=g;",
+      "try{r.debug.runtimeProbeIType=typeof I}catch(i){}",
+      "try{r.debug.runtimeProbeIConstructor=g&&g.constructor&&g.constructor.name||\"\"}catch(i){}",
+      "try{r.debug.runtimeProbeIKeys=g?Object.getOwnPropertyNames(g).slice(0,80):[]}catch(i){r.debug.runtimeProbeIKeysError=(i&&i.message)||String(i)}",
+      "try{p=g&&g.player}catch(i){r.debug.runtimeProbePlayerReadError=(i&&i.message)||String(i)}",
+      "r.player=p;",
+      "try{r.target=p&&p.target}catch(i){r.debug.runtimeProbeTargetReadError=(i&&i.message)||String(i)}",
+      "try{r.camera=gt}catch(i){r.debug.runtimeProbeCameraReadError=(i&&i.message)||String(i)}",
+      "try{r.cameraTransform=Qt}catch(i){r.debug.runtimeProbeCameraTransformReadError=(i&&i.message)||String(i)}",
+      "try{r.webglCanvas=To}catch(i){r.debug.runtimeProbeWebglCanvasReadError=(i&&i.message)||String(i)}",
+      "try{r.overlayCanvas=Ln}catch(i){r.debug.runtimeProbeOverlayCanvasReadError=(i&&i.message)||String(i)}",
+      "try{r.renderState=tt}catch(i){r.debug.runtimeProbeRenderStateReadError=(i&&i.message)||String(i)}",
+      "try{r.settings=fe}catch(i){r.debug.runtimeProbeSettingsReadError=(i&&i.message)||String(i)}",
+      "try{r.minimap={canvas:xo,scale:xr,enlarged:Yd,width:Tl,height:El,offsetX:Xd,offsetY:Qd}}catch(i){r.debug.runtimeProbeMinimapReadError=(i&&i.message)||String(i)}",
+      "}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"runtimeProbe:\"+((o&&o.message)||o))}catch(i){}}",
+      "};",
+      "window.__HORDES_KR_RUNTIME_PROBE_NOW__=__hkrRuntimeProbe;",
+      "setInterval(__hkrRuntimeProbe,250);",
+      "}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"runtimeProbeInstall:\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
+    const exposeClientEngineThis = (hitName) => [
+      "try{",
+      "let r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "let p=null;",
+      "r.engine=this;",
+      "try{p=this&&this.player}catch(i){r.debug=r.debug||{};r.debug.engineMethodPlayerReadError=(i&&i.message)||String(i)}",
+      "r.player=p;",
+      "try{r.target=p&&p.target}catch(i){r.debug=r.debug||{};r.debug.engineMethodTargetReadError=(i&&i.message)||String(i)}",
+      "try{r.camera=gt}catch(i){}",
+      "try{r.cameraTransform=Qt}catch(i){}",
+      "try{r.webglCanvas=To}catch(i){}",
+      "try{r.overlayCanvas=Ln}catch(i){}",
+      "try{r.renderState=tt}catch(i){}",
+      "try{r.settings=fe}catch(i){}",
+      "try{r.minimap={canvas:xo,scale:xr,enlarged:Yd,width:Tl,height:El,offsetX:Xd,offsetY:Qd}}catch(i){}",
+      "r.updatedAt=Date.now();",
+      "r.hookHits=r.hookHits||{};",
+      `r.hookHits.${hitName}=(r.hookHits.${hitName}||0)+1;`,
+      "r.debug=r.debug||{};",
+      `r.debug.${hitName}At=r.updatedAt;`,
+      "try{r.debug.engineThisKeys=this?Object.getOwnPropertyNames(this).slice(0,60):[]}catch(i){}",
+      "}catch(o){try{let r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"",
+      hitName,
+      ":\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
+    const installClientPrototypeRuntime = [
+      "try{",
+      "let __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "__hkrRuntime.debug=__hkrRuntime.debug||{};",
+      "__hkrRuntime.debug.prototypePatchAt=Date.now();",
+      "__hkrRuntime.debug.prototypePatchFhType=typeof Fh;",
+      "__hkrRuntime.debug.prototypePatchFhKeys=Fh&&Fh.prototype?Object.getOwnPropertyNames(Fh.prototype).slice(0,80):[];",
+      "let __hkrExpose=function(__hkrEngine,__hkrHit){",
+      "try{",
+      "let __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "let __hkrPlayer=null;",
+      "__hkrRuntime.engine=__hkrEngine;",
+      "try{__hkrPlayer=__hkrEngine&&__hkrEngine.player}catch(i){__hkrRuntime.debug=__hkrRuntime.debug||{};__hkrRuntime.debug.prototypePlayerReadError=(i&&i.message)||String(i)}",
+      "__hkrRuntime.player=__hkrPlayer;",
+      "try{__hkrRuntime.target=__hkrPlayer&&__hkrPlayer.target}catch(i){__hkrRuntime.debug=__hkrRuntime.debug||{};__hkrRuntime.debug.prototypeTargetReadError=(i&&i.message)||String(i)}",
+      "try{__hkrRuntime.camera=gt}catch(i){}",
+      "try{__hkrRuntime.cameraTransform=Qt}catch(i){}",
+      "try{__hkrRuntime.webglCanvas=To}catch(i){}",
+      "try{__hkrRuntime.overlayCanvas=Ln}catch(i){}",
+      "try{__hkrRuntime.renderState=tt}catch(i){}",
+      "try{__hkrRuntime.settings=fe}catch(i){}",
+      "try{__hkrRuntime.minimap={canvas:xo,scale:xr,enlarged:Yd,width:Tl,height:El,offsetX:Xd,offsetY:Qd}}catch(i){}",
+      "__hkrRuntime.updatedAt=Date.now();",
+      "__hkrRuntime.hookHits=__hkrRuntime.hookHits||{};",
+      "__hkrRuntime.hookHits[__hkrHit]=(__hkrRuntime.hookHits[__hkrHit]||0)+1;",
+      "__hkrRuntime.debug=__hkrRuntime.debug||{};",
+      "__hkrRuntime.debug[__hkrHit+\"At\"]=__hkrRuntime.updatedAt;",
+      "try{__hkrRuntime.debug.prototypeEngineKeys=__hkrEngine?Object.getOwnPropertyNames(__hkrEngine).slice(0,80):[]}catch(i){}",
+      "}catch(o){try{let __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"prototypeExpose:\"+__hkrHit+\":\"+((o&&o.message)||o))}catch(i){}}",
+      "};",
+      "let __hkrWrap=function(__hkrName,__hkrHit){",
+      "try{",
+      "let __hkrProto=Fh&&Fh.prototype;",
+      "let __hkrOriginal=__hkrProto&&__hkrProto[__hkrName];",
+      "if(typeof __hkrOriginal!==\"function\")return;",
+      "if(__hkrOriginal.__hordesKrRuntimeWrapped)return;",
+      "let __hkrWrapped=function(){",
+      "__hkrExpose(this,__hkrHit);",
+      "let __hkrResult=__hkrOriginal.apply(this,arguments);",
+      "__hkrExpose(this,__hkrHit+\"After\");",
+      "return __hkrResult;",
+      "};",
+      "try{Object.defineProperty(__hkrWrapped,\"__hordesKrRuntimeWrapped\",{value:true})}catch(i){}",
+      "__hkrProto[__hkrName]=__hkrWrapped;",
+      "__hkrRuntime.debug[__hkrHit+\"Wrapped\"]=true;",
+      "}catch(o){try{let __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"prototypeWrap:\"+__hkrName+\":\"+((o&&o.message)||o))}catch(i){}}",
+      "};",
+      "__hkrWrap(\"setState\",\"prototypeSetState\");",
+      "__hkrWrap(\"setPlayer\",\"prototypeSetPlayer\");",
+      "__hkrWrap(\"tick\",\"prototypeTick\");",
+      "__hkrWrap(\"manageChunks\",\"prototypeManageChunks\");",
+      "}catch(o){try{let __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"prototypeRuntime:\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
+    const exposeClientTargetController = [
+      "hu=(t,e=!0)=>{_n=t,Td=e&&_n>0,Mm.set(Td?\"pointer\":\"auto\"),Pm.set(_n)},",
+      "__hkrExposeTargetController=(()=>{try{",
+      "let r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "r.setHoverTarget=hu;",
+      "r.changeTarget=vr;",
+      "r.getClientTargetState=()=>({hover:_n,target:zn,lastCandidate:lc,hoverActive:Td});",
+      "r.debug=r.debug||{};",
+      "r.debug.targetControllerAt=Date.now();",
+      "r.hookHits=r.hookHits||{};",
+      "r.hookHits.targetControllerExpose=(r.hookHits.targetControllerExpose||0)+1;",
+      "}catch(i){}return 0})(),sD=",
+    ].join("");
+    const exposeClientSkillRuntime = [
+      "try{",
+      "var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "__hkrRuntime.skillStores={active:typeof Hs!==\"undefined\"?Hs:null,learned:typeof Jc!==\"undefined\"?Jc:null,configs:typeof Ea!==\"undefined\"?Ea:null};",
+      "__hkrRuntime.skillDefinitions=typeof zt!==\"undefined\"?zt:null;",
+      "__hkrRuntime.sendClientCommand=yt;",
+      "__hkrRuntime.isSkillConfigurable=function(__hkrId){",
+      "try{",
+      "__hkrId=Number(__hkrId);",
+      "if(!Number.isInteger(__hkrId)||__hkrId<=0)return false;",
+      "var __hkrSkill=zt&&zt.get?zt.get(__hkrId):null;",
+      "return !!__hkrSkill&&!__hkrSkill.engineOnly;",
+      "}catch(__hkrError){return true}",
+      "};",
+      "__hkrRuntime.getActiveSkillConfig=function(){",
+      "var __hkrOut=[];",
+      "try{",
+      "var __hkrUnsub=Hs.subscribe(function(__hkrValue){",
+      "try{",
+      "if(__hkrValue&&typeof __hkrValue.forEach===\"function\"){",
+      "__hkrValue.forEach(function(__hkrLevel,__hkrId){",
+      "__hkrLevel=Math.max(0,Math.floor(Number(__hkrLevel)||0));",
+      "__hkrId=Number(__hkrId);",
+      "if(__hkrRuntime.isSkillConfigurable(__hkrId)){for(var __hkrIndex=0;__hkrIndex<__hkrLevel;__hkrIndex+=1)__hkrOut.push(__hkrId)}",
+      "});",
+      "}else if(__hkrValue&&typeof __hkrValue===\"object\"){",
+      "Object.keys(__hkrValue).forEach(function(__hkrId){",
+      "var __hkrLevel=Math.max(0,Math.floor(Number(__hkrValue[__hkrId])||0));",
+      "__hkrId=Number(__hkrId);",
+      "if(__hkrRuntime.isSkillConfigurable(__hkrId)){for(var __hkrIndex=0;__hkrIndex<__hkrLevel;__hkrIndex+=1)__hkrOut.push(__hkrId)}",
+      "});",
+      "}",
+      "}catch(__hkrError){}",
+      "});",
+      "if(typeof __hkrUnsub===\"function\")__hkrUnsub();",
+      "}catch(__hkrError){}",
+      "return __hkrOut;",
+      "};",
+      "__hkrRuntime.updatedAt=Date.now();",
+      "__hkrRuntime.hookHits=__hkrRuntime.hookHits||{};",
+      "__hkrRuntime.hookHits.skillRuntimeExpose=(__hkrRuntime.hookHits.skillRuntimeExpose||0)+1;",
+      "__hkrRuntime.debug=__hkrRuntime.debug||{};",
+      "__hkrRuntime.debug.skillRuntimeAt=__hkrRuntime.updatedAt;",
+      "try{__hkrRuntime.debug.skillRuntimeStores={active:typeof Hs,learned:typeof Jc,configs:typeof Ea}}catch(__hkrError){}",
+      "}catch(o){try{var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"skillRuntime:\"+((o&&o.message)||o))}catch(i){}}",
+    ].join("");
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "(()=>{",
+      `(()=>{${installClientRuntimeProbe}`,
+      patches,
+      "client-runtime-probe"
+    );
 
     patched = replaceClientSourceOnce(
       patched,
@@ -4039,9 +7559,65 @@
     patched = replaceClientSourceOnce(
       patched,
       "N3(new Fh({})),Z_(!0),z9()",
-      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1;r.debug=r.debug||{};r.debug.clientOnloadAt=r.updatedAt;try{r.debug.clientOnloadEngineKeys=I?Object.getOwnPropertyNames(I).slice(0,40):[]}catch(i){r.debug.clientOnloadEngineKeysError=(i&&i.message)||String(i)}}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
+      "N3(new Fh({}));try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.engine=I;try{r.player=I&&I.player;r.target=I&&I.player&&I.player.target}catch(i){}try{r.camera=gt}catch(i){}try{r.cameraTransform=Qt}catch(i){}try{r.webglCanvas=To}catch(i){}try{r.overlayCanvas=Ln}catch(i){}try{r.renderState=tt}catch(i){}try{r.settings=fe}catch(i){}try{r.minimap={canvas:xo,scale:xr,enlarged:Yd,width:Tl,height:El,offsetX:Xd,offsetY:Qd}}catch(i){}r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.clientOnload=(r.hookHits.clientOnload||0)+1;r.debug=r.debug||{};r.debug.clientOnloadAt=r.updatedAt;try{r.debug.clientOnloadEngineKeys=I?Object.getOwnPropertyNames(I).slice(0,40):[]}catch(i){r.debug.clientOnloadEngineKeysError=(i&&i.message)||String(i)}}catch(o){try{var r=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};r.hookErrors=r.hookErrors||[];r.hookErrors.push(\"clientOnload:\"+((o&&o.message)||o))}catch(i){}};Z_(!0),z9()",
       patches,
       "client-onload-runtime"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      'setState(e,n=""){this.state===2&&e===4&&UA(this),',
+      `setState(e,n=""){${exposeClientEngineThis("clientSetState")}this.state===2&&e===4&&UA(this),`,
+      patches,
+      "client-set-state"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "setPlayer(e){this.player=e,Zc.set(!0),q9()}",
+      `setPlayer(e){this.player=e;${exposeClientEngineThis("clientSetPlayer")}Zc.set(!0),q9()}`,
+      patches,
+      "client-set-player"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "tick(e){for(this.netData.length>5&&",
+      `tick(e){${exposeClientEngineThis("clientEngineTick")}for(this.netData.length>5&&`,
+      patches,
+      "client-engine-tick"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "manageChunks(e){g8(e,this.chunkAmount);",
+      `manageChunks(e){${exposeClientEngineThis("clientManageChunks")}g8(e,this.chunkAmount);`,
+      patches,
+      "client-manage-chunks"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "};window.onload=async()=>{",
+      `};${installClientPrototypeRuntime}window.onload=async()=>{`,
+      patches,
+      "client-prototype-runtime"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      "hu=(t,e=!0)=>{_n=t,Td=e&&_n>0,Mm.set(Td?\"pointer\":\"auto\"),Pm.set(_n)},sD=",
+      exposeClientTargetController,
+      patches,
+      "client-target-controller"
+    );
+
+    patched = replaceClientSourceOnce(
+      patched,
+      'var yt=(t,e="")=>{Io(Mt.clientCommand.packData({command:t,string:e+""}))};',
+      `var yt=(t,e="")=>{Io(Mt.clientCommand.packData({command:t,string:e+""}))};${exposeClientSkillRuntime}`,
+      patches,
+      "client-skill-runtime"
     );
 
     if (patches.length > 0) {
@@ -4108,6 +7684,9 @@
     installRuntimeNameOverlayStyle();
     ensureRuntimeNameOverlayHost();
     ensureTargetDistanceOverlayHost();
+    ensureIncomingSkillListHost();
+    ensureMinimapNameOverlayHost();
+    ensurePresetQuickBarHost();
 
     if (HIGHLIGHT_STATE.runtimeOverlayTimer) return;
     HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, RUNTIME_OVERLAY_INTERVAL_MS);
@@ -4142,6 +7721,88 @@
         pointer-events: none !important;
         z-index: 2147483647 !important;
         overflow: visible !important;
+      }
+      #hordes-kr-incoming-skill-list {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        pointer-events: none !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        color: #ffd2d2 !important;
+        overflow: visible !important;
+      }
+      #hordes-kr-gear-preset-progress-overlay {
+        position: fixed !important;
+        left: 50% !important;
+        top: 44% !important;
+        transform: translate(-50%, -50%) !important;
+        z-index: 2147483647 !important;
+        pointer-events: none !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        text-align: center !important;
+      }
+      .hordes-kr-gear-preset-progress-label {
+        display: inline-block !important;
+        min-width: 220px !important;
+        max-width: min(520px, calc(100vw - 48px)) !important;
+        box-sizing: border-box !important;
+        padding: 10px 16px !important;
+        border: 1px solid rgba(245, 194, 71, 0.76) !important;
+        border-radius: 8px !important;
+        background: rgba(16, 19, 29, 0.94) !important;
+        color: #fff3b0 !important;
+        font-size: 18px !important;
+        line-height: 1.25 !important;
+        font-weight: 900 !important;
+        letter-spacing: 0 !important;
+        white-space: pre-line !important;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 0 14px rgba(245, 194, 71, 0.28) !important;
+        -webkit-text-stroke: 0.35px rgba(5, 10, 22, 0.92) !important;
+        text-shadow:
+          1px 0 0 rgba(5, 10, 22, 0.92),
+          -1px 0 0 rgba(5, 10, 22, 0.92),
+          0 1px 0 rgba(5, 10, 22, 0.92),
+          0 -1px 0 rgba(5, 10, 22, 0.92),
+          0 2px 4px rgba(0, 0, 0, 0.9) !important;
+      }
+      .hordes-kr-gear-preset-progress-label.success {
+        border-color: rgba(52, 203, 73, 0.94) !important;
+        color: #d8ffdf !important;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 0 14px rgba(52, 203, 73, 0.34) !important;
+      }
+      .hordes-kr-gear-preset-progress-label.warn {
+        border-color: rgba(245, 194, 71, 0.94) !important;
+        color: #fff3b0 !important;
+      }
+      .hordes-kr-gear-preset-progress-label.error {
+        border-color: rgba(244, 41, 41, 0.94) !important;
+        color: #ffd2d2 !important;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 0 14px rgba(244, 41, 41, 0.34) !important;
+      }
+      #hordes-kr-minimap-name-overlay {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        overflow: visible !important;
+      }
+      #hordes-kr-minimap-highlight-list {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        pointer-events: auto !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        color: #dff8f5 !important;
+        touch-action: none !important;
+      }
+      #hordes-kr-preset-quickbar {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        pointer-events: auto !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        color: #dff8f5 !important;
+        touch-action: auto !important;
       }
       .hordes-kr-target-distance-label {
         position: fixed !important;
@@ -4191,15 +7852,526 @@
         filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) !important;
         will-change: left, top, transform !important;
       }
-      .hordes-kr-runtime-name-prefix {
-        color: #2f7dff !important;
-        -webkit-text-stroke: 0.7px rgba(5, 10, 22, 0.98) !important;
+      .hordes-kr-runtime-name-label.incoming-skill {
+        color: #ff3838 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+        font-size: 20px !important;
+        -webkit-text-stroke: 0.85px rgba(8, 0, 0, 0.98) !important;
+        text-shadow:
+          2px 0 0 rgba(8, 0, 0, 0.98),
+          -2px 0 0 rgba(8, 0, 0, 0.98),
+          0 2px 0 rgba(8, 0, 0, 0.98),
+          0 -2px 0 rgba(8, 0, 0, 0.98),
+          0 3px 3px rgba(0, 0, 0, 0.94),
+          0 0 7px rgba(255, 35, 35, 0.9) !important;
+      }
+      .hordes-kr-runtime-name-label.incoming-watch {
+        color: #f5c247 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+        font-size: 19px !important;
+        -webkit-text-stroke: 0.8px rgba(5, 10, 22, 0.98) !important;
         text-shadow:
           2px 0 0 rgba(5, 10, 22, 0.98),
           -2px 0 0 rgba(5, 10, 22, 0.98),
           0 2px 0 rgba(5, 10, 22, 0.98),
           0 -2px 0 rgba(5, 10, 22, 0.98),
-          0 0 5px rgba(64, 121, 255, 0.95) !important;
+          0 3px 3px rgba(0, 0, 0, 0.94),
+          0 0 7px rgba(245, 194, 71, 0.9) !important;
+      }
+      .hordes-kr-runtime-name-label .watch-prefix {
+        color: #f5c247 !important;
+        font-size: 0.82em !important;
+        font-weight: 1000 !important;
+      }
+      .hordes-kr-runtime-name-label .skill-icon {
+        width: 18px !important;
+        height: 18px !important;
+        flex: 0 0 18px !important;
+        object-fit: contain !important;
+        image-rendering: auto !important;
+        filter:
+          drop-shadow(1px 0 0 rgba(8, 0, 0, 0.98))
+          drop-shadow(-1px 0 0 rgba(8, 0, 0, 0.98))
+          drop-shadow(0 1px 0 rgba(8, 0, 0, 0.98))
+          drop-shadow(0 -1px 0 rgba(8, 0, 0, 0.98)) !important;
+      }
+      .hordes-kr-runtime-name-label .distance {
+        color: #ffb0a8 !important;
+        font-size: 0.82em !important;
+        font-weight: 900 !important;
+      }
+      .hordes-kr-runtime-name-label.incoming-watch .distance {
+        color: #fff3b0 !important;
+      }
+      .hordes-kr-incoming-skill-list-panel {
+        width: 100% !important;
+        max-height: var(--hordes-kr-incoming-skill-list-max-height, 156px) !important;
+        overflow: hidden !important;
+        display: grid !important;
+        gap: 3px !important;
+        border: 1px solid rgba(244, 41, 41, 0.58) !important;
+        border-radius: 6px !important;
+        background: rgba(16, 19, 29, 0.88) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42), 0 0 12px rgba(244, 41, 41, 0.22) !important;
+        padding: 5px !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-incoming-skill-list-title {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 6px !important;
+        color: #ffb0a8 !important;
+        font-size: 10px !important;
+        line-height: 1 !important;
+        font-weight: 1000 !important;
+        letter-spacing: 0 !important;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.92) !important;
+        padding: 0 1px 3px !important;
+        border-bottom: 1px solid rgba(244, 41, 41, 0.22) !important;
+      }
+      .hordes-kr-incoming-skill-list-count {
+        color: #ffffff !important;
+      }
+      .hordes-kr-incoming-skill-list-row {
+        min-width: 0 !important;
+        display: grid !important;
+        grid-template-columns: 30px minmax(0, 1fr) auto !important;
+        align-items: center !important;
+        gap: 5px !important;
+        border: 1px solid rgba(244, 41, 41, 0.24) !important;
+        border-radius: 4px !important;
+        background: rgba(91, 28, 28, 0.76) !important;
+        color: #ffffff !important;
+        min-height: 25px !important;
+        padding: 3px 5px !important;
+        box-sizing: border-box !important;
+        font-size: 12px !important;
+        line-height: 1.1 !important;
+        font-weight: 1000 !important;
+        letter-spacing: 0 !important;
+        text-shadow:
+          1px 0 0 rgba(8, 0, 0, 0.98),
+          -1px 0 0 rgba(8, 0, 0, 0.98),
+          0 1px 0 rgba(8, 0, 0, 0.98),
+          0 -1px 0 rgba(8, 0, 0, 0.98),
+          0 2px 3px rgba(0, 0, 0, 0.9) !important;
+      }
+      .hordes-kr-incoming-skill-list-row.watch {
+        border-color: rgba(245, 194, 71, 0.34) !important;
+        background: rgba(84, 72, 30, 0.78) !important;
+      }
+      .hordes-kr-incoming-skill-list-row .skill-icon {
+        width: 18px !important;
+        height: 18px !important;
+        min-width: 18px !important;
+        object-fit: contain !important;
+        image-rendering: auto !important;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9)) !important;
+      }
+      .hordes-kr-incoming-skill-list-row .skill-icon[hidden] {
+        display: none !important;
+      }
+      .hordes-kr-incoming-skill-list-row .watch-badge {
+        min-width: 28px !important;
+        height: 17px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(245, 194, 71, 0.66) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.86) !important;
+        color: #f5c247 !important;
+        font-size: 10px !important;
+        line-height: 1 !important;
+        font-weight: 1000 !important;
+        text-shadow: none !important;
+      }
+      .hordes-kr-incoming-skill-list-row .name {
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        color: #ffffff !important;
+      }
+      .hordes-kr-incoming-skill-list-row .distance {
+        color: #ffcfca !important;
+        font-size: 11px !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-minimap-name-label {
+        position: fixed !important;
+        transform: translate(-50%, -125%) !important;
+        color: #f5c247 !important;
+        opacity: 1 !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        font-size: 10px !important;
+        line-height: 1 !important;
+        font-weight: 900 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+        -webkit-text-stroke: 0.35px rgba(5, 10, 22, 0.98) !important;
+        text-shadow:
+          1px 0 0 rgba(5, 10, 22, 0.98),
+          -1px 0 0 rgba(5, 10, 22, 0.98),
+          0 1px 0 rgba(5, 10, 22, 0.98),
+          0 -1px 0 rgba(5, 10, 22, 0.98),
+          0 1px 2px rgba(0, 0, 0, 0.9) !important;
+        filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.85)) !important;
+        will-change: left, top !important;
+      }
+      .hordes-kr-minimap-list-panel {
+        width: 100% !important;
+        max-height: min(calc(300px * var(--hordes-kr-minimap-list-scale, 1)), 70vh) !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+        overscroll-behavior: contain !important;
+        scrollbar-width: thin !important;
+        display: grid !important;
+        gap: calc(3px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        border: 1px solid rgba(166, 220, 213, 0.34) !important;
+        border-radius: 6px !important;
+        background: rgba(16, 19, 29, 0.9) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38) !important;
+        padding: calc(5px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-minimap-list-title {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: calc(6px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        color: #a6dcd5 !important;
+        font-size: calc(10px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1 !important;
+        font-weight: 900 !important;
+        letter-spacing: 0 !important;
+        cursor: move !important;
+        user-select: none !important;
+        touch-action: none !important;
+        padding: calc(1px * var(--hordes-kr-minimap-list-scale, 1)) calc(2px * var(--hordes-kr-minimap-list-scale, 1)) calc(3px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        border-bottom: 1px solid rgba(166, 220, 213, 0.16) !important;
+      }
+      .hordes-kr-minimap-list-title-main,
+      .hordes-kr-minimap-list-title-controls {
+        display: flex !important;
+        align-items: center !important;
+        gap: calc(5px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        min-width: 0 !important;
+      }
+      .hordes-kr-minimap-list-title-main {
+        flex: 1 1 auto !important;
+      }
+      .hordes-kr-minimap-list-title-controls {
+        cursor: default !important;
+      }
+      .hordes-kr-minimap-list-presets {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: calc(3px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        min-width: 0 !important;
+      }
+      .hordes-kr-minimap-list-count {
+        color: #a6dcd5 !important;
+        font-weight: 900 !important;
+        min-width: calc(12px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        text-align: center !important;
+      }
+      .hordes-kr-preset-quickbar-panel {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 5px !important;
+        border: 1px solid rgba(166, 220, 213, 0.24) !important;
+        border-radius: 5px !important;
+        background: rgba(16, 19, 29, 0.78) !important;
+        box-shadow: 0 5px 16px rgba(0, 0, 0, 0.32) !important;
+        padding: 4px 5px !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-preset-quickbar-panel[data-dragging="true"] {
+        border-color: rgba(245, 194, 71, 0.78) !important;
+      }
+      .hordes-kr-preset-quickbar-group {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 3px !important;
+        min-width: 0 !important;
+      }
+      .hordes-kr-preset-quickbar-group + .hordes-kr-preset-quickbar-group {
+        border-left: 1px solid rgba(166, 220, 213, 0.16) !important;
+        padding-left: 5px !important;
+      }
+      .hordes-kr-preset-quickbar-btn {
+        width: 24px !important;
+        height: 27px !important;
+        min-width: 24px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(245, 194, 71, 0.62) !important;
+        border-radius: 4px !important;
+        background: rgba(84, 72, 30, 0.92) !important;
+        color: #f5c247 !important;
+        font: 1000 12px/1 Arial, Helvetica, sans-serif !important;
+        line-height: 1 !important;
+        padding: 0 !important;
+        cursor: pointer !important;
+      }
+      .hordes-kr-preset-quickbar-btn:hover {
+        border-color: rgba(255, 226, 122, 0.95) !important;
+        color: #fff3b0 !important;
+      }
+      .hordes-kr-preset-quickbar-btn.skill {
+        width: 30px !important;
+        min-width: 30px !important;
+        border-color: rgba(116, 184, 255, 0.66) !important;
+        background: rgba(28, 58, 96, 0.92) !important;
+        color: #bfe3ff !important;
+      }
+      .hordes-kr-preset-quickbar-btn.skill:hover {
+        border-color: rgba(180, 221, 255, 0.96) !important;
+        color: #ffffff !important;
+      }
+      .hordes-kr-preset-quickbar-btn.running {
+        border-color: rgba(245, 194, 71, 0.98) !important;
+        background: rgba(112, 84, 20, 0.96) !important;
+        color: #fff3b0 !important;
+        box-shadow: 0 0 7px rgba(245, 194, 71, 0.58) !important;
+      }
+      .hordes-kr-preset-quickbar-btn.active {
+        border-color: rgba(52, 203, 73, 0.98) !important;
+        background: rgba(24, 84, 44, 0.94) !important;
+        color: #d8ffdf !important;
+        box-shadow: 0 0 6px rgba(52, 203, 73, 0.42) !important;
+      }
+      .hordes-kr-preset-quickbar-btn.partial {
+        border-color: rgba(245, 194, 71, 0.74) !important;
+      }
+      .hordes-kr-preset-quickbar-btn.error {
+        border-color: rgba(244, 41, 41, 0.96) !important;
+        background: rgba(91, 28, 28, 0.94) !important;
+        color: #ffd2d2 !important;
+      }
+      .hordes-kr-preset-quickbar-btn.empty,
+      .hordes-kr-preset-quickbar-btn:disabled {
+        border-color: rgba(166, 220, 213, 0.18) !important;
+        background: rgba(35, 41, 55, 0.7) !important;
+        color: rgba(166, 220, 213, 0.42) !important;
+        cursor: default !important;
+      }
+      .hordes-kr-preset-quickbar-status {
+        min-width: 52px !important;
+        height: 27px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(52, 203, 73, 0.62) !important;
+        border-radius: 4px !important;
+        background: rgba(18, 55, 35, 0.88) !important;
+        color: #d8ffdf !important;
+        font: 1000 11px/1 Arial, Helvetica, sans-serif !important;
+        white-space: nowrap !important;
+        padding: 0 5px !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-preset-quickbar-status.combat {
+        min-width: 62px !important;
+        border-color: rgba(244, 41, 41, 0.82) !important;
+        background: rgba(91, 28, 28, 0.92) !important;
+        color: #ffd2d2 !important;
+      }
+      .hordes-kr-preset-quickbar-status.unknown {
+        border-color: rgba(166, 220, 213, 0.26) !important;
+        background: rgba(35, 41, 55, 0.72) !important;
+        color: #a6dcd5 !important;
+      }
+      .hordes-kr-preset-quickbar-reset,
+      .hordes-kr-preset-quickbar-drag {
+        width: 20px !important;
+        height: 27px !important;
+        min-width: 20px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(166, 220, 213, 0.26) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.82) !important;
+        color: #dff8f5 !important;
+        font: 1000 12px/1 Arial, Helvetica, sans-serif !important;
+        padding: 0 !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-preset-quickbar-reset {
+        cursor: pointer !important;
+      }
+      .hordes-kr-preset-quickbar-reset:hover,
+      .hordes-kr-preset-quickbar-drag:hover {
+        border-color: rgba(245, 194, 71, 0.88) !important;
+        color: #f5c247 !important;
+      }
+      .hordes-kr-preset-quickbar-drag {
+        cursor: move !important;
+        user-select: none !important;
+        touch-action: none !important;
+      }
+      .hordes-kr-minimap-list-scale-btn {
+        width: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        height: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        min-width: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(166, 220, 213, 0.28) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.88) !important;
+        color: #dff8f5 !important;
+        font: inherit !important;
+        font-size: calc(10px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1 !important;
+        font-weight: 900 !important;
+        padding: 0 !important;
+        cursor: pointer !important;
+      }
+      .hordes-kr-minimap-list-scale-btn:hover {
+        border-color: rgba(245, 194, 71, 0.88) !important;
+        color: #f5c247 !important;
+      }
+      .hordes-kr-minimap-list-row {
+        width: 100% !important;
+        min-width: 0 !important;
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto auto !important;
+        align-items: center !important;
+        gap: calc(6px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        border: 1px solid rgba(166, 220, 213, 0.18) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.86) !important;
+        color: #ffffff !important;
+        font: inherit !important;
+        font-size: calc(11px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1.15 !important;
+        font-weight: 900 !important;
+        padding: calc(4px * var(--hordes-kr-minimap-list-scale, 1)) calc(5px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        cursor: pointer !important;
+        text-align: left !important;
+      }
+      .hordes-kr-minimap-list-row:hover,
+      .hordes-kr-minimap-list-row.locked {
+        border-color: rgba(245, 194, 71, 0.88) !important;
+        background: rgba(84, 72, 30, 0.92) !important;
+      }
+      .hordes-kr-minimap-list-row.targeted {
+        border-color: rgba(52, 203, 73, 0.95) !important;
+        background: rgba(24, 84, 44, 0.94) !important;
+      }
+      .hordes-kr-minimap-list-row.nearby .name,
+      .hordes-kr-minimap-list-row.nearby .distance,
+      .hordes-kr-minimap-list-row.nearby .hp-text,
+      .hordes-kr-minimap-list-row.nearby .state {
+        font-weight: 1000 !important;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9) !important;
+      }
+      .hordes-kr-minimap-list-row .identity {
+        min-width: 0 !important;
+        display: grid !important;
+        gap: calc(2px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+      }
+      .hordes-kr-minimap-list-row .name-line {
+        min-width: 0 !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: calc(4px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+      }
+      .hordes-kr-minimap-list-row .class-icon {
+        width: calc(14px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        height: calc(14px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        min-width: calc(14px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        object-fit: contain !important;
+        image-rendering: auto !important;
+      }
+      .hordes-kr-minimap-list-row .class-icon[hidden] {
+        display: none !important;
+      }
+      .hordes-kr-minimap-list-row .name {
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-minimap-list-row .hp {
+        min-width: 0 !important;
+        display: grid !important;
+        grid-template-columns: minmax(calc(44px * var(--hordes-kr-minimap-list-scale, 1)), 1fr) auto !important;
+        align-items: center !important;
+        gap: calc(4px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+      }
+      .hordes-kr-minimap-list-row .hp[hidden] {
+        display: none !important;
+      }
+      .hordes-kr-minimap-list-row .hp-bar {
+        position: relative !important;
+        display: block !important;
+        height: calc(7px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        min-width: calc(44px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        width: 100% !important;
+        overflow: hidden !important;
+        border: 1px solid rgba(190, 255, 205, 0.72) !important;
+        border-radius: 999px !important;
+        background: linear-gradient(180deg, rgba(14, 20, 24, 0.96), rgba(4, 8, 11, 0.96)) !important;
+        box-shadow: inset 0 0 3px rgba(0, 0, 0, 0.85), 0 0 4px rgba(52, 203, 73, 0.22) !important;
+      }
+      .hordes-kr-minimap-list-row .hp-fill {
+        position: absolute !important;
+        display: block !important;
+        left: 0 !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        width: 0;
+        background: linear-gradient(90deg, #16a34a, #34cb49 52%, #8dff9a) !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 0 7px rgba(52, 203, 73, 0.72) !important;
+        transition: width 120ms linear !important;
+        will-change: width !important;
+      }
+      .hordes-kr-minimap-list-row .hp-text {
+        color: #bcebc9 !important;
+        font-size: calc(8.5px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1 !important;
+        font-weight: 900 !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-minimap-list-row .distance {
+        color: #f5c247 !important;
+        font-size: calc(10px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-minimap-list-row .state {
+        min-width: calc(38px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        color: #8ea6aa !important;
+        font-size: calc(9px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1 !important;
+        font-weight: 900 !important;
+        text-align: center !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-minimap-list-row.targeted .state {
+        color: #74ff87 !important;
+      }
+      .hordes-kr-minimap-list-row.locked .state {
+        color: #f5c247 !important;
+      }
+      .hordes-kr-minimap-list-empty {
+        color: #8ea6aa !important;
+        font-size: calc(10px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1.2 !important;
+        font-weight: 800 !important;
+        padding: calc(4px * var(--hordes-kr-minimap-list-scale, 1)) calc(2px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        text-align: center !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -4236,61 +8408,533 @@
     return host;
   }
 
+  function ensureGearPresetProgressOverlayHost() {
+    if (GEAR_PRESET_STATE.progressOverlayHost && document.contains(GEAR_PRESET_STATE.progressOverlayHost)) {
+      return GEAR_PRESET_STATE.progressOverlayHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-gear-preset-progress-overlay";
+    host.setAttribute("aria-live", "polite");
+    document.body.appendChild(host);
+    GEAR_PRESET_STATE.progressOverlayHost = host;
+    return host;
+  }
+
+  function showGearPresetProgressOverlay(message, variant = "running", durationMs = 0) {
+    const host = ensureGearPresetProgressOverlayHost();
+    if (!host) return;
+
+    if (GEAR_PRESET_STATE.progressOverlayTimer) {
+      pageWindow.clearTimeout(GEAR_PRESET_STATE.progressOverlayTimer);
+      GEAR_PRESET_STATE.progressOverlayTimer = null;
+    }
+
+    let label = host.querySelector(".hordes-kr-gear-preset-progress-label");
+    if (!label) {
+      label = document.createElement("div");
+      host.replaceChildren(label);
+    }
+
+    label.className = `hordes-kr-gear-preset-progress-label ${variant || "running"}`;
+    label.textContent = message;
+
+    if (durationMs > 0) {
+      GEAR_PRESET_STATE.progressOverlayTimer = pageWindow.setTimeout(() => {
+        host.replaceChildren();
+        GEAR_PRESET_STATE.progressOverlayTimer = null;
+      }, durationMs);
+    }
+  }
+
+  function formatGearPresetProgressMessage(presetName, done, total) {
+    const title = presetName ? `프리셋 ${presetName}` : "장비";
+    return `${title}로 전환중\n${Math.max(0, done)}/${Math.max(0, total)}`;
+  }
+
+  function formatGearPresetIncompleteMessage(presetName, verify) {
+    const title = presetName ? `프리셋 ${presetName}` : "프리셋";
+    const missing = Array.isArray(verify && verify.missing) ? verify.missing : [];
+    const extra = Array.isArray(verify && verify.extraEquipped) ? verify.extraEquipped : [];
+    const lines = [
+      `${title} 전환 불완전`,
+      `${verify && verify.matched || 0}/${verify && verify.total || 0} 확인`,
+    ];
+
+    if (missing.length > 0) {
+      lines.push(`미장착: ${formatGearPresetProblemItems(missing)}`);
+    }
+    if (extra.length > 0) {
+      lines.push(`남은장착: ${formatGearPresetProblemItems(extra)}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  function formatGearPresetProblemItems(items) {
+    return (items || [])
+      .slice(0, 3)
+      .map(formatGearPresetProblemItem)
+      .join(", ") + ((items || []).length > 3 ? ` 외 ${(items || []).length - 3}` : "");
+  }
+
+  function formatGearPresetProblemItem(item) {
+    const type = item && item.itemType ? item.itemType : "item";
+    const slot = Number(item && (item.equipSlot || item.slotIndex));
+    const slotText = Number.isInteger(slot) ? `@${formatGearPresetSlotName(slot)}` : "";
+    return `${type}${slotText}`;
+  }
+
+  function formatGearPresetSlotName(slot) {
+    const slotName = {
+      101: "무기",
+      102: "팔찌",
+      103: "갑옷",
+      104: "가방",
+      105: "신발",
+      106: "장갑",
+      107: "반지",
+      108: "목걸이",
+      109: "보조",
+      110: "참1",
+      111: "참2",
+    }[Number(slot)];
+    return slotName || String(slot);
+  }
+
+  function ensureMinimapNameOverlayHost() {
+    if (HIGHLIGHT_STATE.minimapOverlayHost && document.contains(HIGHLIGHT_STATE.minimapOverlayHost)) {
+      return HIGHLIGHT_STATE.minimapOverlayHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-minimap-name-overlay";
+    host.setAttribute("aria-hidden", "true");
+    document.body.appendChild(host);
+    HIGHLIGHT_STATE.minimapOverlayHost = host;
+    return host;
+  }
+
+  function ensureIncomingSkillListHost() {
+    if (HIGHLIGHT_STATE.incomingSkillListHost && document.contains(HIGHLIGHT_STATE.incomingSkillListHost)) {
+      return HIGHLIGHT_STATE.incomingSkillListHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-incoming-skill-list";
+    host.setAttribute("aria-live", "polite");
+    document.body.appendChild(host);
+    HIGHLIGHT_STATE.incomingSkillListHost = host;
+    return host;
+  }
+
+  function ensureMinimapHighlightListHost() {
+    if (HIGHLIGHT_STATE.minimapListHost && document.contains(HIGHLIGHT_STATE.minimapListHost)) {
+      return HIGHLIGHT_STATE.minimapListHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-minimap-highlight-list";
+    document.body.appendChild(host);
+    HIGHLIGHT_STATE.minimapListHost = host;
+    return host;
+  }
+
+  function ensurePresetQuickBarHost() {
+    if (HIGHLIGHT_STATE.presetBarHost && document.contains(HIGHLIGHT_STATE.presetBarHost)) {
+      return HIGHLIGHT_STATE.presetBarHost;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-preset-quickbar";
+    document.body.appendChild(host);
+    HIGHLIGHT_STATE.presetBarHost = host;
+    return host;
+  }
+
   function updateRuntimeNameOverlay() {
-    updateTargetDistanceOverlay();
+    const now = Date.now();
+    if (now - TARGET_DISTANCE_STATE.lastOverlayTickAt >= TARGET_DISTANCE_OVERLAY_REFRESH_MS) {
+      TARGET_DISTANCE_STATE.lastOverlayTickAt = now;
+      updateTargetDistanceOverlay();
+    }
+
+    if (now - HIGHLIGHT_STATE.lastMinimapOverlayTickAt >= MINIMAP_OVERLAY_REFRESH_MS) {
+      HIGHLIGHT_STATE.lastMinimapOverlayTickAt = now;
+      updateMinimapNameOverlay();
+    }
+
+    if (now - HIGHLIGHT_STATE.lastPresetBarTickAt >= PRESET_QUICKBAR_REFRESH_MS) {
+      HIGHLIGHT_STATE.lastPresetBarTickAt = now;
+      updatePresetQuickBar();
+    }
 
     try {
-      if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.runtimeOverlayEnabled || HIGHLIGHT_CONFIG.names.length === 0) {
+      if (!shouldRunRuntimeNameOverlay()) {
         clearRuntimeNameOverlay();
+        clearIncomingSkillList();
         return;
       }
+
+      if (now - HIGHLIGHT_STATE.lastRuntimeOverlayTickAt < RUNTIME_NAME_OVERLAY_REFRESH_MS) return;
+      HIGHLIGHT_STATE.lastRuntimeOverlayTickAt = now;
+
+      const runtime = getExposedRuntime();
+      if (!runtime) {
+        clearRuntimeNameOverlay();
+        clearIncomingSkillList();
+        return;
+      }
+
+      const incomingCandidates = isIncomingSkillOverlayEnabled()
+        ? collectIncomingSkillOverlayEntities(runtime)
+        : [];
+      const incomingTargetWatchCandidates = isIncomingTargetWatchEnabled()
+        ? collectIncomingTargetWatchOverlayEntities(runtime)
+        : [];
+      renderIncomingSkillList([
+        ...incomingCandidates,
+        ...incomingTargetWatchCandidates,
+      ]);
 
       const host = ensureRuntimeNameOverlayHost();
-      const runtime = getExposedRuntime();
-      if (!host || !runtime || !getRuntimeProjectionMatrix(runtime)) {
+      if (!host || !getRuntimeProjectionMatrix(runtime)) {
         clearRuntimeNameOverlay();
         return;
       }
 
-      const candidates = collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
-        limit: 16,
-        maxDepth: 7,
-        maxObjects: 9000,
-      });
+      const candidates = [
+        ...incomingCandidates,
+        ...incomingTargetWatchCandidates,
+        ...(
+          HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0
+            ? collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
+                limit: 16,
+                maxDepth: 7,
+                maxObjects: 9000,
+              })
+            : []
+        ),
+      ];
       const projected = [];
 
-      for (const candidate of candidates) {
+      for (const candidate of dedupeRuntimeOverlayCandidates(candidates).sort(sortRuntimeOverlayCandidateForDisplay)) {
         const point = projectRuntimeEntityToScreen(candidate, runtime);
         if (!point) continue;
 
         projected.push({ ...candidate, screen: point });
-        if (projected.length >= 12) break;
+        if (projected.length >= 18) break;
       }
 
       renderRuntimeNameOverlayLabels(host, projected);
       HIGHLIGHT_STATE.lastRuntimeOverlayMatches = projected.slice(0, 8).map((candidate) => ({
+        id: String(getRuntimeEntityId(candidate.entity) ?? ""),
         name: candidate.name,
         path: candidate.path,
+        incomingSkill: Boolean(candidate.incomingSkill),
+        incomingTargetWatch: Boolean(candidate.incomingTargetWatch),
         position: candidate.position.map(roundCoord),
         screen: {
           x: roundCoord(candidate.screen.x),
           y: roundCoord(candidate.screen.y),
         },
       }));
+      HIGHLIGHT_STATE.lastIncomingSkillOverlayMatches = projected
+        .filter((candidate) => candidate.incomingSkill)
+        .slice(0, 8)
+        .map((candidate) => ({
+          id: String(getRuntimeEntityId(candidate.entity) ?? ""),
+          name: candidate.name,
+          skillId: candidate.skillId || "",
+          distance: candidate.distanceText || "",
+          relation: candidate.relation ? candidate.relation.type : "",
+          path: candidate.path,
+        }));
+      HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = projected
+        .filter((candidate) => candidate.incomingTargetWatch)
+        .slice(0, 8)
+        .map((candidate) => ({
+          id: String(getRuntimeEntityId(candidate.entity) ?? ""),
+          name: candidate.name,
+          distance: candidate.distanceText || "",
+          relation: candidate.relation ? candidate.relation.type : "",
+          targetField: candidate.watchTargetField || "",
+          path: candidate.path,
+        }));
 
       if (projected.length > 0) {
         HIGHLIGHT_STATE.runtimeOverlayHits += projected.length;
         HIGHLIGHT_STATE.lastRuntimeOverlayAt = Date.now();
         HIGHLIGHT_STATE.lastRuntimeOverlayError = "";
       }
+
+      const incomingCount = projected.filter((candidate) => candidate.incomingSkill).length;
+      if (incomingCount > 0) {
+        HIGHLIGHT_STATE.incomingSkillOverlayHits += incomingCount;
+        HIGHLIGHT_STATE.lastIncomingSkillOverlayAt = Date.now();
+        HIGHLIGHT_STATE.lastIncomingSkillOverlayError = "";
+      }
+
+      const watchCount = projected.filter((candidate) => candidate.incomingTargetWatch).length;
+      if (watchCount > 0) {
+        HIGHLIGHT_STATE.incomingTargetWatchHits += watchCount;
+        HIGHLIGHT_STATE.lastIncomingTargetWatchAt = Date.now();
+        HIGHLIGHT_STATE.lastIncomingTargetWatchError = "";
+      }
     } catch (error) {
       HIGHLIGHT_STATE.lastRuntimeOverlayError = error && error.message ? error.message : String(error);
+      HIGHLIGHT_STATE.lastIncomingSkillOverlayError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
+      HIGHLIGHT_STATE.lastIncomingTargetWatchError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
+      HIGHLIGHT_STATE.lastIncomingSkillListError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
       clearRuntimeNameOverlay();
+      clearIncomingSkillList();
     }
+  }
+
+  function renderIncomingSkillList(candidates) {
+    if (!isIncomingSkillListEnabled()) {
+      clearIncomingSkillList();
+      return;
+    }
+
+    const host = ensureIncomingSkillListHost();
+    if (!host) return;
+
+    const listCandidates = normalizeIncomingSkillListCandidates(candidates);
+    if (listCandidates.length === 0) {
+      clearIncomingSkillList();
+      return;
+    }
+
+    const position = getIncomingSkillListPosition();
+    const left = `${position.x}px`;
+    const top = `${position.y}px`;
+    const width = `${position.width}px`;
+    const maxHeight = `${position.maxHeight}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+    if (host.style.width !== width) host.style.width = width;
+    if (host.style.getPropertyValue("--hordes-kr-incoming-skill-list-max-height") !== maxHeight) {
+      host.style.setProperty("--hordes-kr-incoming-skill-list-max-height", maxHeight);
+    }
+
+    const renderKey = buildIncomingSkillListRenderKey({
+      left,
+      top,
+      width,
+      maxHeight,
+      candidates: listCandidates,
+    });
+    if (HIGHLIGHT_STATE.incomingSkillListRenderKey === renderKey) return;
+    HIGHLIGHT_STATE.incomingSkillListRenderKey = renderKey;
+
+    const panel = document.createElement("div");
+    panel.className = "hordes-kr-incoming-skill-list-panel";
+
+    const title = document.createElement("div");
+    title.className = "hordes-kr-incoming-skill-list-title";
+    const titleText = document.createElement("span");
+    titleText.textContent = "경고목록";
+    const count = document.createElement("span");
+    count.className = "hordes-kr-incoming-skill-list-count";
+    count.textContent = String(listCandidates.length);
+    title.append(titleText, count);
+    panel.appendChild(title);
+
+    for (const candidate of listCandidates) {
+      panel.appendChild(createIncomingSkillListRow(candidate));
+    }
+
+    host.replaceChildren(panel);
+    HIGHLIGHT_STATE.incomingSkillListHits += listCandidates.length;
+    HIGHLIGHT_STATE.lastIncomingSkillListAt = Date.now();
+    HIGHLIGHT_STATE.lastIncomingSkillListError = "";
+    HIGHLIGHT_STATE.lastIncomingSkillListMatches = listCandidates.map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      skillId: candidate.skillId || "",
+      kind: candidate.incomingSkill ? "skill" : candidate.incomingTargetWatch ? "watch" : "",
+      distance: roundCoord(candidate.distance),
+      distanceText: candidate.distanceText || "",
+      relation: candidate.relation ? candidate.relation.type : "",
+      targetField: candidate.watchTargetField || candidate.skillTargetField || "",
+      path: candidate.path,
+    }));
+  }
+
+  function normalizeIncomingSkillListCandidates(candidates) {
+    if (!Array.isArray(candidates)) return [];
+
+    const seen = new Set();
+    const result = [];
+    for (const candidate of candidates) {
+      if (!candidate || !candidate.entity || !candidate.name) continue;
+
+      const id = getRuntimeEntityId(candidate.entity);
+      const key = id !== undefined ? `id:${String(id)}` : `${candidate.name}:${candidate.path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      result.push({
+        ...candidate,
+        id: id !== undefined ? String(id) : "",
+        distance: Number(candidate.distance),
+        incomingSkill: Boolean(candidate.incomingSkill),
+        incomingTargetWatch: Boolean(candidate.incomingTargetWatch),
+        distanceText: candidate.distanceText || (
+          Number.isFinite(Number(candidate.distance))
+            ? `${formatTargetDistance(Number(candidate.distance))}m`
+            : ""
+        ),
+      });
+    }
+
+    return result
+      .sort((left, right) => {
+        const leftDistance = Number.isFinite(left.distance) ? left.distance : Number.POSITIVE_INFINITY;
+        const rightDistance = Number.isFinite(right.distance) ? right.distance : Number.POSITIVE_INFINITY;
+        return leftDistance - rightDistance || String(left.name).localeCompare(String(right.name));
+      })
+      .slice(0, INCOMING_SKILL_LIST_MAX_ROWS);
+  }
+
+  function createIncomingSkillListRow(candidate) {
+    const row = document.createElement("div");
+    row.className = "hordes-kr-incoming-skill-list-row";
+    row.classList.toggle("watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
+    row.title = [
+      `${candidate.name} -> 나`,
+      candidate.skillId ? `skill ${candidate.skillId}` : "",
+      candidate.incomingTargetWatch ? "주시" : "",
+      candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
+      candidate.relation ? `관계 ${candidate.relation.type}` : "",
+    ].filter(Boolean).join(" / ");
+
+    const marker = document.createElement(candidate.skillIconUrl ? "img" : "span");
+    marker.className = candidate.skillIconUrl ? "skill-icon" : "watch-badge";
+    if (candidate.skillIconUrl) {
+      const icon = marker;
+      icon.alt = "";
+      icon.decoding = "async";
+      icon.loading = "eager";
+      icon.src = candidate.skillIconUrl;
+      icon.addEventListener("error", () => {
+        icon.hidden = true;
+      }, { once: true });
+    } else {
+      marker.textContent = candidate.incomingTargetWatch ? "주시" : "!";
+    }
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = candidate.name;
+
+    const distance = document.createElement("span");
+    distance.className = "distance";
+    distance.textContent = candidate.distanceText || "";
+
+    row.append(marker, name, distance);
+    return row;
+  }
+
+  function buildIncomingSkillListRenderKey({ left, top, width, maxHeight, candidates }) {
+    return [
+      left,
+      top,
+      width,
+      maxHeight,
+      candidates.map((candidate) => [
+        candidate.id || "",
+        candidate.name,
+        candidate.incomingSkill ? "skill" : candidate.incomingTargetWatch ? "watch" : "",
+        candidate.skillId || "",
+        candidate.distanceText || "",
+        candidate.relation ? candidate.relation.type : "",
+        candidate.watchTargetField || candidate.skillTargetField || "",
+      ].join("|")).join("\u0001"),
+    ].join("\u0002");
+  }
+
+  function getIncomingSkillListPosition() {
+    const chat = getChatPanelRect();
+    const player = getPlayerFrameRect();
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+
+    if (chat && player && player.left > chat.right + 120) {
+      const x = Math.round(chat.right + 8);
+      const availableWidth = Math.max(150, Math.min(240, Math.round(player.left - chat.right - 16)));
+      const availableHeight = Math.max(72, Math.min(190, Math.round(player.top - chat.top - 8)));
+      const y = Math.round(clamp(player.top - availableHeight - 6, 44, viewportHeight - availableHeight - 26));
+      return {
+        x: Math.min(x, viewportWidth - availableWidth - 4),
+        y,
+        width: availableWidth,
+        maxHeight: availableHeight,
+      };
+    }
+
+    const fallbackWidth = 210;
+    const x = chat ? Math.round(chat.right + 8) : 462;
+    const y = player ? Math.round(player.top - 148) : (chat ? Math.round(chat.top - 152) : Math.round(viewportHeight * 0.64));
+    return {
+      x: Math.round(clamp(x, 4, viewportWidth - fallbackWidth - 4)),
+      y: Math.round(clamp(y, 44, viewportHeight - 180)),
+      width: fallbackWidth,
+      maxHeight: 156,
+    };
+  }
+
+  function getChatPanelRect() {
+    return getVisibleElementRect(document.getElementById("chat"))
+      || getVisibleElementRect(document.querySelector(".l-corner-ll"));
+  }
+
+  function getPlayerFrameRect() {
+    return getVisibleElementRect(document.getElementById("ufplayer"))
+      || getVisibleElementRect(document.querySelector(".targetframes"));
+  }
+
+  function getVisibleElementRect(element) {
+    if (!element || !document.contains(element)) return null;
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function clearIncomingSkillList() {
+    const host = HIGHLIGHT_STATE.incomingSkillListHost;
+    if (host) host.replaceChildren();
+    HIGHLIGHT_STATE.incomingSkillListRenderKey = "";
+    HIGHLIGHT_STATE.lastIncomingSkillListMatches = [];
   }
 
   function updateTargetDistanceOverlay() {
     try {
+      if (!isTargetDistanceEnabled()) {
+        clearTargetDistanceOverlay();
+        return;
+      }
+
       if (Date.now() - TARGET_DISTANCE_STATE.lastCanvasAt < 250) {
         clearTargetDistanceOverlay();
         return;
@@ -4308,11 +8952,15 @@
       const label = ensureTargetDistanceOverlayLabel(host);
       const targetName = result.target.name || "";
       const offsetX = getTargetDistanceOverlayOffsetX(targetName);
+      const text = `${result.stale ? "~" : ""}${formatTargetDistance(result.distance)}`;
+      const left = `${Math.round(result.target.screen.x + offsetX)}px`;
+      const top = `${Math.round(result.target.screen.y + TARGET_DISTANCE_OVERLAY_OFFSET_Y)}px`;
+      const title = `${targetName || "타겟"} / 3D ${formatTargetDistance(result.distance3d)}${result.stale ? " / 마지막 좌표" : ""}`;
 
-      label.textContent = formatTargetDistance(result.distance);
-      label.style.left = `${Math.round(result.target.screen.x + offsetX)}px`;
-      label.style.top = `${Math.round(result.target.screen.y + TARGET_DISTANCE_OVERLAY_OFFSET_Y)}px`;
-      label.title = `${targetName || "타겟"} / 3D ${formatTargetDistance(result.distance3d)}`;
+      if (label.textContent !== text) label.textContent = text;
+      if (label.style.left !== left) label.style.left = left;
+      if (label.style.top !== top) label.style.top = top;
+      if (label.title !== title) label.title = title;
 
       TARGET_DISTANCE_STATE.overlayHits++;
       TARGET_DISTANCE_STATE.lastOverlayAt = Date.now();
@@ -4350,6 +8998,7 @@
     const label = TARGET_DISTANCE_STATE.overlayLabel;
     return {
       targetDistance: getTargetDistance(true),
+      enabled: isTargetDistanceEnabled(),
       dom: {
         host: Boolean(TARGET_DISTANCE_STATE.overlayHost && document.contains(TARGET_DISTANCE_STATE.overlayHost)),
         label: Boolean(label && document.contains(label)),
@@ -4366,7 +9015,9 @@
         hits: TARGET_DISTANCE_STATE.canvasHits,
         text: TARGET_DISTANCE_STATE.lastCanvasText,
         lastAt: TARGET_DISTANCE_STATE.lastCanvasAt || null,
+        targetMatch: TARGET_DISTANCE_STATE.lastCanvasTargetMatch || null,
       },
+      lock: getTargetDistanceLockStatus(),
       scriptHook: {
         attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
         patchedScripts: [...HIGHLIGHT_STATE.scriptHookPatchedScripts],
@@ -4374,6 +9025,1805 @@
       },
       runtime: getExposedRuntimeSummary(),
     };
+  }
+
+  function updateMinimapNameOverlay() {
+    try {
+      const labelsEnabled = Boolean(HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.minimapLabelsEnabled);
+      const listEnabled = Boolean(HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.minimapListEnabled);
+      if ((!labelsEnabled && !listEnabled) || HIGHLIGHT_CONFIG.names.length === 0) {
+        clearMinimapNameOverlay();
+        clearMinimapHighlightList();
+        return;
+      }
+
+      const host = labelsEnabled ? ensureMinimapNameOverlayHost() : null;
+      const listHost = listEnabled ? ensureMinimapHighlightListHost() : null;
+      const runtime = getExposedRuntime();
+      const context = getMinimapProjectionContext(runtime);
+      if ((!host && labelsEnabled) || (!listHost && listEnabled) || !context) {
+        clearMinimapNameOverlay();
+        clearMinimapHighlightList();
+        return;
+      }
+
+      const candidates = collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
+        limit: 24,
+        maxDepth: 7,
+        maxObjects: 9000,
+      });
+      const projected = [];
+
+      for (const candidate of candidates) {
+        if (context.self && isSameRuntimeEntity(candidate.entity, context.self.entity)) continue;
+
+        const point = projectRuntimeEntityToMinimap(candidate, runtime, context);
+        if (!point) continue;
+
+        projected.push({ ...candidate, minimap: point });
+        if (projected.length >= 16) break;
+      }
+
+      if (labelsEnabled) {
+        renderMinimapNameOverlayLabels(host, projected);
+      } else {
+        clearMinimapNameOverlay();
+      }
+
+      if (listEnabled) {
+        renderMinimapHighlightList(listHost, projected, context);
+      } else {
+        clearMinimapHighlightList();
+      }
+
+      HIGHLIGHT_STATE.lastMinimapOverlayMatches = projected.slice(0, 10).map((candidate) => ({
+        id: String(getRuntimeEntityId(candidate.entity) ?? ""),
+        name: candidate.name,
+        path: candidate.path,
+        position: candidate.position.map(roundCoord),
+        minimap: {
+          x: roundCoord(candidate.minimap.x),
+          y: roundCoord(candidate.minimap.y),
+          canvasX: roundCoord(candidate.minimap.canvasX),
+          canvasY: roundCoord(candidate.minimap.canvasY),
+        },
+      }));
+
+      if (projected.length > 0) {
+        HIGHLIGHT_STATE.minimapOverlayHits += projected.length;
+        HIGHLIGHT_STATE.lastMinimapOverlayAt = Date.now();
+        HIGHLIGHT_STATE.lastMinimapOverlayError = "";
+        if (listEnabled) {
+          HIGHLIGHT_STATE.minimapListHits += projected.length;
+          HIGHLIGHT_STATE.lastMinimapListAt = Date.now();
+          HIGHLIGHT_STATE.lastMinimapListError = "";
+        }
+      }
+    } catch (error) {
+      HIGHLIGHT_STATE.lastMinimapOverlayError = error && error.message ? error.message : String(error);
+      HIGHLIGHT_STATE.lastMinimapListError = HIGHLIGHT_STATE.lastMinimapOverlayError;
+      clearMinimapNameOverlay();
+      clearMinimapHighlightList();
+    }
+  }
+
+  function renderMinimapNameOverlayLabels(host, candidates) {
+    const activeKeys = new Set();
+    const now = Date.now();
+
+    for (const candidate of candidates) {
+      const id = getRuntimeEntityId(candidate.entity);
+      const key = id !== undefined ? `id:${String(id)}` : `${candidate.name}:${candidate.path}`;
+      activeKeys.add(key);
+
+      let label = HIGHLIGHT_STATE.minimapOverlayItems.get(key);
+      if (!label) {
+        label = document.createElement("div");
+        label.className = "hordes-kr-minimap-name-label";
+        host.appendChild(label);
+        HIGHLIGHT_STATE.minimapOverlayItems.set(key, label);
+      }
+
+      if (label.dataset.hordesKrName !== candidate.name) {
+        label.textContent = candidate.name;
+        label.dataset.hordesKrName = candidate.name;
+      }
+
+      label.title = `${candidate.name} / id ${String(id ?? "unknown")}`;
+      const left = `${Math.round(candidate.minimap.x)}px`;
+      const top = `${Math.round(candidate.minimap.y)}px`;
+      if (label.style.left !== left) label.style.left = left;
+      if (label.style.top !== top) label.style.top = top;
+      label.dataset.hordesKrSeenAt = String(now);
+    }
+
+    for (const [key, label] of HIGHLIGHT_STATE.minimapOverlayItems.entries()) {
+      if (activeKeys.has(key)) continue;
+      const seenAt = Number(label.dataset.hordesKrSeenAt) || 0;
+      if (now - seenAt < 700) continue;
+
+      label.remove();
+      HIGHLIGHT_STATE.minimapOverlayItems.delete(key);
+    }
+  }
+
+  function renderMinimapHighlightList(host, candidates, context) {
+    if (!host || !context || !context.minimap) return;
+
+    const listCandidates = candidates
+      .map((candidate) => enrichMinimapListCandidate(candidate, context))
+      .filter(Boolean)
+      .sort((left, right) => left.distance - right.distance);
+
+    const minimap = context.minimap;
+    const scale = getMinimapHighlightListScale();
+    const widthNumber = Math.max(Math.round(170 * scale), Math.round(minimap.rect.width * scale));
+    const position = getMinimapHighlightListPosition(minimap, widthNumber);
+    const leftNumber = position.x;
+    const topNumber = position.y;
+    const left = `${leftNumber}px`;
+    const top = `${topNumber}px`;
+    const width = `${widthNumber}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+    if (host.style.width !== width) host.style.width = width;
+    if (host.style.getPropertyValue("--hordes-kr-minimap-list-scale") !== String(scale)) {
+      host.style.setProperty("--hordes-kr-minimap-list-scale", String(scale));
+    }
+
+    const lockedId = getLockedTargetId();
+    const selectedId = getSelectedTargetIdFromContext(context);
+    const renderKey = buildMinimapHighlightListRenderKey({
+      left,
+      top,
+      width,
+      lockedId,
+      selectedId,
+      scale,
+      candidates: listCandidates,
+    });
+    if (HIGHLIGHT_STATE.minimapListRenderKey === renderKey) return;
+    HIGHLIGHT_STATE.minimapListRenderKey = renderKey;
+
+    const panel = document.createElement("div");
+    panel.className = "hordes-kr-minimap-list-panel";
+
+    const title = document.createElement("div");
+    title.className = "hordes-kr-minimap-list-title";
+    const titleMain = document.createElement("div");
+    titleMain.className = "hordes-kr-minimap-list-title-main";
+    const count = document.createElement("span");
+    count.textContent = `${listCandidates.length}`;
+    count.className = "hordes-kr-minimap-list-count";
+    titleMain.append(count);
+
+    const controls = document.createElement("div");
+    controls.className = "hordes-kr-minimap-list-title-controls";
+    controls.append(
+      createMinimapListScaleButton("-", -0.1),
+      createMinimapListScaleButton("+", 0.1),
+      createMinimapListResetButton()
+    );
+    title.append(titleMain, controls);
+    panel.appendChild(title);
+    installMinimapHighlightListDragHandle(title, host);
+
+    if (listCandidates.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "hordes-kr-minimap-list-empty";
+      empty.textContent = "감지 없음";
+      panel.appendChild(empty);
+    } else {
+      for (const candidate of listCandidates) {
+        panel.appendChild(createMinimapHighlightListRow(candidate, {
+          lockedId,
+          selectedId,
+        }));
+      }
+    }
+
+    host.replaceChildren(panel);
+    HIGHLIGHT_STATE.lastMinimapListMatches = listCandidates.map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      distance: roundCoord(candidate.distance),
+      visualDistance: roundCoord(candidate.visualDistance),
+      classId: candidate.classId,
+      health: candidate.health,
+      path: candidate.path,
+      selected: Boolean(candidate.id && candidate.id === selectedId),
+      locked: Boolean(candidate.id && candidate.id === lockedId),
+      minimap: {
+        x: roundCoord(candidate.minimap.x),
+        y: roundCoord(candidate.minimap.y),
+      },
+    }));
+  }
+
+  function updatePresetQuickBar() {
+    const host = ensurePresetQuickBarHost();
+    if (!host) return;
+
+    const widthNumber = Math.max(170, Math.round(host.getBoundingClientRect().width || 180));
+    const position = getPresetQuickBarPosition(widthNumber);
+    const left = `${position.x}px`;
+    const top = `${position.y}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+
+    const combatStatus = getPresetQuickBarCombatStatus();
+    const renderKey = [
+      left,
+      top,
+      getQuickGearPresetRenderKey(),
+      getQuickSkillPresetRenderKey(),
+      combatStatus.key,
+    ].join("\u0002");
+    if (HIGHLIGHT_STATE.presetBarRenderKey === renderKey) return;
+    HIGHLIGHT_STATE.presetBarRenderKey = renderKey;
+
+    const panel = document.createElement("div");
+    panel.className = "hordes-kr-preset-quickbar-panel";
+    panel.append(
+      createPresetQuickBarGearControls(combatStatus),
+      createPresetQuickBarSkillControls(combatStatus),
+      createPresetQuickBarStatus(combatStatus),
+      createPresetQuickBarResetButton(),
+      createPresetQuickBarDragHandle()
+    );
+    host.replaceChildren(panel);
+  }
+
+  function getPresetQuickBarPosition(widthNumber) {
+    if (Number.isFinite(HIGHLIGHT_CONFIG.presetBarX) && Number.isFinite(HIGHLIGHT_CONFIG.presetBarY)) {
+      return clampPresetQuickBarPosition(HIGHLIGHT_CONFIG.presetBarX, HIGHLIGHT_CONFIG.presetBarY, widthNumber);
+    }
+
+    const anchor = findFindRateButtonRect();
+    if (anchor) {
+      return clampPresetQuickBarPosition(anchor.right + 5, anchor.top + Math.max(0, Math.round((anchor.height - 35) / 2)), widthNumber);
+    }
+
+    return clampPresetQuickBarPosition(306, 4, widthNumber);
+  }
+
+  function findFindRateButtonRect() {
+    const candidates = Array.from(document.querySelectorAll(".btnbar .btn, .btn.border.black.textcyan, .textcyan"));
+    for (const element of candidates) {
+      const text = String(element.innerText || element.textContent || "").trim();
+      if (!/\bFIND\b/i.test(text)) continue;
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      return rect;
+    }
+
+    return null;
+  }
+
+  function clampPresetQuickBarPosition(x, y, widthNumber) {
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    const maxX = Math.max(4, viewportWidth - Math.max(60, Number(widthNumber) || 0) - 4);
+    const maxY = Math.max(4, viewportHeight - 42);
+    return {
+      x: Math.round(clamp(Number(x) || 4, 4, maxX)),
+      y: Math.round(clamp(Number(y) || 4, 4, maxY)),
+    };
+  }
+
+  function getPresetQuickBarCombatStatus() {
+    const runtime = getExposedRuntime();
+    const player = runtime && findLocalPlayerEntity(runtime);
+    const entity = player && player.entity || runtime && runtime.player;
+    const stats = entity && safeReadValue(entity, "stats");
+    const timer = stats && safeReadValue(stats, "combatTimer");
+    const frameTime = Number(runtime && safeReadValue(runtime, "frameTime"));
+
+    if (!timer || !Number.isFinite(frameTime)) {
+      return {
+        available: false,
+        inCombat: false,
+        remaining: null,
+        text: "전투 ?",
+        className: "unknown",
+        key: "unknown",
+        title: "전투 상태를 읽지 못했습니다.",
+      };
+    }
+
+    const remaining = callRuntimeTimerNumber(timer, "remaining", frameTime);
+    const done = callRuntimeTimerBoolean(timer, "done", frameTime);
+    const inCombat = done === false && (!Number.isFinite(remaining) || remaining > 0);
+    const safeRemaining = Number.isFinite(remaining) ? Math.max(0, remaining) : null;
+    const text = inCombat
+      ? `전투 ${formatPresetQuickBarCombatRemaining(safeRemaining)}`
+      : "비전투";
+
+    return {
+      available: true,
+      inCombat,
+      remaining: safeRemaining,
+      text,
+      className: inCombat ? "combat" : "ready",
+      key: `${inCombat ? 1 : 0}:${Number.isFinite(safeRemaining) ? Math.ceil(safeRemaining * 2) / 2 : ""}`,
+      title: inCombat
+        ? `전투 중에는 프리셋 전환이 불가능합니다. 비전투까지 약 ${formatPresetQuickBarCombatRemaining(safeRemaining)}`
+        : "프리셋 전환 가능",
+    };
+  }
+
+  function callRuntimeTimerNumber(timer, method, frameTime) {
+    try {
+      const fn = safeReadValue(timer, method);
+      if (typeof fn !== "function") return null;
+
+      const value = Number(fn.call(timer, frameTime));
+      return Number.isFinite(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function callRuntimeTimerBoolean(timer, method, frameTime) {
+    try {
+      const fn = safeReadValue(timer, method);
+      return typeof fn === "function" ? Boolean(fn.call(timer, frameTime)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatPresetQuickBarCombatRemaining(seconds) {
+    if (!Number.isFinite(seconds)) return "?초";
+    if (seconds >= 10) return `${Math.ceil(seconds)}초`;
+    return `${Math.ceil(seconds * 10) / 10}초`;
+  }
+
+  function createPresetQuickBarGearControls(combatStatus) {
+    const group = document.createElement("div");
+    group.className = "hordes-kr-preset-quickbar-group";
+
+    for (const presetName of GEAR_PRESET_QUICK_NAMES) {
+      const preset = getGearPreset(presetName);
+      const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+      const match = getGearPresetMatchStatus(presetName);
+      const isRunning = GEAR_PRESET_STATE.running && GEAR_PRESET_STATE.pendingPresetName === presetName;
+      const isLastRequested = !isRunning && GEAR_PRESET_STATE.lastRequestedPresetName === presetName;
+      const isLastErrored = isLastRequested && GEAR_PRESET_STATE.lastResult && (
+        (GEAR_PRESET_STATE.lastResult.errors && GEAR_PRESET_STATE.lastResult.errors.length > 0) ||
+        (GEAR_PRESET_STATE.lastResult.verify && !GEAR_PRESET_STATE.lastResult.verify.complete)
+      );
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "hordes-kr-preset-quickbar-btn";
+      button.classList.toggle("empty", count === 0);
+      button.classList.toggle("running", isRunning);
+      button.classList.toggle("active", match.complete);
+      button.classList.toggle("partial", !match.complete && match.matched > 0);
+      button.classList.toggle("error", !match.complete && isLastErrored);
+      button.textContent = isRunning
+        ? `${presetName}…`
+        : match.complete
+          ? `${presetName}✓`
+          : isLastErrored
+            ? `${presetName}!`
+            : presetName;
+      button.title = count > 0
+        ? [
+            `프리셋 ${presetName}`,
+            `저장 ${count}개`,
+            isRunning ? "전송 중" : "",
+            match.complete ? "적용 확인됨" : `장착 확인 ${match.matched}/${match.total}`,
+            match.extraEquipped && match.extraEquipped.length > 0 ? `남은 장착 ${match.extraEquipped.length}개` : "",
+            isLastErrored ? "최근 실행 불완전/오류" : "",
+          ].filter(Boolean).join(" / ")
+        : `프리셋 ${presetName} 저장 없음`;
+      button.disabled = count === 0 || combatStatus.inCombat || (GEAR_PRESET_STATE.running && !isRunning);
+      if (combatStatus.inCombat) {
+        button.title = `${button.title} / ${combatStatus.title}`;
+      }
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (combatStatus.inCombat) return;
+        HIGHLIGHT_STATE.presetBarRenderKey = "";
+        updatePresetQuickBar();
+        pageWindow.HordesKrMod.equipGearPreset(presetName).finally(() => {
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          renderStatusUi();
+        });
+        renderStatusUi();
+      });
+      group.appendChild(button);
+    }
+
+    return group;
+  }
+
+  function createPresetQuickBarSkillControls(combatStatus) {
+    const group = document.createElement("div");
+    group.className = "hordes-kr-preset-quickbar-group";
+
+    for (const presetName of SKILL_PRESET_QUICK_NAMES) {
+      const preset = getSkillPreset(presetName);
+      const skillIds = filterConfigurableSkillPresetIds(preset && preset.skillIds || []);
+      const count = skillIds.length;
+      const match = getSkillPresetMatchStatus(presetName);
+      const isRunning = SKILL_PRESET_STATE.running && SKILL_PRESET_STATE.pendingPresetName === presetName;
+      const isLastRequested = !isRunning && SKILL_PRESET_STATE.lastRequestedPresetName === presetName;
+      const isLastErrored = isLastRequested && SKILL_PRESET_STATE.lastResult && (
+        (SKILL_PRESET_STATE.lastResult.errors && SKILL_PRESET_STATE.lastResult.errors.length > 0) ||
+        (SKILL_PRESET_STATE.lastResult.verify && !SKILL_PRESET_STATE.lastResult.verify.complete)
+      );
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "hordes-kr-preset-quickbar-btn skill";
+      button.classList.toggle("empty", count === 0);
+      button.classList.toggle("running", isRunning);
+      button.classList.toggle("active", match.complete);
+      button.classList.toggle("partial", !match.complete && match.matched > 0);
+      button.classList.toggle("error", !match.complete && isLastErrored);
+      button.textContent = isRunning
+        ? `S${presetName}…`
+        : match.complete
+          ? `S${presetName}✓`
+          : isLastErrored
+            ? `S${presetName}!`
+            : `S${presetName}`;
+      button.title = count > 0
+        ? [
+            `스킬 프리셋 ${presetName}`,
+            `저장 ${count}포인트`,
+            isRunning ? "전송 중" : "",
+            match.complete ? "적용 확인됨" : `스킬 확인 ${match.matched}/${match.total}`,
+            match.missing && match.missing.length > 0 ? `미적용 ${match.missing.length}포인트` : "",
+            match.extra && match.extra.length > 0 ? `추가활성 ${match.extra.length}포인트` : "",
+            isLastErrored ? "최근 실행 불완전/오류" : "",
+          ].filter(Boolean).join(" / ")
+        : `스킬 프리셋 ${presetName} 저장 없음`;
+      button.disabled = count === 0 || combatStatus.inCombat || (SKILL_PRESET_STATE.running && !isRunning);
+      if (combatStatus.inCombat) {
+        button.title = `${button.title} / ${combatStatus.title}`;
+      }
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (combatStatus.inCombat) return;
+        HIGHLIGHT_STATE.presetBarRenderKey = "";
+        updatePresetQuickBar();
+        pageWindow.HordesKrMod.applySkillPreset(presetName).finally(() => {
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          renderStatusUi();
+        });
+        renderStatusUi();
+      });
+      group.appendChild(button);
+    }
+
+    return group;
+  }
+
+  function createPresetQuickBarStatus(combatStatus) {
+    const status = document.createElement("span");
+    status.className = `hordes-kr-preset-quickbar-status ${combatStatus.className || ""}`;
+    status.textContent = combatStatus.text;
+    status.title = combatStatus.title;
+    return status;
+  }
+
+  function createPresetQuickBarResetButton() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hordes-kr-preset-quickbar-reset";
+    button.textContent = "↺";
+    button.title = "프리셋 바 위치 리셋";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      resetPresetQuickBarPosition();
+    });
+    return button;
+  }
+
+  function createPresetQuickBarDragHandle() {
+    const handle = document.createElement("span");
+    handle.className = "hordes-kr-preset-quickbar-drag";
+    handle.textContent = "⋮";
+    handle.title = "프리셋 바 이동";
+    installPresetQuickBarDragHandle(handle);
+    return handle;
+  }
+
+  function installPresetQuickBarDragHandle(handle) {
+    handle.addEventListener("pointerdown", (event) => {
+      if (HIGHLIGHT_STATE.presetBarDragging) return;
+      if (event.button !== undefined && event.button !== 0) return;
+
+      const host = HIGHLIGHT_STATE.presetBarHost;
+      if (!host) return;
+
+      const rect = host.getBoundingClientRect();
+      HIGHLIGHT_STATE.presetBarDragging = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: rect.left,
+        originY: rect.top,
+        width: getFiniteNumber(rect.width, 180),
+      };
+
+      const panel = handle.closest(".hordes-kr-preset-quickbar-panel");
+      if (panel) panel.dataset.dragging = "true";
+
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Window-level listeners keep dragging alive when capture is unavailable.
+      }
+
+      pageWindow.addEventListener("pointermove", handlePresetQuickBarDragMove, true);
+      pageWindow.addEventListener("pointerup", handlePresetQuickBarDragEnd, true);
+      pageWindow.addEventListener("pointercancel", handlePresetQuickBarDragEnd, true);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  function handlePresetQuickBarDragMove(event) {
+    const drag = HIGHLIGHT_STATE.presetBarDragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    const position = clampPresetQuickBarPosition(
+      drag.originX + event.clientX - drag.startX,
+      drag.originY + event.clientY - drag.startY,
+      drag.width
+    );
+    HIGHLIGHT_CONFIG.presetBarX = position.x;
+    HIGHLIGHT_CONFIG.presetBarY = position.y;
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    applyPresetQuickBarHostPosition(position.x, position.y);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handlePresetQuickBarDragEnd(event) {
+    const drag = HIGHLIGHT_STATE.presetBarDragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    pageWindow.removeEventListener("pointermove", handlePresetQuickBarDragMove, true);
+    pageWindow.removeEventListener("pointerup", handlePresetQuickBarDragEnd, true);
+    pageWindow.removeEventListener("pointercancel", handlePresetQuickBarDragEnd, true);
+    HIGHLIGHT_STATE.presetBarDragging = null;
+
+    const host = HIGHLIGHT_STATE.presetBarHost;
+    const panel = host && host.querySelector(".hordes-kr-preset-quickbar-panel");
+    if (panel) delete panel.dataset.dragging;
+
+    saveHighlightConfig();
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function applyPresetQuickBarHostPosition(x, y) {
+    const host = HIGHLIGHT_STATE.presetBarHost;
+    if (!host) return;
+
+    const left = `${Math.round(x)}px`;
+    const top = `${Math.round(y)}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+  }
+
+  function resetPresetQuickBarPosition() {
+    HIGHLIGHT_CONFIG.presetBarX = null;
+    HIGHLIGHT_CONFIG.presetBarY = null;
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    saveHighlightConfig();
+    updatePresetQuickBar();
+  }
+
+  function createMinimapListScaleButton(label, delta) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hordes-kr-minimap-list-scale-btn";
+    button.textContent = label;
+    button.title = label === "+" ? "강조목록 크게" : "강조목록 작게";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      adjustMinimapHighlightListScale(delta);
+    });
+    return button;
+  }
+
+  function createMinimapListResetButton() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hordes-kr-minimap-list-scale-btn";
+    button.textContent = "↺";
+    button.title = "강조목록 위치 리셋";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      resetMinimapHighlightListPosition();
+    });
+    return button;
+  }
+
+  function installMinimapHighlightListDragHandle(handle, host) {
+    if (!handle || !host) return;
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (HIGHLIGHT_STATE.minimapListDragging) return;
+      if (event.button !== undefined && event.button !== 0) return;
+      if (isMinimapListControlTarget(event.target)) return;
+
+      const rect = host.getBoundingClientRect();
+      const width = getFiniteNumber(rect.width, getFiniteNumber(parseFloat(host.style.width), 170));
+      HIGHLIGHT_STATE.minimapListDragging = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: rect.left,
+        originY: rect.top,
+        width,
+      };
+
+      host.dataset.hordesKrDragging = "true";
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Window-level listeners below keep dragging alive if capture is unavailable.
+      }
+
+      pageWindow.addEventListener("pointermove", handleMinimapHighlightListDragMove, true);
+      pageWindow.addEventListener("pointerup", handleMinimapHighlightListDragEnd, true);
+      pageWindow.addEventListener("pointercancel", handleMinimapHighlightListDragEnd, true);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  function isMinimapListControlTarget(target) {
+    return !!(
+      target &&
+      typeof target.closest === "function" &&
+      target.closest(".hordes-kr-minimap-list-title-controls, button, input, textarea, select, a")
+    );
+  }
+
+  function handleMinimapHighlightListDragMove(event) {
+    const drag = HIGHLIGHT_STATE.minimapListDragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    const position = clampMinimapHighlightListPosition(
+      drag.originX + event.clientX - drag.startX,
+      drag.originY + event.clientY - drag.startY,
+      drag.width
+    );
+    HIGHLIGHT_CONFIG.minimapListX = position.x;
+    HIGHLIGHT_CONFIG.minimapListY = position.y;
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+    applyMinimapHighlightListHostPosition(position.x, position.y);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handleMinimapHighlightListDragEnd(event) {
+    const drag = HIGHLIGHT_STATE.minimapListDragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    pageWindow.removeEventListener("pointermove", handleMinimapHighlightListDragMove, true);
+    pageWindow.removeEventListener("pointerup", handleMinimapHighlightListDragEnd, true);
+    pageWindow.removeEventListener("pointercancel", handleMinimapHighlightListDragEnd, true);
+    HIGHLIGHT_STATE.minimapListDragging = null;
+
+    const host = HIGHLIGHT_STATE.minimapListHost;
+    if (host) delete host.dataset.hordesKrDragging;
+    saveHighlightConfig();
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+    updateMinimapNameOverlay();
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function applyMinimapHighlightListHostPosition(x, y) {
+    const host = HIGHLIGHT_STATE.minimapListHost;
+    if (!host) return;
+
+    const left = `${Math.round(x)}px`;
+    const top = `${Math.round(y)}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+  }
+
+  function getQuickGearPresetRenderKey() {
+    return [
+      GEAR_PRESET_STATE.running ? "running" : "idle",
+      ...GEAR_PRESET_QUICK_NAMES.map((presetName) => {
+        const preset = getGearPreset(presetName);
+        const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+        const savedAt = preset && preset.savedAt || "";
+        const match = getGearPresetMatchStatus(presetName);
+        return `${presetName}:${count}:${savedAt}:${match.matched}/${match.total}:${match.complete ? 1 : 0}`;
+      }),
+    ].join("|");
+  }
+
+  function getQuickSkillPresetRenderKey() {
+    return [
+      SKILL_PRESET_STATE.running ? "running" : "idle",
+      ...SKILL_PRESET_QUICK_NAMES.map((presetName) => {
+        const preset = getSkillPreset(presetName);
+        const count = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+        const savedAt = preset && preset.savedAt || "";
+        const match = getSkillPresetMatchStatus(presetName);
+        return `${presetName}:${count}:${savedAt}:${match.matched}/${match.total}:${match.complete ? 1 : 0}`;
+      }),
+    ].join("|");
+  }
+
+  function buildMinimapHighlightListRenderKey({ left, top, width, lockedId, selectedId, scale, candidates }) {
+    return [
+      left,
+      top,
+      width,
+      lockedId || "",
+      selectedId || "",
+      scale,
+      candidates.map((candidate) => [
+        candidate.id || "",
+        candidate.name || "",
+        candidate.distanceText || "",
+        candidate.classId ?? "",
+        candidate.health ? `${candidate.health.currentText}/${candidate.health.maxText}/${candidate.health.ratio}` : "",
+        Math.round(candidate.minimap.x),
+        Math.round(candidate.minimap.y),
+      ].join(":")).join("\u0001"),
+    ].join("\u0002");
+  }
+
+  function enrichMinimapListCandidate(candidate, context) {
+    if (!candidate || !context || !context.selfPosition) return null;
+
+    const id = getRuntimeEntityId(candidate.entity);
+    const range = getCorrectedRuntimeRangeDistance(
+      context.self.entity,
+      candidate.entity,
+      context.selfCombatPosition || context.selfPosition,
+      {
+        position: candidate.position,
+        source: candidate.positionSource,
+      }
+    );
+    const distance = range ? range.distance : getHorizontalRuntimeDistance(context.selfPosition.position, candidate.position);
+    if (!Number.isFinite(distance)) return null;
+
+    return {
+      ...candidate,
+      id: id !== undefined ? String(id) : "",
+      distance,
+      visualDistance: getHorizontalRuntimeDistance(context.selfPosition.position, candidate.position),
+      distanceText: `${formatTargetDistance(distance)}m`,
+      classId: getRuntimeEntityClassId(candidate.entity),
+      classIconUrl: getRuntimeEntityClassIconUrl(candidate.entity),
+      health: getRuntimeEntityHealthInfo(candidate.entity),
+    };
+  }
+
+  function createMinimapHighlightListRow(candidate, state) {
+    const row = document.createElement("button");
+    const identity = document.createElement("span");
+    const nameLine = document.createElement("span");
+    const icon = document.createElement("img");
+    const name = document.createElement("span");
+    const health = document.createElement("span");
+    const healthBar = document.createElement("span");
+    const healthFill = document.createElement("span");
+    const healthText = document.createElement("span");
+    const distance = document.createElement("span");
+    const status = document.createElement("span");
+    const selected = Boolean(candidate.id && state.selectedId && candidate.id === state.selectedId);
+    const locked = Boolean(candidate.id && state.lockedId && candidate.id === state.lockedId);
+
+    row.type = "button";
+    row.className = "hordes-kr-minimap-list-row";
+    row.classList.toggle("targeted", selected);
+    row.classList.toggle("locked", !selected && locked);
+    row.classList.toggle("nearby", Number.isFinite(candidate.distance) && candidate.distance <= 35);
+    row.dataset.hordesKrTargetId = candidate.id || "";
+    row.dataset.hordesKrTargetName = candidate.name || "";
+    const hpTitle = candidate.health && candidate.health.maxText
+      ? ` / HP ${candidate.health.currentText}/${candidate.health.maxText}`
+      : "";
+    row.title = selected
+      ? `${candidate.name} / ${candidate.distanceText}${hpTitle} / 클릭하면 타겟 해제`
+      : `${candidate.name} / ${candidate.distanceText}${hpTitle} / 클릭하면 실제 타겟 지정`;
+
+    identity.className = "identity";
+    nameLine.className = "name-line";
+    icon.className = "class-icon";
+    icon.alt = "";
+    icon.decoding = "async";
+    icon.loading = "lazy";
+    if (candidate.classIconUrl) {
+      icon.src = candidate.classIconUrl;
+      icon.title = `직업 ${candidate.classId}`;
+      icon.addEventListener("error", () => {
+        icon.hidden = true;
+      }, { once: true });
+    } else {
+      icon.hidden = true;
+    }
+
+    name.className = "name";
+    name.textContent = candidate.name || "unknown";
+    nameLine.append(icon, name);
+
+    health.className = "hp";
+    healthBar.className = "hp-bar";
+    healthFill.className = "hp-fill";
+    healthText.className = "hp-text";
+    if (candidate.health && Number.isFinite(candidate.health.ratio)) {
+      const hpPercent = Math.max(0, Math.min(100, Math.round(candidate.health.ratio * 100)));
+      healthFill.style.setProperty("width", `${hpPercent > 0 ? Math.max(2, hpPercent) : 0}%`, "important");
+      healthText.textContent = candidate.health.maxText
+        ? `${candidate.health.currentText}/${candidate.health.maxText}`
+        : candidate.health.currentText;
+      healthBar.title = `HP ${healthText.textContent}`;
+    } else {
+      health.hidden = true;
+    }
+    healthBar.appendChild(healthFill);
+    health.append(healthBar, healthText);
+    identity.append(nameLine, health);
+
+    distance.className = "distance";
+    distance.textContent = candidate.distanceText || "-";
+    status.className = "state";
+    status.textContent = selected ? "타겟 ON" : locked ? "고정" : "OFF";
+    row.append(identity, distance, status);
+
+    row.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const result = selected
+        ? pageWindow.HordesKrMod.clearHighlightedTarget()
+        : pageWindow.HordesKrMod.targetMinimapHighlight(candidate.id, candidate.name);
+      HIGHLIGHT_STATE.lastMinimapTargetResult = result;
+      updateMinimapNameOverlay();
+      updateTargetDistanceOverlay();
+      renderStatusUi();
+    });
+
+    return row;
+  }
+
+  function getLockedTargetId() {
+    const locked = TARGET_DISTANCE_STATE.lockedTarget;
+    return locked && locked.id ? String(locked.id) : "";
+  }
+
+  function getSelectedTargetIdFromContext(context) {
+    if (!context || !context.self) return "";
+
+    const runtime = getExposedRuntime();
+    const selected = runtime ? getSelectedTargetId(runtime, context.self.entity) : null;
+    return selected && selected.id ? String(selected.id) : "";
+  }
+
+  function clearMinimapNameOverlay() {
+    const host = HIGHLIGHT_STATE.minimapOverlayHost;
+    if (host) host.replaceChildren();
+    HIGHLIGHT_STATE.minimapOverlayItems.clear();
+    HIGHLIGHT_STATE.lastMinimapOverlayMatches = [];
+  }
+
+  function clearMinimapHighlightList() {
+    const host = HIGHLIGHT_STATE.minimapListHost;
+    if (host) host.replaceChildren();
+    HIGHLIGHT_STATE.lastMinimapListMatches = [];
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+  }
+
+  function getMinimapOverlayStatus() {
+    return {
+      enabled: HIGHLIGHT_CONFIG.minimapLabelsEnabled,
+      installed: !!HIGHLIGHT_STATE.runtimeOverlayTimer,
+      host: !!HIGHLIGHT_STATE.minimapOverlayHost,
+      labels: HIGHLIGHT_STATE.minimapOverlayItems.size,
+      hits: HIGHLIGHT_STATE.minimapOverlayHits,
+      lastAt: HIGHLIGHT_STATE.lastMinimapOverlayAt
+        ? new Date(HIGHLIGHT_STATE.lastMinimapOverlayAt).toISOString()
+        : null,
+      lastError: HIGHLIGHT_STATE.lastMinimapOverlayError,
+      lastMatches: [...HIGHLIGHT_STATE.lastMinimapOverlayMatches],
+      minimap: summarizeRuntimeMinimap(getExposedRuntime()),
+    };
+  }
+
+  function getMinimapHighlightListStatus() {
+    return {
+      enabled: HIGHLIGHT_CONFIG.minimapListEnabled,
+      scale: getMinimapHighlightListScale(),
+      position: hasCustomMinimapHighlightListPosition()
+        ? {
+            mode: "custom",
+            x: HIGHLIGHT_CONFIG.minimapListX,
+            y: HIGHLIGHT_CONFIG.minimapListY,
+          }
+        : { mode: "default" },
+      host: !!HIGHLIGHT_STATE.minimapListHost,
+      hits: HIGHLIGHT_STATE.minimapListHits,
+      lastAt: HIGHLIGHT_STATE.lastMinimapListAt
+        ? new Date(HIGHLIGHT_STATE.lastMinimapListAt).toISOString()
+        : null,
+      lastError: HIGHLIGHT_STATE.lastMinimapListError,
+      lastMatches: [...HIGHLIGHT_STATE.lastMinimapListMatches],
+      lastTargetResult: HIGHLIGHT_STATE.lastMinimapTargetResult,
+    };
+  }
+
+  function normalizeOptionalScreenCoordinate(value) {
+    if (value === null || value === undefined || value === "") return null;
+
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.round(number) : null;
+  }
+
+  function clearInvalidDefaultScreenCoordinatePair(config, xKey, yKey) {
+    if (!config) return;
+
+    const x = config[xKey];
+    const y = config[yKey];
+    if ((x === 0 && y === 0) || (x === 4 && y === 4)) {
+      config[xKey] = null;
+      config[yKey] = null;
+    }
+  }
+
+  function hasCustomMinimapHighlightListPosition() {
+    return (
+      Number.isFinite(HIGHLIGHT_CONFIG.minimapListX) &&
+      Number.isFinite(HIGHLIGHT_CONFIG.minimapListY)
+    );
+  }
+
+  function getMinimapHighlightListPosition(minimap, widthNumber) {
+    if (hasCustomMinimapHighlightListPosition()) {
+      const position = clampMinimapHighlightListPosition(
+        HIGHLIGHT_CONFIG.minimapListX,
+        HIGHLIGHT_CONFIG.minimapListY,
+        widthNumber
+      );
+      HIGHLIGHT_CONFIG.minimapListX = position.x;
+      HIGHLIGHT_CONFIG.minimapListY = position.y;
+      return position;
+    }
+
+    return getDefaultMinimapHighlightListPosition(minimap, widthNumber);
+  }
+
+  function getDefaultMinimapHighlightListPosition(minimap, widthNumber) {
+    const rightEdge = Math.round(minimap.rect.left + minimap.rect.width);
+    return {
+      x: Math.max(4, rightEdge - widthNumber),
+      y: Math.round(minimap.rect.top + minimap.rect.height + 5),
+    };
+  }
+
+  function clampMinimapHighlightListPosition(x, y, widthNumber) {
+    const host = HIGHLIGHT_STATE.minimapListHost;
+    const hostRect = host ? host.getBoundingClientRect() : null;
+    const hostHeight = hostRect && hostRect.height > 0 ? hostRect.height : 42;
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    const maxX = Math.max(4, Math.round(viewportWidth - Math.max(36, Number(widthNumber) || 0) - 4));
+    const maxY = Math.max(4, Math.round(viewportHeight - Math.min(hostHeight, viewportHeight - 8) - 4));
+
+    return {
+      x: Math.round(clamp(Number(x) || 4, 4, maxX)),
+      y: Math.round(clamp(Number(y) || 4, 4, maxY)),
+    };
+  }
+
+  function resetMinimapHighlightListPosition() {
+    HIGHLIGHT_CONFIG.minimapListX = null;
+    HIGHLIGHT_CONFIG.minimapListY = null;
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+    saveHighlightConfig();
+    updateMinimapNameOverlay();
+    return getMinimapHighlightListStatus();
+  }
+
+  function normalizeMinimapHighlightListScale(scale) {
+    const numericScale = Number(scale);
+    const fallback = Number.isFinite(numericScale) && numericScale > 0
+      ? numericScale
+      : MINIMAP_LIST_DEFAULT_SCALE;
+    return Math.max(MINIMAP_LIST_MIN_SCALE, Math.round(fallback * 100) / 100);
+  }
+
+  function applyMinimapListScaleDefaultMigration() {
+    try {
+      if (localStorage.getItem(MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY) === MINIMAP_LIST_SCALE_DEFAULT_VERSION) return;
+
+      if (HIGHLIGHT_CONFIG.minimapListScale < MINIMAP_LIST_DEFAULT_SCALE) {
+        HIGHLIGHT_CONFIG.minimapListScale = MINIMAP_LIST_DEFAULT_SCALE;
+        saveHighlightConfig();
+      }
+
+      localStorage.setItem(MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY, MINIMAP_LIST_SCALE_DEFAULT_VERSION);
+    } catch {
+      // Storage may be unavailable; the normalized runtime default still applies.
+    }
+  }
+
+  function getMinimapHighlightListScale() {
+    return normalizeMinimapHighlightListScale(HIGHLIGHT_CONFIG.minimapListScale);
+  }
+
+  function setMinimapHighlightListScale(scale) {
+    HIGHLIGHT_CONFIG.minimapListScale = normalizeMinimapHighlightListScale(scale);
+    saveHighlightConfig();
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+    updateMinimapNameOverlay();
+    return HIGHLIGHT_CONFIG.minimapListScale;
+  }
+
+  function adjustMinimapHighlightListScale(delta) {
+    return setMinimapHighlightListScale(getMinimapHighlightListScale() + Number(delta || 0));
+  }
+
+  function getMinimapProjectionContext(runtime) {
+    if (!runtime) return null;
+
+    const minimap = getRuntimeMinimapState(runtime);
+    if (!minimap) return null;
+
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return null;
+
+    const selfPosition = getRuntimeWorldPosition(self.entity);
+    if (!selfPosition) return null;
+
+    return {
+      minimap,
+      self,
+      selfPosition,
+      selfCombatPosition: getRuntimeCombatPosition(self.entity) || selfPosition,
+    };
+  }
+
+  function getRuntimeMinimapState(runtime) {
+    const minimap = runtime && isRuntimeObject(runtime.minimap) ? runtime.minimap : {};
+    const canvas = getRuntimeMinimapCanvas(minimap);
+    if (!canvas) return null;
+
+    const rect = canvas.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+
+    const canvasWidth = getFiniteNumber(canvas.width, getFiniteNumber(safeReadValue(minimap, "width"), 200));
+    const canvasHeight = getFiniteNumber(canvas.height, getFiniteNumber(safeReadValue(minimap, "height"), 200));
+    return {
+      canvas,
+      rect,
+      canvasWidth,
+      canvasHeight,
+      scale: getFiniteNumber(safeReadValue(minimap, "scale"), MINIMAP_DEFAULT_SCALE),
+      offsetX: getFiniteNumber(safeReadValue(minimap, "offsetX"), 0),
+      offsetY: getFiniteNumber(safeReadValue(minimap, "offsetY"), 0),
+      enlarged: Boolean(safeReadValue(minimap, "enlarged")),
+    };
+  }
+
+  function getRuntimeMinimapCanvas(minimap) {
+    const runtimeCanvas = minimap && safeReadValue(minimap, "canvas");
+    if (isVisibleCanvasElement(runtimeCanvas)) return runtimeCanvas;
+
+    return Array.from(document.querySelectorAll("#minimapcontainer canvas.minimap, canvas.minimap"))
+      .find(isVisibleCanvasElement) || null;
+  }
+
+  function summarizeRuntimeMinimap(runtime) {
+    const minimap = getRuntimeMinimapState(runtime);
+    if (!minimap) {
+      return {
+        available: false,
+      };
+    }
+
+    return {
+      available: true,
+      scale: roundCoord(minimap.scale),
+      offsetX: roundCoord(minimap.offsetX),
+      offsetY: roundCoord(minimap.offsetY),
+      enlarged: minimap.enlarged,
+      canvas: {
+        width: Math.round(minimap.canvasWidth),
+        height: Math.round(minimap.canvasHeight),
+        left: Math.round(minimap.rect.left),
+        top: Math.round(minimap.rect.top),
+        clientWidth: Math.round(minimap.rect.width),
+        clientHeight: Math.round(minimap.rect.height),
+      },
+    };
+  }
+
+  function projectRuntimeEntityToMinimap(candidate, runtime, context) {
+    const projection = context || getMinimapProjectionContext(runtime);
+    if (!projection) return null;
+
+    const { minimap, selfPosition } = projection;
+    const position = Array.isArray(candidate.position)
+      ? candidate.position
+      : (getRuntimeWorldPosition(candidate.entity) || {}).position;
+    if (!position || position.length < 3) return null;
+
+    const centerX = Number(selfPosition.position[0]) + minimap.offsetX;
+    const centerZ = Number(selfPosition.position[2]) + minimap.offsetY;
+    const worldRange = (minimap.scale < 0.4 ? 16 : 4) * 64;
+    const pixelRange = minimap.scale * 64;
+    const canvasX = minimap.canvasWidth / 2 + ((Number(position[0]) - centerX) / worldRange) * pixelRange;
+    const canvasY = minimap.canvasHeight / 2 + ((Number(position[2]) - centerZ) / worldRange) * pixelRange;
+
+    if (!Number.isFinite(canvasX) || !Number.isFinite(canvasY)) return null;
+    if (canvasX < -50 || canvasY < -50 || canvasX > minimap.canvasWidth + 50 || canvasY > minimap.canvasHeight + 50) {
+      return null;
+    }
+
+    const clampedX = Math.min(minimap.canvasWidth - 3, Math.max(0, canvasX));
+    const clampedY = Math.min(minimap.canvasHeight - 3, Math.max(0, canvasY));
+    return {
+      x: minimap.rect.left + clampedX * (minimap.rect.width / minimap.canvasWidth),
+      y: minimap.rect.top + clampedY * (minimap.rect.height / minimap.canvasHeight),
+      canvasX: clampedX,
+      canvasY: clampedY,
+      source: "runtime.entities",
+    };
+  }
+
+  function getMinimapEntityReport(options) {
+    const runtime = getExposedRuntime();
+    const context = getMinimapProjectionContext(runtime);
+    const entities = collectLoadedRuntimeEntities(runtime, options);
+    const projected = [];
+
+    for (const item of entities.items) {
+      const point = context ? projectRuntimeEntityToMinimap(item, runtime, context) : null;
+      if (point) projected.push({ ...item, minimap: point });
+    }
+
+    return {
+      available: Boolean(runtime && context),
+      minimap: summarizeRuntimeMinimap(runtime),
+      totalLoaded: entities.items.length,
+      projectedCount: projected.length,
+      items: projected.map(summarizeRuntimeEntityForReport),
+    };
+  }
+
+  function getLoadedEntityReport(options) {
+    const runtime = getExposedRuntime();
+    const entities = collectLoadedRuntimeEntities(runtime, options);
+    return {
+      available: Boolean(runtime),
+      totalLoaded: entities.items.length,
+      items: entities.items.map(summarizeRuntimeEntityForReport),
+    };
+  }
+
+  function getIncomingTargetReport(options) {
+    const runtime = getExposedRuntime();
+    if (!runtime) {
+      return {
+        available: false,
+        reason: "런타임을 찾지 못했습니다.",
+        targetingMe: [],
+        players: [],
+        all: [],
+      };
+    }
+
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) {
+      return {
+        available: false,
+        reason: "내 캐릭터 객체를 찾지 못했습니다.",
+        targetingMe: [],
+        players: [],
+        all: [],
+      };
+    }
+
+    const scanOptions = normalizeEntityReportOptions(options);
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      ...scanOptions,
+      playersOnly: false,
+      limit: scanOptions.limit || 900,
+    });
+    const all = [];
+
+    for (const item of entities.items) {
+      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
+
+      const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self.entity);
+      if (!targetInfo.targetsSelf) continue;
+
+      const relation = getRuntimeEntityRelation(item.entity, self.entity);
+      all.push({
+        ...summarizeRuntimeEntityForReport(item),
+        relation,
+        target: targetInfo.target,
+        targetFields: targetInfo.activeFields,
+      });
+    }
+
+    const players = all.filter((item) => item.type === 0);
+    return {
+      available: true,
+      self: summarizeIncomingTargetSelf(self),
+      count: all.length,
+      playerCount: players.length,
+      targetingMe: all,
+      players,
+      all,
+      note: all.length > 0
+        ? "현재 런타임 target 필드가 내 캐릭터 id를 가리키는 엔티티입니다."
+        : "현재 로드된 엔티티 중 내 캐릭터 id를 target으로 들고 있는 대상은 없습니다.",
+    };
+  }
+
+  function getTargetFieldReport(options) {
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const scanOptions = normalizeEntityReportOptions(options);
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      ...scanOptions,
+      limit: scanOptions.limit || 120,
+    });
+    const items = [];
+
+    for (const item of entities.items) {
+      const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self && self.entity);
+      if (!targetInfo.hasTargetField) continue;
+
+      items.push({
+        ...summarizeRuntimeEntityForReport(item),
+        targetsSelf: targetInfo.targetsSelf,
+        activeTarget: targetInfo.target,
+        fields: targetInfo.fields,
+      });
+    }
+
+    return {
+      available: Boolean(runtime),
+      self: self ? summarizeIncomingTargetSelf(self) : null,
+      totalLoaded: entities.items.length,
+      withTargetFields: items.length,
+      items,
+    };
+  }
+
+  function summarizeIncomingTargetSelf(self) {
+    return {
+      id: String(getRuntimeEntityId(self.entity) ?? ""),
+      name: getRuntimeEntityLabel(self.entity),
+      path: self.path || "",
+    };
+  }
+
+  function getRuntimeEntityTargetInfo(entity, runtime, selfEntity) {
+    const fields = [];
+    const activeFields = [];
+    let target = null;
+    let targetsSelf = false;
+
+    for (const key of getRuntimeTargetFieldKeys(entity)) {
+      const raw = safeReadValue(entity, key);
+      const field = parseRuntimeTargetField(key, raw, runtime, selfEntity);
+      fields.push(field);
+
+      if (!field.active) continue;
+      activeFields.push(field);
+      if (!target) target = field;
+      if (field.targetsSelf) targetsSelf = true;
+    }
+
+    for (const field of getRuntimeSkillTargetFields(entity, runtime, selfEntity)) {
+      fields.push(field);
+
+      if (!field.active) continue;
+      activeFields.push(field);
+      if (!target || field.targetsSelf) target = field;
+      if (field.targetsSelf) targetsSelf = true;
+    }
+
+    return {
+      hasTargetField: fields.length > 0,
+      targetsSelf,
+      target,
+      fields,
+      activeFields,
+    };
+  }
+
+  function getRuntimeSkillTargetFields(entity, runtime, selfEntity) {
+    const skills = safeReadValue(entity, "skills");
+    if (!isRuntimeObject(skills)) return [];
+
+    const fields = [];
+    const timedTarget = safeReadValue(skills, "timedTarget");
+    const timedField = parseRuntimeTargetField("skills.timedTarget", timedTarget, runtime, selfEntity);
+    timedField.skill = summarizeRuntimeTimedSkill(skills, runtime);
+    fields.push(timedField);
+
+    for (const key of ["castTarget", "castingTarget", "currentTarget", "queuedTarget"]) {
+      const raw = safeReadValue(skills, key);
+      if (raw === undefined) continue;
+
+      const field = parseRuntimeTargetField(`skills.${key}`, raw, runtime, selfEntity);
+      field.skill = summarizeRuntimeTimedSkill(skills, runtime);
+      fields.push(field);
+    }
+
+    return fields;
+  }
+
+  function summarizeRuntimeTimedSkill(skills, runtime) {
+    const timedSkill = safeReadValue(skills, "timedSkill");
+    const timedCast = safeReadValue(skills, "timedCast");
+
+    return {
+      id: safeReadValue(timedSkill, "id") ?? "",
+      name: safeReadValue(timedSkill, "name") || "",
+      active: isRuntimeTimedCastActive(timedCast, runtime),
+      remaining: getRuntimeTimedCastRemaining(timedCast, runtime),
+    };
+  }
+
+  function isRuntimeTimedCastActive(timedCast, runtime) {
+    if (!isRuntimeObject(timedCast)) return false;
+
+    const start = Number(safeReadValue(timedCast, "start"));
+    const end = Number(safeReadValue(timedCast, "end"));
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      const now = getRuntimeCastClock(runtime);
+      if (!Number.isFinite(now)) return true;
+      return now >= start - 0.15 && now <= end + 0.25;
+    }
+
+    const duration = Number(safeReadValue(timedCast, "duration"));
+    return Number.isFinite(duration) && duration > 0;
+  }
+
+  function getRuntimeTimedCastRemaining(timedCast, runtime) {
+    if (!isRuntimeObject(timedCast)) return null;
+
+    const end = Number(safeReadValue(timedCast, "end"));
+    const now = getRuntimeCastClock(runtime);
+    if (!Number.isFinite(end) || !Number.isFinite(now)) return null;
+
+    return Math.max(0, end - now);
+  }
+
+  function getRuntimeCastClock(runtime) {
+    const engine = runtime && safeReadValue(runtime, "engine");
+    const engineTime = Number(engine && safeReadValue(engine, "time"));
+    if (Number.isFinite(engineTime)) return engineTime;
+
+    const runtimeTime = Number(runtime && safeReadValue(runtime, "time"));
+    return Number.isFinite(runtimeTime) ? runtimeTime : null;
+  }
+
+  function getRuntimeTargetFieldKeys(entity) {
+    if (!isRuntimeObject(entity)) return [];
+
+    const baseKeys = [
+      "target",
+      "targetId",
+      "targetUnit",
+      "targetUnitId",
+      "targetEntity",
+      "targetEntityId",
+      "selectedTarget",
+      "selectedTargetId",
+      "selectedEntity",
+      "selectedEntityId",
+      "currentTarget",
+      "currentTargetId",
+      "attackTarget",
+      "attackTargetId",
+      "focusTarget",
+      "focusTargetId",
+      "enemyTarget",
+      "enemyTargetId",
+      "aggroTarget",
+      "aggroTargetId",
+      "combatTarget",
+      "combatTargetId",
+    ];
+    const dynamicKeys = safeOwnKeys(entity).filter((key) => (
+      /target|selected|focus|attack|aggro|enemy|combat/i.test(key) &&
+      !/interiorlight|targetMode|targetTimer/i.test(key)
+    ));
+
+    return uniqueRuntimeStrings([...baseKeys, ...dynamicKeys])
+      .filter((key) => {
+        try {
+          return key in entity;
+        } catch {
+          return false;
+        }
+      });
+  }
+
+  function parseRuntimeTargetField(key, raw, runtime, selfEntity) {
+    const id = normalizeRuntimeEntityId(raw);
+    const selfId = normalizeRuntimeEntityId(getRuntimeEntityId(selfEntity));
+    let resolved = null;
+    let targetEntity = null;
+
+    if (id) {
+      resolved = findRuntimeEntityById(runtime, id, null);
+      targetEntity = resolved && resolved.entity;
+    } else if (isRuntimeObject(raw) && getRuntimeWorldPosition(raw)) {
+      targetEntity = raw;
+    }
+
+    const targetId = targetEntity
+      ? normalizeRuntimeEntityId(getRuntimeEntityId(targetEntity))
+      : id;
+    const targetName = targetEntity ? getRuntimeEntityLabel(targetEntity) : "";
+    const targetsSelf = Boolean(
+      selfEntity &&
+      (
+        (targetEntity && isSameRuntimeEntity(targetEntity, selfEntity)) ||
+        (selfId && targetId && targetId === selfId)
+      )
+    );
+
+    return {
+      key,
+      raw: summarizeRuntimeTargetRaw(raw),
+      active: Boolean(targetId || targetEntity),
+      id: targetId || "",
+      name: targetName,
+      resolved: Boolean(targetEntity),
+      path: resolved ? resolved.path : "",
+      targetsSelf,
+    };
+  }
+
+  function summarizeRuntimeTargetRaw(raw) {
+    if (raw === null || raw === undefined || raw === "" || raw === false || raw === 0 || raw === "0") return raw;
+    if (!isRuntimeObject(raw)) return raw;
+
+    return {
+      type: Object.prototype.toString.call(raw).replace(/^\[object |\]$/g, ""),
+      id: String(getRuntimeEntityId(raw) ?? ""),
+      name: getRuntimeNameValueLoose(raw),
+      keys: safeOwnKeys(raw).slice(0, 16),
+    };
+  }
+
+  function uniqueRuntimeStrings(values) {
+    const seen = new Set();
+    const result = [];
+
+    values.forEach((value) => {
+      const text = String(value || "");
+      if (!text || seen.has(text)) return;
+
+      seen.add(text);
+      result.push(text);
+    });
+
+    return result;
+  }
+
+  function collectLoadedRuntimeEntities(runtime, options = {}) {
+    const normalizedOptions = normalizeEntityReportOptions(options);
+    const limit = clamp(Number(normalizedOptions.limit) || 300, 1, 1200);
+    const items = [];
+    const seenObjects = new WeakSet();
+    const seenIds = new Set();
+
+    const add = (entity, path) => {
+      if (items.length >= limit || !isRuntimeObject(entity)) return;
+      if (seenObjects.has(entity)) return;
+      seenObjects.add(entity);
+
+      const positionInfo = getRuntimeWorldPosition(entity);
+      if (!positionInfo) return;
+
+      const id = getRuntimeEntityId(entity);
+      const idKey = id !== undefined ? String(id) : "";
+      if (idKey && seenIds.has(idKey)) return;
+      if (idKey) seenIds.add(idKey);
+
+      const type = getRuntimeEntityType(entity);
+      if (normalizedOptions.playersOnly && type !== 0) return;
+
+      const name = getRuntimeEntityLabel(entity);
+      const highlighted = Boolean(getMatchingHighlightName(name));
+      if (normalizedOptions.highlightedOnly && !highlighted) return;
+
+      items.push({
+        entity,
+        path,
+        id: idKey,
+        name,
+        type,
+        highlighted,
+        position: positionInfo.position,
+        positionSource: positionInfo.source,
+      });
+    };
+
+    if (!runtime) return { items };
+
+    add(runtime.player, "runtime.player");
+    add(runtime.target, "runtime.target");
+
+    const engine = safeReadValue(runtime, "engine");
+    add(safeReadValue(engine, "player"), "runtime.engine.player");
+    add(safeReadValue(engine, "target"), "runtime.engine.target");
+
+    const entities = safeReadValue(engine, "entities");
+    scanRuntimeEntityCollection(safeReadValue(entities, "array"), "runtime.engine.entities.array", add, limit);
+    scanRuntimeEntityCollection(safeReadValue(entities, "map"), "runtime.engine.entities.map", add, limit);
+
+    return { items };
+  }
+
+  function normalizeEntityReportOptions(options) {
+    if (options === true) return { playersOnly: true };
+    return isObject(options) ? options : {};
+  }
+
+  function summarizeRuntimeEntityForReport(item) {
+    const summary = {
+      id: item.id || "",
+      name: item.name || "",
+      type: item.type,
+      highlighted: Boolean(item.highlighted),
+      path: item.path || "",
+      position: Array.isArray(item.position) ? item.position.map(roundCoord) : null,
+      positionSource: item.positionSource || "",
+    };
+
+    if (item.minimap) {
+      summary.minimap = {
+        x: roundCoord(item.minimap.x),
+        y: roundCoord(item.minimap.y),
+        canvasX: roundCoord(item.minimap.canvasX),
+        canvasY: roundCoord(item.minimap.canvasY),
+      };
+    }
+
+    return summary;
+  }
+
+  function getRuntimeEntityRelation(entity, selfEntity) {
+    const entityType = getRuntimeEntityType(entity);
+    const selfType = getRuntimeEntityType(selfEntity);
+    const faction = normalizeRuntimeTeamValue(safeReadValue(entity, "faction"));
+    const selfFaction = normalizeRuntimeTeamValue(safeReadValue(selfEntity, "faction"));
+    const party = normalizeRuntimeGroupValue(safeReadValue(entity, "party"));
+    const selfParty = normalizeRuntimeGroupValue(safeReadValue(selfEntity, "party"));
+    const clan = normalizeRuntimeClanValue(safeReadValue(entity, "clan"));
+    const selfClan = normalizeRuntimeClanValue(safeReadValue(selfEntity, "clan"));
+    const sameEntity = isSameRuntimeEntity(entity, selfEntity);
+    const bothPlayers = entityType === 0 && selfType === 0;
+    const sameParty = bothPlayers && party !== "" && selfParty !== "" && party === selfParty;
+    const sameFaction = bothPlayers && faction !== "" && selfFaction !== "" && faction === selfFaction;
+    const sameClan = bothPlayers && clan !== "" && selfClan !== "" && clan.toLowerCase() === selfClan.toLowerCase();
+    const hostile = bothPlayers && faction !== "" && selfFaction !== "" && faction !== selfFaction;
+    const friendly = sameEntity || sameParty || sameFaction;
+
+    return {
+      type: friendly ? "friendly" : hostile ? "hostile" : "neutral",
+      friendly,
+      hostile,
+      sameParty,
+      sameFaction,
+      sameClan,
+      faction,
+      party,
+      clan,
+      selfFaction,
+      selfParty,
+      selfClan,
+    };
+  }
+
+  function normalizeRuntimeTeamValue(value) {
+    if (value === null || value === undefined || value === "" || value === false) return "";
+
+    const number = Number(value);
+    if (Number.isFinite(number)) return number === 0 ? "0" : String(Math.trunc(number));
+
+    return String(value);
+  }
+
+  function normalizeRuntimeGroupValue(value) {
+    const normalized = normalizeRuntimeTeamValue(value);
+    return normalized === "0" ? "" : normalized;
+  }
+
+  function normalizeRuntimeClanValue(value) {
+    return value === null || value === undefined ? "" : String(value).trim();
+  }
+
+  function getRuntimeEntityType(entity) {
+    const type = Number(safeReadValue(entity, "type"));
+    return Number.isFinite(type) ? type : null;
+  }
+
+  function getFiniteNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function collectIncomingSkillOverlayEntities(runtime) {
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return [];
+
+    const selfPosition = getRuntimeWorldPosition(self.entity);
+    if (!selfPosition) return [];
+
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      limit: 900,
+      playersOnly: false,
+    });
+    const result = [];
+
+    for (const item of entities.items) {
+      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
+
+      const relation = getRuntimeEntityRelation(item.entity, self.entity);
+      if (relation.friendly) continue;
+
+      const skillField = getIncomingSkillField({
+        activeFields: getRuntimeSkillTargetFields(item.entity, runtime, self.entity),
+      });
+      if (!skillField) continue;
+
+      const distance = getHorizontalRuntimeDistance(selfPosition.position, item.position);
+      const skillId = normalizeSkillIconId(skillField.skill && skillField.skill.id);
+      result.push({
+        entity: item.entity,
+        path: item.path,
+        name: item.name,
+        matchedName: item.name.toLowerCase(),
+        position: item.position,
+        positionSource: item.positionSource,
+        score: 1000 + (item.type === 0 ? 120 : 0),
+        incomingSkill: true,
+        relation,
+        skillId,
+        skillIconUrl: skillId ? getSkillIconUrl(skillId) : "",
+        skillTargetField: skillField.key,
+        skillRemaining: skillField.skill && skillField.skill.remaining,
+        distance,
+        distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+      });
+    }
+
+    return result;
+  }
+
+  function collectIncomingTargetWatchOverlayEntities(runtime) {
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return [];
+
+    const selfPosition = getRuntimeWorldPosition(self.entity);
+    if (!selfPosition) return [];
+
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      limit: 900,
+      playersOnly: true,
+    });
+    const result = [];
+
+    for (const item of entities.items) {
+      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
+
+      const relation = getRuntimeEntityRelation(item.entity, self.entity);
+      if (relation.friendly) continue;
+
+      const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self.entity);
+      const watchField = getIncomingTargetWatchField(targetInfo);
+      if (!watchField) continue;
+
+      const distance = getHorizontalRuntimeDistance(selfPosition.position, item.position);
+      result.push({
+        entity: item.entity,
+        path: item.path,
+        name: item.name,
+        matchedName: item.name.toLowerCase(),
+        position: item.position,
+        positionSource: item.positionSource,
+        score: 920 + (relation.hostile ? 80 : 0),
+        incomingTargetWatch: true,
+        relation,
+        watchTargetField: watchField.key,
+        distance,
+        distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+      });
+    }
+
+    return result;
+  }
+
+  function getIncomingSkillField(targetInfo) {
+    if (!targetInfo || !Array.isArray(targetInfo.activeFields)) return null;
+
+    return targetInfo.activeFields.find((field) => (
+      field &&
+      field.targetsSelf &&
+      /^skills\./.test(field.key || "") &&
+      Boolean(field.skill && field.skill.active)
+    )) || null;
+  }
+
+  function getIncomingTargetWatchField(targetInfo) {
+    if (!targetInfo || !Array.isArray(targetInfo.activeFields)) return null;
+
+    return targetInfo.activeFields.find((field) => (
+      field &&
+      field.targetsSelf &&
+      !/^skills\./.test(field.key || "") &&
+      isRuntimeWatchTargetFieldKey(field.key)
+    )) || null;
+  }
+
+  function isRuntimeWatchTargetFieldKey(key) {
+    const normalized = String(key || "");
+    if (!normalized) return false;
+    if (/aggroMode|targetMode|targetTimer|interiorlight/i.test(normalized)) return false;
+    return /target|selected|focus|attack|enemy|combat/i.test(normalized);
+  }
+
+  function sortRuntimeOverlayCandidateForDisplay(left, right) {
+    if (left.incomingSkill !== right.incomingSkill) return left.incomingSkill ? -1 : 1;
+    if (left.incomingTargetWatch !== right.incomingTargetWatch) return left.incomingTargetWatch ? -1 : 1;
+    return (right.score || 0) - (left.score || 0);
+  }
+
+  function normalizeSkillIconId(value) {
+    if (value === null || value === undefined || value === "") return "";
+
+    const id = Number(value);
+    return Number.isFinite(id) && id >= 0 ? String(Math.trunc(id)) : "";
+  }
+
+  function getSkillIconUrl(skillId) {
+    const version = getGameAssetVersion();
+    return `/data/ui/skills/${encodeURIComponent(skillId)}.avif${version ? `?v=${encodeURIComponent(version)}` : ""}`;
+  }
+
+  function getGameAssetVersion() {
+    if (getGameAssetVersion.cached !== undefined) return getGameAssetVersion.cached;
+
+    let version = "";
+    try {
+      const asset = document.querySelector("script[src*='?v='], link[href*='?v='], img[src*='?v=']");
+      const rawUrl = asset && (asset.getAttribute("src") || asset.getAttribute("href"));
+      const url = rawUrl ? new URL(rawUrl, location.href) : null;
+      version = url ? (url.searchParams.get("v") || "") : "";
+    } catch {
+      version = "";
+    }
+
+    getGameAssetVersion.cached = version;
+    return version;
   }
 
   function clearRuntimeNameOverlay() {
@@ -4385,53 +10835,136 @@
 
   function renderRuntimeNameOverlayLabels(host, candidates) {
     const activeKeys = new Set();
+    const now = Date.now();
 
     for (const candidate of candidates) {
-      const key = `${candidate.name}:${candidate.path}`;
+      const id = getRuntimeEntityId(candidate.entity);
+      const key = id !== undefined ? `id:${String(id)}` : `${candidate.name}:${candidate.path}`;
       activeKeys.add(key);
 
       let label = HIGHLIGHT_STATE.runtimeOverlayItems.get(key);
       if (!label) {
         label = document.createElement("div");
         label.className = "hordes-kr-runtime-name-label";
-
-        const prefix = document.createElement("span");
-        prefix.className = "hordes-kr-runtime-name-prefix";
-        prefix.textContent = "#KR";
-
-        const name = document.createElement("span");
-        name.dataset.hordesKrRuntimeName = "true";
-
-        label.append(prefix, document.createTextNode(" "), name);
         host.appendChild(label);
         HIGHLIGHT_STATE.runtimeOverlayItems.set(key, label);
       }
 
-      const nameNode = label.querySelector("[data-hordes-kr-runtime-name]");
-      if (nameNode) nameNode.textContent = candidate.name;
-      label.style.left = `${Math.round(candidate.screen.x)}px`;
-      label.style.top = `${Math.round(candidate.screen.y)}px`;
+      label.classList.toggle("incoming-skill", Boolean(candidate.incomingSkill));
+      label.classList.toggle("incoming-watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
+      renderRuntimeNameOverlayLabelContent(label, candidate);
+
+      const left = `${Math.round(candidate.screen.x)}px`;
+      const top = `${Math.round(candidate.screen.y)}px`;
+      if (label.style.left !== left) label.style.left = left;
+      if (label.style.top !== top) label.style.top = top;
+      label.dataset.hordesKrSeenAt = String(now);
     }
 
     for (const [key, label] of HIGHLIGHT_STATE.runtimeOverlayItems.entries()) {
       if (activeKeys.has(key)) continue;
+      const seenAt = Number(label.dataset.hordesKrSeenAt) || 0;
+      if (now - seenAt < 500) continue;
 
       label.remove();
       HIGHLIGHT_STATE.runtimeOverlayItems.delete(key);
     }
   }
 
+  function renderRuntimeNameOverlayLabelContent(label, candidate) {
+    const signature = [
+      candidate.name,
+      candidate.incomingSkill ? "incoming" : candidate.incomingTargetWatch ? "watch" : "normal",
+      candidate.skillId || "",
+      candidate.skillIconUrl || "",
+      candidate.distanceText || "",
+      candidate.relation ? candidate.relation.type : "",
+      candidate.watchTargetField || "",
+    ].join("|");
+    if (label.dataset.hordesKrSignature === signature) return;
+
+    label.dataset.hordesKrSignature = signature;
+    label.dataset.hordesKrName = candidate.name;
+    label.replaceChildren();
+
+    if (!candidate.incomingSkill && !candidate.incomingTargetWatch) {
+      label.textContent = candidate.name;
+      label.title = candidate.name;
+      return;
+    }
+
+    if (candidate.incomingTargetWatch && !candidate.incomingSkill) {
+      const prefix = document.createElement("span");
+      prefix.className = "watch-prefix";
+      prefix.textContent = "주시";
+      label.appendChild(prefix);
+    }
+
+    if (candidate.skillIconUrl) {
+      const icon = document.createElement("img");
+      icon.className = "skill-icon";
+      icon.alt = "";
+      icon.decoding = "async";
+      icon.loading = "eager";
+      icon.src = candidate.skillIconUrl;
+      icon.addEventListener("error", () => {
+        icon.remove();
+      }, { once: true });
+      label.appendChild(icon);
+    }
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = candidate.name;
+    label.appendChild(name);
+
+    if (candidate.distanceText) {
+      const distance = document.createElement("span");
+      distance.className = "distance";
+      distance.textContent = candidate.distanceText;
+      label.appendChild(distance);
+    }
+
+    label.title = [
+      `${candidate.name} -> 나`,
+      candidate.skillId ? `skill ${candidate.skillId}` : "",
+      candidate.incomingTargetWatch ? "주시" : "",
+      candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
+      candidate.relation ? `관계 ${candidate.relation.type}` : "",
+    ].filter(Boolean).join(" / ");
+  }
+
   function collectRuntimeOverlayEntities(names, options = {}) {
-    const normalizedNames = names.map(normalizeHighlightName).filter(Boolean);
+    const normalizedNames = names === HIGHLIGHT_CONFIG.names
+      ? getHighlightNameCache().names
+      : uniqueHighlightNames(names).sort((a, b) => b.length - a.length);
     if (normalizedNames.length === 0) return [];
 
-    const lowerNames = normalizedNames.map((name) => name.toLowerCase());
+    const lowerNames = names === HIGHLIGHT_CONFIG.names
+      ? getHighlightNameCache().lowerNames
+      : normalizedNames.map((name) => name.toLowerCase());
     const runtime = getExposedRuntime();
     if (!runtime) return [];
 
     const limit = options.limit || 16;
     const maxDepth = options.maxDepth || 7;
     const maxObjects = options.maxObjects || 9000;
+    const directCandidates = collectDirectRuntimeOverlayCandidates(runtime, lowerNames, maxObjects);
+    if (directCandidates.length > 0) {
+      return dedupeRuntimeOverlayCandidates(directCandidates)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+    }
+
+    const cacheKey = `${lowerNames.join("\u0001")}|${limit}|${maxDepth}|${maxObjects}`;
+    const now = Date.now();
+    if (
+      HIGHLIGHT_STATE.runtimeDeepScanCacheKey === cacheKey &&
+      now - HIGHLIGHT_STATE.runtimeDeepScanAt < 1000
+    ) {
+      return HIGHLIGHT_STATE.runtimeDeepScanCandidates.slice(0, limit);
+    }
+
     const roots = [{ value: runtime, path: "runtime", depth: 0 }];
     if (runtime.engine) roots.push({ value: runtime.engine, path: "runtime.engine", depth: 0 });
 
@@ -4458,9 +10991,69 @@
       }
     }
 
-    return dedupeRuntimeOverlayCandidates(candidates)
+    const result = dedupeRuntimeOverlayCandidates(candidates)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
+    HIGHLIGHT_STATE.runtimeDeepScanCacheKey = cacheKey;
+    HIGHLIGHT_STATE.runtimeDeepScanAt = now;
+    HIGHLIGHT_STATE.runtimeDeepScanCandidates = result;
+    return result;
+  }
+
+  function collectDirectRuntimeOverlayCandidates(runtime, lowerNames, maxObjects) {
+    const candidates = [];
+    const seen = new WeakSet();
+    let visited = 0;
+
+    const add = (value, path) => {
+      if (visited >= maxObjects || !isRuntimeObject(value) || seen.has(value)) return;
+      seen.add(value);
+      visited++;
+
+      const candidate = summarizeRuntimeOverlayEntity(value, path, lowerNames);
+      if (candidate) candidates.push(candidate);
+    };
+
+    add(runtime.player, "runtime.player");
+    add(runtime.target, "runtime.target");
+
+    const engine = runtime.engine;
+    if (!engine) return candidates;
+
+    add(safeReadValue(engine, "player"), "runtime.engine.player");
+    add(safeReadValue(engine, "target"), "runtime.engine.target");
+
+    const entities = safeReadValue(engine, "entities");
+    scanRuntimeEntityCollection(safeReadValue(entities, "array"), "runtime.engine.entities.array", add, maxObjects);
+
+    for (const key of ["list", "items", "values", "players", "mobs", "units", "actors", "objects"]) {
+      scanRuntimeEntityCollection(safeReadValue(entities, key), `runtime.engine.entities.${key}`, add, maxObjects);
+      scanRuntimeEntityCollection(safeReadValue(engine, key), `runtime.engine.${key}`, add, maxObjects);
+      if (visited >= maxObjects) break;
+    }
+
+    return candidates;
+  }
+
+  function scanRuntimeEntityCollection(collection, path, add, maxObjects) {
+    if (!collection || typeof add !== "function") return;
+
+    if (Array.isArray(collection)) {
+      const length = Math.min(collection.length, maxObjects);
+      for (let index = 0; index < length; index++) {
+        add(collection[index], `${path}[${index}]`);
+      }
+      return;
+    }
+
+    if (collection instanceof Map || collection instanceof Set) {
+      let index = 0;
+      for (const value of collection.values()) {
+        if (index >= maxObjects) break;
+        add(value, `${path}.${collection instanceof Map ? "map" : "set"}[${index}]`);
+        index++;
+      }
+    }
   }
 
   function summarizeRuntimeOverlayEntity(value, path, lowerNames) {
@@ -4568,6 +11161,59 @@
     return null;
   }
 
+  function getRuntimeCombatPosition(value) {
+    for (const key of ["pos", "position", "worldPosition", "coords", "visualPosition"]) {
+      const position = parseRuntimeVector(safeReadValue(value, key));
+      if (position) return { position, source: key };
+    }
+
+    return getRuntimeWorldPosition(value);
+  }
+
+  function getRuntimeCombatRangeDistance(selfEntity, targetEntity, selfPosition, targetPosition) {
+    const selfSize = getRuntimeEntityCombatSize(selfEntity);
+    const targetSize = getRuntimeEntityCombatSize(targetEntity);
+    const dx = Number(selfPosition[0]) - Number(targetPosition[0]);
+    const dy = Math.max(0, Math.abs(Number(selfPosition[1]) - Number(targetPosition[1])) - selfSize);
+    const dz = Number(selfPosition[2]) - Number(targetPosition[2]);
+    const centerDistance = Math.hypot(dx, dy, dz);
+    const sizePadding = selfSize + targetSize;
+
+    return {
+      distance: Math.max(0, centerDistance - sizePadding),
+      centerDistance,
+      selfSize,
+      targetSize,
+      sizePadding,
+      verticalPenalty: dy,
+    };
+  }
+
+  function getCorrectedRuntimeRangeDistance(selfEntity, targetEntity, selfPositionInfo, targetPositionInfo) {
+    if (!selfEntity || !targetEntity || !selfPositionInfo || !targetPositionInfo) return null;
+
+    const selfCombatPosition = getRuntimeCombatPosition(selfEntity) || selfPositionInfo;
+    const targetCombatPosition = getRuntimeCombatPosition(targetEntity) || targetPositionInfo;
+    if (!selfCombatPosition || !targetCombatPosition) return null;
+
+    return getRuntimeCombatRangeDistance(
+      selfEntity,
+      targetEntity,
+      selfCombatPosition.position,
+      targetCombatPosition.position
+    );
+  }
+
+  function getRuntimeEntityCombatSize(entity) {
+    const size = Number(safeReadValue(entity, "size"));
+    if (Number.isFinite(size) && size >= 0) return size;
+
+    const radius = Number(safeReadValue(entity, "radius"));
+    if (Number.isFinite(radius) && radius >= 0) return radius * 2;
+
+    return 0;
+  }
+
   function parseRuntimeVector(value) {
     if (!value) return null;
 
@@ -4600,6 +11246,22 @@
     const position = candidate.position.slice();
     position[1] += getRuntimeEntityNameYOffset(candidate.entity);
     return projectRuntimePointToScreen(position, runtime);
+  }
+
+  function getRuntimeEntityCanvasPoint(entity) {
+    const hudPosition = parseRuntimeVector(safeReadValue(entity, "hudPos"));
+    if (!hudPosition) return null;
+
+    const x = Number(hudPosition[0]);
+    const y = Number(hudPosition[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+    return {
+      x,
+      y,
+      z: Number.isFinite(Number(hudPosition[2])) ? Number(hudPosition[2]) : null,
+      source: "hudPos",
+    };
   }
 
   function getRuntimeEntityNameYOffset(entity) {
@@ -4755,7 +11417,8 @@
 
       for (const key of ["target", "targetUnit", "targetEntity", "selectedTarget", "selectedEntity", "currentTarget", "attackTarget", "focusTarget", "enemyTarget"]) {
         const value = safeReadValue(container, key);
-        if (value !== null && value !== undefined && value !== false) return value;
+        const resolved = resolveRuntimeEntityReference(value, runtime, `${container === runtime ? "runtime" : "player"}.${key}`, player);
+        if (resolved) return resolved.entity;
       }
     }
 
@@ -4777,10 +11440,16 @@
       hasEngine: !!runtime.engine,
       hasPlayer: !!runtime.player,
       hasTarget: !!runtime.target,
+      hasSkillStore: Boolean(runtime.skillStores && runtime.skillStores.active),
+      hasActiveSkillGetter: typeof safeReadValue(runtime, "getActiveSkillConfig") === "function",
       hasCamera: !!runtime.camera,
       hasProjectionMatrix: !!getRuntimeProjectionMatrix(runtime),
       hasWebglCanvas: isVisibleCanvasElement(runtime.webglCanvas),
       hasOverlayCanvas: isVisibleCanvasElement(runtime.overlayCanvas),
+      hasTargetController: typeof safeReadValue(runtime, "changeTarget") === "function",
+      hasHoverTargetController: typeof safeReadValue(runtime, "setHoverTarget") === "function",
+      clientTargetState: summarizeRuntimeTargetControllerState(getRuntimeTargetControllerState(runtime)),
+      minimap: summarizeRuntimeMinimap(runtime),
       canvas: rect
         ? {
             left: Math.round(rect.left),
@@ -4804,11 +11473,61 @@
     const runtime = getExposedRuntime();
     return {
       version: MOD_VERSION,
+      scriptHook: getScriptHookDiagnosticSummary(),
       runtime: getExposedRuntimeSummary(),
       targetDistance: getTargetDistance(true),
       engine: summarizeRuntimeObjectForDebug(runtime && runtime.engine),
       player: summarizeRuntimeObjectForDebug(runtime && runtime.player),
       target: summarizeRuntimeObjectForDebug(runtime && runtime.target),
+    };
+  }
+
+  function stringifyRuntimeDebugReport() {
+    return JSON.stringify(getRuntimeDebugReport(), null, 2);
+  }
+
+  function runRuntimeProbeNow() {
+    try {
+      const probe = pageWindow.__HORDES_KR_RUNTIME_PROBE_NOW__;
+      if (typeof probe === "function") probe();
+    } catch {
+      // Manual probe is diagnostic only.
+    }
+  }
+
+  function getScriptHookDiagnosticSummary() {
+    const patchedScripts = [...HIGHLIGHT_STATE.scriptHookPatchedScripts];
+    const patchNames = [...new Set(patchedScripts.flatMap((script) => Array.isArray(script.patches) ? script.patches : []))];
+    const expected = [
+      "client-runtime-probe",
+      "client-engine-setter",
+      "client-frame-loop",
+      "client-onload-runtime",
+      "client-set-state",
+      "client-set-player",
+      "client-engine-tick",
+      "client-manage-chunks",
+      "client-prototype-runtime",
+      "client-target-controller",
+    ];
+
+    return {
+      attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
+      patchedScripts,
+      patchNames,
+      missingExpectedPatches: expected.filter((name) => !patchNames.includes(name)),
+      errors: [...HIGHLIGHT_STATE.scriptHookErrors],
+      onloadGuard: getClientOnloadGuardSummary(),
+    };
+  }
+
+  function getClientOnloadGuardSummary() {
+    const state = pageWindow.__hordesKrClientOnloadGuardState;
+    return {
+      installed: Boolean(pageWindow.__hordesKrClientOnloadGuardInstalled),
+      hasPatchedOnload: Boolean(state && state.patchedOnload),
+      hasOriginalOnload: Boolean(state && state.lastOriginalOnload),
+      assignments: state && Array.isArray(state.assignments) ? [...state.assignments] : [],
     };
   }
 
@@ -4820,6 +11539,13 @@
       frameLoopIType: debug ? debug.frameLoopIType || "" : "",
       frameLoopIConstructor: debug ? debug.frameLoopIConstructor || "" : "",
       frameLoopIKeys: debug && Array.isArray(debug.frameLoopIKeys) ? debug.frameLoopIKeys : [],
+      runtimeProbeAtAgoMs: debug && Number.isFinite(debug.runtimeProbeAt)
+        ? Date.now() - debug.runtimeProbeAt
+        : null,
+      runtimeProbeIType: debug ? debug.runtimeProbeIType || "" : "",
+      runtimeProbeIConstructor: debug ? debug.runtimeProbeIConstructor || "" : "",
+      runtimeProbeIKeys: debug && Array.isArray(debug.runtimeProbeIKeys) ? debug.runtimeProbeIKeys : [],
+      runtimeProbeEngineReadError: debug ? debug.runtimeProbeEngineReadError || "" : "",
       clientEngineSetterAtAgoMs: debug && Number.isFinite(debug.clientEngineSetterAt)
         ? Date.now() - debug.clientEngineSetterAt
         : null,
@@ -4828,6 +11554,21 @@
         ? Date.now() - debug.clientOnloadAt
         : null,
       clientOnloadEngineKeys: debug && Array.isArray(debug.clientOnloadEngineKeys) ? debug.clientOnloadEngineKeys : [],
+      prototypePatchAtAgoMs: debug && Number.isFinite(debug.prototypePatchAt)
+        ? Date.now() - debug.prototypePatchAt
+        : null,
+      prototypePatchFhType: debug ? debug.prototypePatchFhType || "" : "",
+      prototypePatchFhKeys: debug && Array.isArray(debug.prototypePatchFhKeys) ? debug.prototypePatchFhKeys : [],
+      prototypeEngineKeys: debug && Array.isArray(debug.prototypeEngineKeys) ? debug.prototypeEngineKeys : [],
+      prototypeTickAtAgoMs: debug && Number.isFinite(debug.prototypeTickAt)
+        ? Date.now() - debug.prototypeTickAt
+        : null,
+      prototypeSetPlayerAtAgoMs: debug && Number.isFinite(debug.prototypeSetPlayerAt)
+        ? Date.now() - debug.prototypeSetPlayerAt
+        : null,
+      prototypeSetStateAtAgoMs: debug && Number.isFinite(debug.prototypeSetStateAt)
+        ? Date.now() - debug.prototypeSetStateAt
+        : null,
       engineReadError: debug ? debug.engineReadError || "" : "",
       playerReadError: debug ? debug.playerReadError || "" : "",
       targetReadError: debug ? debug.targetReadError || "" : "",
@@ -4860,6 +11601,36 @@
         : null,
       lastError: HIGHLIGHT_STATE.lastRuntimeOverlayError,
       lastMatches: [...HIGHLIGHT_STATE.lastRuntimeOverlayMatches],
+      incomingSkill: {
+        enabled: isIncomingSkillOverlayEnabled(),
+        friendlyFiltered: true,
+        hits: HIGHLIGHT_STATE.incomingSkillOverlayHits,
+        lastAt: HIGHLIGHT_STATE.lastIncomingSkillOverlayAt
+          ? new Date(HIGHLIGHT_STATE.lastIncomingSkillOverlayAt).toISOString()
+          : null,
+        lastError: HIGHLIGHT_STATE.lastIncomingSkillOverlayError,
+        lastMatches: [...HIGHLIGHT_STATE.lastIncomingSkillOverlayMatches],
+        list: {
+          enabled: isIncomingSkillListEnabled(),
+          host: Boolean(HIGHLIGHT_STATE.incomingSkillListHost && document.contains(HIGHLIGHT_STATE.incomingSkillListHost)),
+          hits: HIGHLIGHT_STATE.incomingSkillListHits,
+          lastAt: HIGHLIGHT_STATE.lastIncomingSkillListAt
+            ? new Date(HIGHLIGHT_STATE.lastIncomingSkillListAt).toISOString()
+            : null,
+          lastError: HIGHLIGHT_STATE.lastIncomingSkillListError,
+          lastMatches: [...HIGHLIGHT_STATE.lastIncomingSkillListMatches],
+        },
+      },
+      incomingTargetWatch: {
+        enabled: isIncomingTargetWatchEnabled(),
+        friendlyFiltered: true,
+        hits: HIGHLIGHT_STATE.incomingTargetWatchHits,
+        lastAt: HIGHLIGHT_STATE.lastIncomingTargetWatchAt
+          ? new Date(HIGHLIGHT_STATE.lastIncomingTargetWatchAt).toISOString()
+          : null,
+        lastError: HIGHLIGHT_STATE.lastIncomingTargetWatchError,
+        lastMatches: [...HIGHLIGHT_STATE.lastIncomingTargetWatchMatches],
+      },
       runtime: getExposedRuntimeSummary(),
     };
   }
@@ -4916,8 +11687,7 @@
 
   function getInspectionNames(name) {
     const explicit = normalizeHighlightName(name);
-    const names = explicit ? [explicit] : HIGHLIGHT_CONFIG.names.map(normalizeHighlightName);
-    return [...new Set(names.filter(Boolean))];
+    return explicit ? [explicit] : [...getHighlightNameCache().names];
   }
 
   function getCanvasReport() {
@@ -5234,14 +12004,24 @@
     const selfPosition = getRuntimeWorldPosition(self.entity);
     if (!selfPosition) return getUnavailableTargetDistance("내 캐릭터 좌표를 찾지 못했습니다.");
 
-    const target = findSelectedTargetEntity(runtime, self.entity);
+    const target = findLockedTargetEntity(runtime, self.entity)
+      || findSelectedTargetEntity(runtime, self.entity)
+      || findTrackedTargetEntity(runtime, self.entity);
     if (!target) return getUnavailableTargetDistance("타겟 객체를 찾지 못했습니다.");
 
     const targetPosition = getRuntimeWorldPosition(target.entity);
     if (!targetPosition) return getUnavailableTargetDistance("타겟 좌표를 찾지 못했습니다.");
 
-    const horizontalDistance = getHorizontalRuntimeDistance(selfPosition.position, targetPosition.position);
-    const distance3d = getRuntimeVectorDistance(selfPosition.position, targetPosition.position);
+    const selfCombatPosition = getRuntimeCombatPosition(self.entity) || selfPosition;
+    const targetCombatPosition = getRuntimeCombatPosition(target.entity) || targetPosition;
+    const rangeDistance = getRuntimeCombatRangeDistance(
+      self.entity,
+      target.entity,
+      selfCombatPosition.position,
+      targetCombatPosition.position
+    );
+    const visualHorizontalDistance = getHorizontalRuntimeDistance(selfPosition.position, targetPosition.position);
+    const visualDistance3d = getRuntimeVectorDistance(selfPosition.position, targetPosition.position);
     const targetScreen = projectRuntimeEntityToScreen(
       {
         entity: target.entity,
@@ -5249,28 +12029,67 @@
       },
       runtime
     );
+    const targetCanvas = getRuntimeEntityCanvasPoint(target.entity);
+    const targetSnapshot = rememberTargetDistanceEntity(target, targetPosition, targetCombatPosition);
+    const staleAgeMs = target.snapshot && Number.isFinite(target.snapshot.savedAt)
+      ? Date.now() - target.snapshot.savedAt
+      : null;
 
     return {
       available: true,
-      distance: roundCoord(horizontalDistance),
-      distance3d: roundCoord(distance3d),
-      units: "world",
+      stale: Boolean(target.stale),
+      staleAgeMs,
+      distance: roundCoord(rangeDistance.distance),
+      distance3d: roundCoord(visualDistance3d),
+      units: "gameRange",
+      centerDistance: roundCoord(rangeDistance.centerDistance),
+      visualDistance: roundCoord(visualHorizontalDistance),
+      tracking: {
+        source: target.source,
+        locked: Boolean(target.locked),
+        stale: Boolean(target.stale),
+        lastKnownAt: targetSnapshot ? targetSnapshot.savedAt : null,
+      },
+      rangeModel: {
+        source: "combatRangeCheck",
+        selfSize: roundCoord(rangeDistance.selfSize),
+        targetSize: roundCoord(rangeDistance.targetSize),
+        sizePadding: roundCoord(rangeDistance.sizePadding),
+        verticalPenalty: roundCoord(rangeDistance.verticalPenalty),
+        combatPositionSource: {
+          self: selfCombatPosition.source,
+          target: targetCombatPosition.source,
+        },
+      },
       self: {
         name: getRuntimeEntityLabel(self.entity),
         path: self.path,
-        position: selfPosition.position.map(roundCoord),
-        positionSource: selfPosition.source,
+        position: selfCombatPosition.position.map(roundCoord),
+        positionSource: selfCombatPosition.source,
+        visualPosition: selfPosition.position.map(roundCoord),
+        visualPositionSource: selfPosition.source,
       },
       target: {
         name: getRuntimeEntityLabel(target.entity),
         path: target.path,
-        position: targetPosition.position.map(roundCoord),
-        positionSource: targetPosition.source,
+        position: targetCombatPosition.position.map(roundCoord),
+        positionSource: targetCombatPosition.source,
+        visualPosition: targetPosition.position.map(roundCoord),
+        visualPositionSource: targetPosition.source,
         referenceSource: target.source,
+        stale: Boolean(target.stale),
+        staleAgeMs,
         screen: targetScreen
           ? {
               x: roundCoord(targetScreen.x),
               y: roundCoord(targetScreen.y),
+            }
+          : null,
+        canvas: targetCanvas
+          ? {
+              x: roundCoord(targetCanvas.x),
+              y: roundCoord(targetCanvas.y),
+              source: targetCanvas.source,
             }
           : null,
       },
@@ -5284,6 +12103,986 @@
       distance: null,
       distance3d: null,
       units: "world",
+    };
+  }
+
+  function rememberTargetDistanceEntity(target, targetPosition, targetCombatPosition) {
+    if (!target || !isRuntimeObject(target.entity)) return null;
+
+    if (target.stale && target.snapshot) return target.snapshot;
+
+    const snapshot = createTargetDistanceSnapshot(target.entity, target.path, target.source, targetPosition, targetCombatPosition);
+    if (!snapshot) return null;
+
+    TARGET_DISTANCE_STATE.lastSelectedTarget = snapshot;
+    if (isSameTargetDistanceSnapshot(TARGET_DISTANCE_STATE.lockedTarget, snapshot)) {
+      TARGET_DISTANCE_STATE.lockedTarget = {
+        ...snapshot,
+        lockedAt: TARGET_DISTANCE_STATE.lockedTarget.lockedAt || Date.now(),
+        locked: true,
+      };
+    }
+    return snapshot;
+  }
+
+  function createTargetDistanceSnapshot(entity, path, source, worldPosition, combatPosition) {
+    const visual = worldPosition || getRuntimeWorldPosition(entity);
+    const combat = combatPosition || getRuntimeCombatPosition(entity) || visual;
+    if (!visual || !combat) return null;
+
+    const id = getRuntimeEntityId(entity);
+    const name = getRuntimeEntityLabel(entity);
+    const rawSize = safeReadValue(entity, "size");
+    const rawRadius = safeReadValue(entity, "radius");
+    const size = Number(rawSize);
+    const radius = Number(rawRadius);
+
+    return {
+      id: id !== undefined ? String(id) : "",
+      name,
+      path: path || "",
+      source: source || path || "",
+      position: combat.position.slice(0, 3),
+      positionSource: combat.source,
+      visualPosition: visual.position.slice(0, 3),
+      visualPositionSource: visual.source,
+      size: rawSize !== null && rawSize !== undefined && Number.isFinite(size) ? size : null,
+      radius: rawRadius !== null && rawRadius !== undefined && Number.isFinite(radius) ? radius : null,
+      savedAt: Date.now(),
+    };
+  }
+
+  function createTargetEntityFromSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.position) || snapshot.position.length < 3) return null;
+
+    return {
+      id: snapshot.id || undefined,
+      name: snapshot.name || "target",
+      pos: snapshot.position.slice(0, 3),
+      position: snapshot.position.slice(0, 3),
+      visualPosition: Array.isArray(snapshot.visualPosition)
+        ? snapshot.visualPosition.slice(0, 3)
+        : snapshot.position.slice(0, 3),
+      size: snapshot.size,
+      radius: snapshot.radius,
+      __hordesKrTargetSnapshot: true,
+    };
+  }
+
+  function createTargetIdSnapshot(id, name, source) {
+    const normalizedId = normalizeRuntimeEntityId(id);
+    if (!normalizedId) return null;
+
+    const normalizedName = normalizeHighlightName(name);
+    return {
+      id: normalizedId,
+      name: normalizedName || `id:${normalizedId}`,
+      path: "",
+      source: source || "targetId",
+      position: null,
+      positionSource: "",
+      visualPosition: null,
+      visualPositionSource: "",
+      size: null,
+      radius: null,
+      idOnly: true,
+      savedAt: Date.now(),
+    };
+  }
+
+  function findLockedTargetEntity(runtime, selfEntity) {
+    const locked = TARGET_DISTANCE_STATE.lockedTarget;
+    if (!locked) return null;
+
+    const live = findLiveTargetFromSnapshot(runtime, locked, selfEntity);
+    if (live) return { ...live, source: "lockedTarget", locked: true };
+
+    return createTrackedTargetFromSnapshot(locked, "lockedTarget:lastKnown", true);
+  }
+
+  function findTrackedTargetEntity(runtime, selfEntity) {
+    const selectedId = getSelectedTargetId(runtime, selfEntity);
+    if (selectedId && selectedId.id !== "") {
+      const byId = findRuntimeEntityById(runtime, selectedId.id, selfEntity);
+      if (byId) return { ...byId, source: selectedId.source };
+
+      const selectedSnapshot = getMatchingTargetSnapshot(selectedId.id, "");
+      if (selectedSnapshot) {
+        return createTrackedTargetFromSnapshot(selectedSnapshot, `${selectedId.source}:lastKnown`, false);
+      }
+    }
+
+    const locked = TARGET_DISTANCE_STATE.lockedTarget;
+    if (!locked) return null;
+
+    const liveLocked = findLiveTargetFromSnapshot(runtime, locked, selfEntity);
+    if (liveLocked) return { ...liveLocked, source: "lockedTarget", locked: true };
+
+    return createTrackedTargetFromSnapshot(locked, "lockedTarget:lastKnown", true);
+  }
+
+  function createTrackedTargetFromSnapshot(snapshot, source, locked) {
+    const entity = createTargetEntityFromSnapshot(snapshot);
+    if (!entity) return null;
+
+    return {
+      entity,
+      path: source,
+      source,
+      stale: true,
+      locked: Boolean(locked),
+      snapshot,
+    };
+  }
+
+  function getMatchingTargetSnapshot(id, name) {
+    const snapshots = [TARGET_DISTANCE_STATE.lastSelectedTarget, TARGET_DISTANCE_STATE.lockedTarget].filter(Boolean);
+    return snapshots.find((snapshot) => isTargetSnapshotMatch(snapshot, id, name)) || null;
+  }
+
+  function isTargetSnapshotMatch(snapshot, id, name) {
+    if (!snapshot) return false;
+
+    const expectedId = id !== null && id !== undefined && id !== "" ? String(id) : "";
+    if (expectedId && snapshot.id && snapshot.id === expectedId) return true;
+
+    const expectedName = normalizeHighlightName(name).toLowerCase();
+    return Boolean(expectedName && snapshot.name && snapshot.name.toLowerCase() === expectedName);
+  }
+
+  function isSameTargetDistanceSnapshot(left, right) {
+    if (!left || !right) return false;
+    if (left.id && right.id && left.id === right.id) return true;
+    return Boolean(left.name && right.name && left.name.toLowerCase() === right.name.toLowerCase());
+  }
+
+  function findLiveTargetFromSnapshot(runtime, snapshot, selfEntity) {
+    if (!snapshot) return null;
+
+    if (snapshot.id) {
+      const byId = findRuntimeEntityById(runtime, snapshot.id, selfEntity);
+      if (byId) return byId;
+    }
+
+    if (snapshot.name) {
+      return findRuntimeEntityByExactName(runtime, snapshot.name, selfEntity);
+    }
+
+    return null;
+  }
+
+  function lockCurrentTargetDistance() {
+    const selected = getSelectedTargetIdStatus();
+    if (selected.id) {
+      const lockedById = lockTargetDistanceById(
+        selected.id,
+        selected.name || (TARGET_DISTANCE_STATE.lastSelectedTarget && TARGET_DISTANCE_STATE.lastSelectedTarget.name) || "",
+        selected.source || "selectedTargetId"
+      );
+      return {
+        ...lockedById,
+        selectedTarget: selected,
+      };
+    }
+
+    const result = getTargetDistance(true);
+    const snapshot = TARGET_DISTANCE_STATE.lastSelectedTarget;
+    if (!result.available || !snapshot || !snapshot.id) {
+      return {
+        ok: false,
+        reason: result.reason || "현재 타겟 id를 찾지 못했습니다.",
+        selectedTarget: selected,
+        ...getTargetDistanceLockStatus(),
+      };
+    }
+
+    return lockTargetDistanceById(snapshot.id, snapshot.name, snapshot.source || "lastSelected");
+  }
+
+  function lockTargetDistanceByName(name) {
+    const normalized = normalizeHighlightName(name);
+    if (!normalized) {
+      return {
+        ok: false,
+        reason: "이름이 비어 있습니다.",
+        ...getTargetDistanceLockStatus(),
+      };
+    }
+
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const live = runtime ? findRuntimeEntityByExactName(runtime, normalized, self && self.entity) : null;
+    if (live) {
+      const worldPosition = getRuntimeWorldPosition(live.entity);
+      const combatPosition = getRuntimeCombatPosition(live.entity) || worldPosition;
+      const snapshot = createTargetDistanceSnapshot(live.entity, live.path, `lockName:${normalized}`, worldPosition, combatPosition);
+      if (snapshot) {
+        TARGET_DISTANCE_STATE.lockedTarget = {
+          ...snapshot,
+          lockedAt: Date.now(),
+          locked: true,
+        };
+        TARGET_DISTANCE_STATE.lastAt = 0;
+        return {
+          ok: true,
+          ...getTargetDistanceLockStatus(),
+        };
+      }
+    }
+
+    const selected = getSelectedTargetIdStatus();
+    if (selected.id) {
+      const selectedSnapshot = getMatchingTargetSnapshot(selected.id, normalized);
+      return lockTargetDistanceById(
+        selected.id,
+        (selectedSnapshot && selectedSnapshot.name) || selected.name || normalized,
+        `selectedTargetId:${normalized}`
+      );
+    }
+
+    const snapshot = getMatchingTargetSnapshot("", normalized);
+    if (snapshot) {
+      if (snapshot.id) {
+        return lockTargetDistanceById(snapshot.id, snapshot.name || normalized, `lastSnapshot:${normalized}`);
+      }
+
+      TARGET_DISTANCE_STATE.lockedTarget = {
+        ...snapshot,
+        name: snapshot.name || normalized,
+        source: `lastSnapshot:${normalized}`,
+        lockedAt: Date.now(),
+        locked: true,
+      };
+      TARGET_DISTANCE_STATE.lastAt = 0;
+      TARGET_DISTANCE_STATE.lastResult = null;
+      return {
+        ok: true,
+        stale: true,
+        ...getTargetDistanceLockStatus(),
+      };
+    }
+
+    return {
+      ok: false,
+      reason: `"${normalized}" 엔티티를 현재 런타임에서 찾지 못했습니다.`,
+      ...getTargetDistanceLockStatus(),
+    };
+  }
+
+  function lockTargetDistanceById(rawId, name, source) {
+    const id = normalizeRuntimeEntityId(rawId);
+    if (!id) {
+      return {
+        ok: false,
+        reason: "타겟 id가 비어 있습니다.",
+        ...getTargetDistanceLockStatus(),
+      };
+    }
+
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const live = runtime ? findRuntimeEntityById(runtime, id, self && self.entity) : null;
+    let snapshot = null;
+
+    if (live) {
+      const worldPosition = getRuntimeWorldPosition(live.entity);
+      const combatPosition = getRuntimeCombatPosition(live.entity) || worldPosition;
+      snapshot = createTargetDistanceSnapshot(live.entity, live.path, source || `targetId:${id}`, worldPosition, combatPosition);
+    }
+
+    if (!snapshot) {
+      const existing = getMatchingTargetSnapshot(id, name);
+      if (existing) {
+        snapshot = {
+          ...existing,
+          id,
+          name: existing.name || normalizeHighlightName(name) || `id:${id}`,
+          source: source || existing.source || `targetId:${id}`,
+          savedAt: existing.savedAt || Date.now(),
+        };
+      }
+    }
+
+    if (!snapshot) {
+      snapshot = createTargetIdSnapshot(id, name, source || `targetId:${id}`);
+    }
+
+    TARGET_DISTANCE_STATE.lockedTarget = {
+      ...snapshot,
+      id,
+      lockedAt: Date.now(),
+      locked: true,
+    };
+    TARGET_DISTANCE_STATE.lastAt = 0;
+    TARGET_DISTANCE_STATE.lastResult = null;
+
+    return {
+      ok: true,
+      resolved: Boolean(live),
+      idOnly: Boolean(snapshot.idOnly || !Array.isArray(snapshot.position)),
+      ...getTargetDistanceLockStatus(),
+    };
+  }
+
+  function targetRuntimeEntityById(rawId, name, source) {
+    const id = normalizeRuntimeEntityId(rawId);
+    if (!id) {
+      return {
+        ok: false,
+        reason: "타겟 id가 비어 있습니다.",
+      };
+    }
+
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const live = runtime ? findRuntimeEntityById(runtime, id, self && self.entity) : null;
+    const targetName = live ? getRuntimeEntityLabel(live.entity) : normalizeHighlightName(name);
+    TARGET_DISTANCE_STATE.lockedTarget = null;
+
+    const controllerSelection = live && self
+      ? applyRuntimeTargetController(runtime, self.entity, id)
+      : {
+          ok: false,
+          reason: live ? "내 캐릭터 객체를 찾지 못했습니다." : "현재 런타임에서 해당 id 엔티티를 찾지 못했습니다.",
+          attempts: [],
+        };
+    let actualSelection = getActualRuntimeTargetSelection(runtime, self && self.entity, id);
+
+    const clickSelection = actualSelection.selected
+      ? {
+          ok: false,
+          skipped: true,
+          reason: "클라이언트 타겟 함수로 이미 선택했습니다.",
+        }
+      : live
+      ? dispatchRuntimeTargetClick(runtime, live.entity)
+      : {
+          ok: false,
+          reason: "현재 런타임에서 해당 id 엔티티를 찾지 못했습니다.",
+        };
+    if (!actualSelection.selected && clickSelection.ok) {
+      actualSelection = getActualRuntimeTargetSelection(runtime, self && self.entity, id);
+    }
+
+    const propertySelection = actualSelection.selected
+      ? {
+          ok: false,
+          skipped: true,
+          reason: "이미 선택된 타겟입니다.",
+          attempts: [],
+        }
+      : live && self
+      ? applyRuntimeTargetSelection(runtime, self.entity, live.entity, id)
+      : {
+          ok: false,
+          reason: live ? "내 캐릭터 객체를 찾지 못했습니다." : "현재 런타임에서 해당 id 엔티티를 찾지 못했습니다.",
+          attempts: [],
+        };
+    if (!actualSelection.selected && propertySelection.ok) {
+      actualSelection = getActualRuntimeTargetSelection(runtime, self && self.entity, id);
+    }
+
+    const selected = Boolean(actualSelection.selected);
+
+    TARGET_DISTANCE_STATE.lastAt = 0;
+    TARGET_DISTANCE_STATE.lastResult = null;
+    if (selected) getTargetDistance(true);
+
+    const result = {
+      ok: selected,
+      id,
+      name: targetName,
+      resolved: Boolean(live),
+      selected,
+      actualSelection,
+      selection: {
+        controller: controllerSelection,
+        click: clickSelection,
+        property: propertySelection,
+      },
+    };
+
+    setStatus({
+      lastState: selected ? `타겟 ON: ${targetName || id}` : `타겟 실패: ${targetName || id}`,
+      lastError: selected
+        ? ""
+        : (actualSelection.reason || controllerSelection.reason || clickSelection.reason || propertySelection.reason || "실제 게임 타겟으로 지정하지 못했습니다."),
+    });
+    return result;
+  }
+
+  function getActualRuntimeTargetSelection(runtime, selfEntity, expectedId) {
+    const expected = normalizeRuntimeEntityId(expectedId);
+    if (!runtime || !selfEntity) {
+      return {
+        selected: false,
+        id: "",
+        reason: "런타임 또는 내 캐릭터 객체를 찾지 못했습니다.",
+      };
+    }
+
+    const selected = getSelectedTargetId(runtime, selfEntity);
+    const selectedId = selected && selected.id ? String(selected.id) : "";
+    return {
+      selected: Boolean(expected && selectedId === expected),
+      id: selectedId,
+      source: selected ? selected.source : "",
+      reason: selectedId ? "" : "현재 선택된 타겟 id가 없습니다.",
+    };
+  }
+
+  function clearRuntimeTargetSelection() {
+    const runtime = getExposedRuntime();
+    const self = runtime ? findLocalPlayerEntity(runtime) : null;
+    const attempts = [];
+
+    if (runtime && self && self.entity) {
+      tryCallRuntimeTargetController(runtime, self.entity, "0", attempts);
+    }
+
+    if (self && self.entity) {
+      tryCallRuntimeTargetMethods(self.entity, null, "0", "self", attempts);
+      tryAssignRuntimeTargetValue(self.entity, "target", 0, "self.target", attempts);
+    }
+
+    TARGET_DISTANCE_STATE.lockedTarget = null;
+    TARGET_DISTANCE_STATE.lastAt = 0;
+    TARGET_DISTANCE_STATE.lastResult = null;
+    clearTargetDistanceOverlay();
+
+    const selected = runtime && self ? getSelectedTargetId(runtime, self.entity) : null;
+    const ok = !selected || !selected.id;
+    setStatus({
+      lastState: ok ? "타겟 OFF" : "타겟 해제 실패",
+      lastError: ok ? "" : `현재 타겟 id ${selected.id}`,
+    });
+
+    return {
+      ok,
+      attempts,
+      selectedTarget: selected || null,
+    };
+  }
+
+  function dispatchRuntimeTargetClick(runtime, targetEntity) {
+    const canvas = getRuntimeInputCanvas(runtime);
+    if (!canvas) {
+      return {
+        ok: false,
+        reason: "입력 캔버스를 찾지 못했습니다.",
+      };
+    }
+
+    const point = getRuntimeEntityTargetClickPoint(runtime, targetEntity);
+    if (!point) {
+      return {
+        ok: false,
+        reason: "대상 화면 좌표를 계산하지 못했습니다.",
+      };
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (!isPointInsideRect(point, rect)) {
+      return {
+        ok: false,
+        reason: "대상이 현재 화면 밖에 있습니다.",
+        point: summarizeScreenPoint(point),
+      };
+    }
+
+    try {
+      if (typeof canvas.focus === "function") canvas.focus({ preventScroll: true });
+    } catch {
+      // Canvas focus is only a convenience for games that track active input.
+    }
+
+    const ok = dispatchCanvasMouseSequence(canvas, point);
+    return {
+      ok,
+      reason: ok ? "" : "캔버스 클릭 이벤트 전송 실패",
+      point: summarizeScreenPoint(point),
+      canvas: getElementSelector(canvas),
+    };
+  }
+
+  function getRuntimeInputCanvas(runtime) {
+    const canvases = [
+      runtime && runtime.overlayCanvas,
+      runtime && runtime.webglCanvas,
+      ...Array.from(document.querySelectorAll("canvas")),
+    ].filter(isVisibleCanvasElement);
+
+    if (canvases.length === 0) return null;
+    return canvases
+      .map((canvas) => ({ canvas, rect: canvas.getBoundingClientRect() }))
+      .sort((left, right) => (right.rect.width * right.rect.height) - (left.rect.width * left.rect.height))[0].canvas;
+  }
+
+  function getRuntimeEntityTargetClickPoint(runtime, entity) {
+    const combat = getRuntimeCombatPosition(entity) || getRuntimeWorldPosition(entity);
+    if (!combat) return null;
+
+    const base = combat.position.slice(0, 3);
+    const size = getRuntimeEntityCombatSize(entity);
+    const offsets = [
+      Math.max(0.75, Math.min(2.2, size * 0.75)),
+      Math.max(0.45, Math.min(1.5, size * 0.45)),
+      0.25,
+      getRuntimeEntityNameYOffset(entity) * 0.45,
+    ];
+
+    for (const offset of offsets) {
+      const point = projectRuntimePointToScreen([base[0], base[1] + offset, base[2]], runtime);
+      if (point && isFiniteScreenPoint(point)) return point;
+    }
+
+    return null;
+  }
+
+  function dispatchCanvasMouseSequence(canvas, point) {
+    const events = [
+      ["pointermove", { buttons: 0 }],
+      ["mousemove", { buttons: 0 }],
+      ["pointerdown", { buttons: 1 }],
+      ["mousedown", { buttons: 1 }],
+      ["pointerup", { buttons: 0 }],
+      ["mouseup", { buttons: 0 }],
+      ["click", { buttons: 0 }],
+    ];
+
+    let dispatched = 0;
+    for (const [type, options] of events) {
+      const event = createCanvasMouseEvent(type, canvas, point, options);
+      if (!event) continue;
+      canvas.dispatchEvent(event);
+      dispatched++;
+    }
+
+    return dispatched > 0;
+  }
+
+  function createCanvasMouseEvent(type, canvas, point, options = {}) {
+    const rect = canvas.getBoundingClientRect();
+    const offsetX = point.x - rect.left;
+    const offsetY = point.y - rect.top;
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: pageWindow,
+      clientX: point.x,
+      clientY: point.y,
+      screenX: Math.round((pageWindow.screenX || 0) + point.x),
+      screenY: Math.round((pageWindow.screenY || 0) + point.y),
+      button: 0,
+      buttons: options.buttons || 0,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+    };
+
+    const isPointer = type.startsWith("pointer") && typeof pageWindow.PointerEvent === "function";
+    const event = isPointer
+      ? new pageWindow.PointerEvent(type, {
+          ...init,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+          width: 1,
+          height: 1,
+          pressure: type === "pointerdown" ? 0.5 : 0,
+        })
+      : new pageWindow.MouseEvent(type, init);
+
+    defineSyntheticMouseOffset(event, offsetX, offsetY);
+    return event;
+  }
+
+  function defineSyntheticMouseOffset(event, offsetX, offsetY) {
+    const properties = {
+      offsetX,
+      offsetY,
+      layerX: offsetX,
+      layerY: offsetY,
+      x: event.clientX,
+      y: event.clientY,
+    };
+
+    for (const [key, value] of Object.entries(properties)) {
+      try {
+        Object.defineProperty(event, key, {
+          configurable: true,
+          get() {
+            return value;
+          },
+        });
+      } catch {
+        // Native event accessors may be non-configurable in some browsers.
+      }
+    }
+  }
+
+  function isPointInsideRect(point, rect) {
+    return (
+      point &&
+      rect &&
+      point.x >= rect.left &&
+      point.y >= rect.top &&
+      point.x <= rect.right &&
+      point.y <= rect.bottom
+    );
+  }
+
+  function isFiniteScreenPoint(point) {
+    return point && Number.isFinite(point.x) && Number.isFinite(point.y);
+  }
+
+  function summarizeScreenPoint(point) {
+    return point
+      ? {
+          x: roundCoord(point.x),
+          y: roundCoord(point.y),
+        }
+      : null;
+  }
+
+  function applyRuntimeTargetController(runtime, selfEntity, id) {
+    const attempts = [];
+    return {
+      ok: tryCallRuntimeTargetController(runtime, selfEntity, id, attempts),
+      attempts,
+      clientState: summarizeRuntimeTargetControllerState(getRuntimeTargetControllerState(runtime)),
+    };
+  }
+
+  function tryCallRuntimeTargetController(runtime, selfEntity, rawId, attempts) {
+    if (!isRuntimeObject(runtime)) {
+      attempts.push({
+        type: "client-controller",
+        path: "runtime",
+        ok: false,
+        reason: "런타임을 찾지 못했습니다.",
+      });
+      return false;
+    }
+
+    const idText = rawId === 0 ? "0" : String(rawId ?? "");
+    const normalizedId = idText === "0" ? "0" : normalizeRuntimeEntityId(idText);
+    if (!normalizedId) {
+      attempts.push({
+        type: "client-controller",
+        path: "runtime.changeTarget",
+        ok: false,
+        reason: "타겟 id가 비어 있습니다.",
+      });
+      return false;
+    }
+
+    const numericId = Number(normalizedId);
+    const targetArgument = Number.isFinite(numericId) ? numericId : normalizedId;
+    const expectedId = normalizedId === "0" ? "" : normalizedId;
+    const calls = [
+      {
+        kind: "hover",
+        path: "runtime.setHoverTarget",
+        fn: safeReadValue(runtime, "setHoverTarget"),
+        args: [targetArgument, normalizedId !== "0"],
+      },
+      {
+        kind: "target",
+        path: "runtime.changeTarget",
+        fn: safeReadValue(runtime, "changeTarget"),
+        args: [targetArgument],
+      },
+    ];
+
+    let sawController = false;
+    let targetOk = false;
+
+    for (const call of calls) {
+      if (typeof call.fn !== "function") continue;
+      sawController = true;
+
+      try {
+        const returnValue = call.fn(...call.args);
+        const clientState = getRuntimeTargetControllerState(runtime);
+        const selected = selfEntity ? getSelectedTargetId(runtime, selfEntity) : null;
+        const currentTargetId = selected && selected.id
+          ? selected.id
+          : normalizeRuntimeEntityId(clientState && clientState.target);
+        const ok = call.kind === "hover"
+          ? isRuntimeTargetControllerValueMatch(clientState && clientState.hover, normalizedId)
+          : expectedId
+            ? currentTargetId === expectedId || isRuntimeTargetControllerValueMatch(clientState && clientState.target, normalizedId)
+            : !currentTargetId || isRuntimeTargetControllerValueMatch(clientState && clientState.target, "0");
+
+        attempts.push({
+          type: "client-controller",
+          path: call.path,
+          argument: call.args.map(formatRuntimeTargetControllerArgument).join(","),
+          ok,
+          returnValue: typeof returnValue === "boolean" ? returnValue : undefined,
+          currentTargetId,
+          clientState: summarizeRuntimeTargetControllerState(clientState),
+        });
+
+        if (call.kind === "target" && ok) targetOk = true;
+      } catch (error) {
+        attempts.push({
+          type: "client-controller",
+          path: call.path,
+          argument: call.args.map(formatRuntimeTargetControllerArgument).join(","),
+          ok: false,
+          error: error && error.message ? error.message : String(error),
+        });
+      }
+    }
+
+    if (!sawController) {
+      attempts.push({
+        type: "client-controller",
+        path: "runtime.changeTarget",
+        ok: false,
+        reason: "클라이언트 타겟 함수가 아직 노출되지 않았습니다.",
+      });
+    }
+
+    return targetOk;
+  }
+
+  function getRuntimeTargetControllerState(runtime) {
+    if (!isRuntimeObject(runtime)) return null;
+
+    const getter = safeReadValue(runtime, "getClientTargetState");
+    if (typeof getter !== "function") return null;
+
+    try {
+      return getter();
+    } catch {
+      return null;
+    }
+  }
+
+  function summarizeRuntimeTargetControllerState(state) {
+    if (!isRuntimeObject(state)) return null;
+
+    return {
+      hover: normalizeRuntimeEntityId(state.hover),
+      target: normalizeRuntimeEntityId(state.target),
+      lastCandidate: normalizeRuntimeEntityId(state.lastCandidate),
+      hoverActive: Boolean(state.hoverActive),
+    };
+  }
+
+  function isRuntimeTargetControllerValueMatch(value, normalizedId) {
+    if (normalizedId === "0") {
+      return value === 0 || value === "0" || normalizeRuntimeEntityId(value) === "";
+    }
+
+    return normalizeRuntimeEntityId(value) === normalizedId;
+  }
+
+  function formatRuntimeTargetControllerArgument(value) {
+    if (typeof value === "boolean") return value ? "true" : "false";
+    if (typeof value === "number" || typeof value === "string") return String(value);
+    return typeof value;
+  }
+
+  function applyRuntimeTargetSelection(runtime, selfEntity, targetEntity, id) {
+    const attempts = [];
+    const normalizedId = normalizeRuntimeEntityId(id);
+    const roots = [
+      { value: selfEntity, path: "self" },
+      { value: runtime, path: "runtime" },
+      { value: runtime && safeReadValue(runtime, "engine"), path: "runtime.engine" },
+    ].filter((root) => isRuntimeObject(root.value));
+
+    const objectKeys = ["target", "targetUnit", "targetEntity", "selectedTarget", "selectedEntity", "currentTarget", "focusTarget", "enemyTarget"];
+    const idKeys = ["targetId", "targetUnitId", "targetEntityId", "selectedTargetId", "selectedEntityId", "currentTargetId", "focusTargetId", "enemyTargetId"];
+
+    for (const root of roots) {
+      tryCallRuntimeTargetMethods(root.value, targetEntity, normalizedId, root.path, attempts);
+
+      for (const key of idKeys) {
+        const idValue = coerceRuntimeTargetIdValue(root.value, key, normalizedId);
+        tryAssignRuntimeTargetValue(root.value, key, idValue, `${root.path}.${key}`, attempts);
+      }
+
+      for (const key of objectKeys) {
+        const current = safeReadValue(root.value, key);
+        if (!isRuntimeObject(current)) continue;
+        tryAssignRuntimeTargetValue(root.value, key, targetEntity, `${root.path}.${key}`, attempts);
+      }
+    }
+
+    return {
+      ok: attempts.some((attempt) => attempt.ok),
+      attempts,
+    };
+  }
+
+  function tryAssignRuntimeTargetValue(container, key, value, path, attempts) {
+    if (!isRuntimeObject(container)) return false;
+
+    try {
+      if (!(key in container)) return false;
+    } catch {
+      return false;
+    }
+
+    try {
+      container[key] = value;
+      const current = safeReadValue(container, key);
+      const ok = current === value || normalizeRuntimeEntityId(current) === normalizeRuntimeEntityId(value);
+      attempts.push({
+        type: "assign",
+        path,
+        ok,
+      });
+      return ok;
+    } catch (error) {
+      attempts.push({
+        type: "assign",
+        path,
+        ok: false,
+        error: error && error.message ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  function coerceRuntimeTargetIdValue(container, key, normalizedId) {
+    const current = safeReadValue(container, key);
+    if (typeof current === "number") {
+      const number = Number(normalizedId);
+      return Number.isFinite(number) ? number : normalizedId;
+    }
+    return normalizedId;
+  }
+
+  function tryCallRuntimeTargetMethods(container, targetEntity, normalizedId, path, attempts) {
+    const methods = ["setTarget", "selectTarget", "setSelectedTarget", "setCurrentTarget", "focusTarget"];
+    const numericId = Number(normalizedId);
+    const args = [];
+    if (Number.isFinite(numericId)) args.push(numericId);
+    args.push(normalizedId, targetEntity);
+
+    for (const method of methods) {
+      const fn = safeReadValue(container, method);
+      if (typeof fn !== "function") continue;
+
+      for (const value of args.filter((item) => item !== null && item !== undefined && item !== "")) {
+        try {
+          const returnValue = fn.call(container, value);
+          const currentTargetId = getRuntimeTargetIdFromContainer(container);
+          const ok = returnValue === true || currentTargetId === normalizedId;
+          attempts.push({
+            type: "method",
+            path: `${path}.${method}`,
+            argument: typeof value === "object" ? "entity" : String(value),
+            ok,
+            returnValue: typeof returnValue === "boolean" ? returnValue : undefined,
+            currentTargetId,
+          });
+          if (ok) break;
+        } catch (error) {
+          attempts.push({
+            type: "method",
+            path: `${path}.${method}`,
+            argument: typeof value === "object" ? "entity" : String(value),
+            ok: false,
+            error: error && error.message ? error.message : String(error),
+          });
+        }
+      }
+    }
+  }
+
+  function getRuntimeTargetIdFromContainer(container) {
+    if (!isRuntimeObject(container)) return "";
+
+    for (const key of ["target", "targetId", "targetUnitId", "targetEntityId", "selectedTargetId", "currentTargetId", "focusTargetId", "enemyTargetId"]) {
+      const id = normalizeRuntimeEntityId(safeReadValue(container, key));
+      if (id) return id;
+    }
+
+    return "";
+  }
+
+  function unlockTargetDistance() {
+    TARGET_DISTANCE_STATE.lockedTarget = null;
+    TARGET_DISTANCE_STATE.lastAt = 0;
+    TARGET_DISTANCE_STATE.lastResult = null;
+    return getTargetDistanceLockStatus();
+  }
+
+  function getSelectedTargetIdStatus() {
+    const runtime = getExposedRuntime();
+    if (!runtime) {
+      return {
+        id: "",
+        source: "",
+        resolved: false,
+        reason: "런타임을 찾지 못했습니다.",
+      };
+    }
+
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) {
+      return {
+        id: "",
+        source: "",
+        resolved: false,
+        reason: "내 캐릭터 객체를 찾지 못했습니다.",
+      };
+    }
+
+    const selected = getSelectedTargetId(runtime, self.entity);
+    if (!selected || !selected.id) {
+      return {
+        id: "",
+        source: "",
+        resolved: false,
+        reason: "현재 선택된 타겟 id가 없습니다.",
+      };
+    }
+
+    const live = findRuntimeEntityById(runtime, selected.id, self.entity);
+    const livePosition = live ? getRuntimeWorldPosition(live.entity) : null;
+    return {
+      id: selected.id,
+      source: selected.source,
+      resolved: Boolean(live),
+      name: live ? getRuntimeEntityLabel(live.entity) : "",
+      path: live ? live.path : "",
+      position: livePosition ? livePosition.position.map(roundCoord) : null,
+    };
+  }
+
+  function getTargetDistanceLockStatus() {
+    const last = TARGET_DISTANCE_STATE.lastSelectedTarget;
+    const locked = TARGET_DISTANCE_STATE.lockedTarget;
+    return {
+      selectedTarget: getSelectedTargetIdStatus(),
+      locked: summarizeTargetDistanceSnapshot(locked),
+      lastSelected: summarizeTargetDistanceSnapshot(last),
+    };
+  }
+
+  function summarizeTargetDistanceSnapshot(snapshot) {
+    if (!snapshot) return null;
+
+    return {
+      id: snapshot.id || "",
+      name: snapshot.name || "",
+      source: snapshot.source || "",
+      idOnly: Boolean(snapshot.idOnly || !Array.isArray(snapshot.position)),
+      position: Array.isArray(snapshot.position) ? snapshot.position.map(roundCoord) : null,
+      visualPosition: Array.isArray(snapshot.visualPosition) ? snapshot.visualPosition.map(roundCoord) : null,
+      savedAt: snapshot.savedAt ? new Date(snapshot.savedAt).toISOString() : null,
+      ageMs: snapshot.savedAt ? Date.now() - snapshot.savedAt : null,
+      lockedAt: snapshot.lockedAt ? new Date(snapshot.lockedAt).toISOString() : null,
     };
   }
 
@@ -5324,6 +13123,55 @@
     }
 
     return findBestRuntimeEntity(runtime, (value, path) => scoreSelectedTargetEntity(value, path, selfEntity));
+  }
+
+  function getSelectedTargetId(runtime, selfEntity) {
+    const targetKeys = [
+      "target",
+      "targetId",
+      "targetUnitId",
+      "targetEntityId",
+      "selectedTarget",
+      "selectedTargetId",
+      "selectedEntity",
+      "selectedEntityId",
+      "currentTarget",
+      "currentTargetId",
+      "attackTarget",
+      "attackTargetId",
+      "focusTarget",
+      "focusTargetId",
+      "enemyTarget",
+      "enemyTargetId",
+    ];
+    const roots = [
+      { value: selfEntity, path: "self" },
+      ...getRuntimeSearchRoots(runtime),
+    ];
+
+    for (const root of roots) {
+      if (!isRuntimeObject(root.value)) continue;
+
+      for (const key of targetKeys) {
+        const raw = safeReadValue(root.value, key);
+        const id = normalizeRuntimeEntityId(raw);
+        if (id !== "") return { id, source: `${root.path}.${key}` };
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeRuntimeEntityId(value) {
+    if (value === null || value === undefined || value === "" || value === false || value === 0 || value === "0") return "";
+
+    if (isRuntimeObject(value)) {
+      const id = getRuntimeEntityId(value);
+      const normalized = id !== undefined && id !== null && id !== "" ? String(id) : "";
+      return normalized === "0" ? "" : normalized;
+    }
+
+    return String(value);
   }
 
   function resolveFirstRuntimeEntityFromKeys(container, runtime, keys, path, selfEntity) {
@@ -5377,6 +13225,9 @@
     if (id === null || id === undefined || id === "") return null;
 
     const expected = String(id);
+    const direct = findRuntimeEntityByIdDirect(runtime, id, expected, selfEntity);
+    if (direct) return direct;
+
     return findBestRuntimeEntity(runtime, (value) => {
       if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
 
@@ -5385,23 +13236,107 @@
     });
   }
 
+  function findRuntimeEntityByIdDirect(runtime, rawId, expected, selfEntity) {
+    if (!runtime || expected === "") return null;
+
+    const engine = safeReadValue(runtime, "engine");
+    const methodArgs = [...new Set([rawId, expected, Number(expected)].filter((value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value))))];
+    for (const method of ["getEntityById", "getEntity", "entity"]) {
+      const fn = safeReadValue(engine, method);
+      if (typeof fn !== "function") continue;
+
+      for (const methodArg of methodArgs) {
+        try {
+          const entity = fn.call(engine, methodArg);
+          if (isResolvedRuntimeEntity(entity, selfEntity, expected)) {
+            return { entity, path: `runtime.engine.${method}(${expected})`, source: `runtime.engine.${method}` };
+          }
+        } catch {
+          // Some engine accessors throw for missing IDs.
+        }
+      }
+    }
+
+    const entities = safeReadValue(engine, "entities");
+    const entityArray = safeReadValue(entities, "array");
+    const byArray = findRuntimeEntityInIndexedCollection(entityArray, expected, selfEntity, "runtime.engine.entities.array");
+    if (byArray) return byArray;
+
+    for (const key of ["list", "items", "values", "players", "mobs", "units", "actors", "objects"]) {
+      const collection = safeReadValue(entities, key) || safeReadValue(engine, key);
+      const found = findRuntimeEntityInIndexedCollection(collection, expected, selfEntity, `runtime.engine.${key}`);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  function findRuntimeEntityInIndexedCollection(collection, expected, selfEntity, path) {
+    if (!collection) return null;
+
+    if (Array.isArray(collection) || ArrayBuffer.isView(collection)) {
+      const length = Number(collection.length) || 0;
+      for (let index = 0; index < length; index++) {
+        const entity = collection[index];
+        if (isResolvedRuntimeEntity(entity, selfEntity, expected)) {
+          return { entity, path: `${path}[${index}]`, source: path };
+        }
+      }
+      return null;
+    }
+
+    if (collection instanceof Map || collection instanceof Set) {
+      let index = 0;
+      for (const entity of collection.values()) {
+        if (isResolvedRuntimeEntity(entity, selfEntity, expected)) {
+          return { entity, path: `${path}.${collection instanceof Map ? "map" : "set"}[${index}]`, source: path };
+        }
+        index++;
+      }
+    }
+
+    return null;
+  }
+
+  function isResolvedRuntimeEntity(entity, selfEntity, expected) {
+    if (!isRuntimeObject(entity) || isSameRuntimeEntity(entity, selfEntity) || !getRuntimeWorldPosition(entity)) return false;
+
+    const actual = getRuntimeEntityId(entity);
+    return actual !== undefined && String(actual) === expected;
+  }
+
   function findRuntimeEntityByConfiguredHighlightNames(runtime) {
-    const names = HIGHLIGHT_CONFIG.names
-      .map(normalizeHighlightName)
-      .filter(Boolean)
-      .map((name) => name.toLowerCase());
-    if (names.length === 0) return null;
+    const { lowerNames } = getHighlightNameCache();
+    if (lowerNames.length === 0) return null;
 
     return findBestRuntimeEntity(runtime, (value, path) => {
       if (!getRuntimeWorldPosition(value)) return 0;
 
       const name = getRuntimeNameValueLoose(value).toLowerCase();
-      if (!name || !names.includes(name)) return 0;
+      if (!name || !lowerNames.includes(name)) return 0;
 
       let score = 145;
       if (/(\.|^)player$/i.test(path)) score += 50;
       if (/local|myPlayer|self|controlled|character|hero|avatar/i.test(path)) score += 40;
       if (safeReadValue(value, "isSelf") === true || safeReadValue(value, "isLocal") === true) score += 80;
+      if (getRuntimeEntityId(value) !== undefined) score += 8;
+      return score;
+    });
+  }
+
+  function findRuntimeEntityByExactName(runtime, name, selfEntity) {
+    const expected = normalizeHighlightName(name).toLowerCase();
+    if (!expected) return null;
+
+    return findBestRuntimeEntity(runtime, (value, path) => {
+      if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+
+      const actual = getRuntimeNameValueLoose(value).toLowerCase();
+      if (actual !== expected) return 0;
+
+      let score = 120;
+      if (/target|selected|focus/i.test(path)) score += 40;
+      if (/entities|players|mobs|units|actors/i.test(path)) score += 15;
       if (getRuntimeEntityId(value) !== undefined) score += 8;
       return score;
     });
@@ -5488,6 +13423,133 @@
     return getRuntimeNameValueLoose(entity) || String(getRuntimeEntityId(entity) ?? "unknown");
   }
 
+  function getRuntimeEntityClassId(entity) {
+    const directKeys = ["class", "classId", "classid", "classType", "characterClass", "playerClass", "job", "profession"];
+    for (const key of directKeys) {
+      const id = normalizeRuntimeClassId(safeReadValue(entity, key));
+      if (id !== null) return id;
+    }
+
+    for (const key of ["data", "info", "character", "profile", "stats"]) {
+      const nested = safeReadValue(entity, key);
+      if (!isRuntimeObject(nested)) continue;
+
+      for (const nestedKey of directKeys) {
+        const id = normalizeRuntimeClassId(safeReadValue(nested, nestedKey));
+        if (id !== null) return id;
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeRuntimeClassId(value) {
+    if (value === null || value === undefined || value === "") return null;
+
+    if (isRuntimeObject(value)) {
+      for (const key of ["id", "classId", "classid", "value"]) {
+        const id = normalizeRuntimeClassId(safeReadValue(value, key));
+        if (id !== null) return id;
+      }
+      return null;
+    }
+
+    const number = Number(value);
+    if (!Number.isInteger(number) || number < 0 || number > 8) return null;
+    return number;
+  }
+
+  function getRuntimeEntityClassIconUrl(entity) {
+    const classId = getRuntimeEntityClassId(entity);
+    if (classId === null) return "";
+
+    const version = getGameAssetVersion();
+    return `/data/ui/classes/${classId}.avif${version ? `?v=${version}` : ""}`;
+  }
+
+  function getRuntimeEntityHealthInfo(entity) {
+    const stats = safeReadValue(entity, "stats");
+    const currentFromMap = readRuntimeMapNumber(safeReadValue(stats, "resource"), 6);
+    const maxFromMap = readRuntimeMapNumber(safeReadValue(stats, "stat"), 6);
+    const current = Number.isFinite(currentFromMap)
+      ? currentFromMap
+      : readRuntimeEntityNumber(
+          entity,
+          ["health", "hp", "currentHealth", "healthCurrent", "currentHp", "hitpoints", "life"],
+          ["current", "value", "amount", "now", "health", "hp"]
+        );
+    const max = Number.isFinite(maxFromMap)
+      ? maxFromMap
+      : readRuntimeEntityNumber(
+          entity,
+          ["maxHealth", "healthMax", "maximumHealth", "maxHp", "hpMax", "maxHP", "maxHitpoints", "maxLife"],
+          ["max", "maximum", "total", "maxHealth", "maxHp", "hpMax"]
+        );
+
+    if (!Number.isFinite(current) && !Number.isFinite(max)) return null;
+
+    const ratio = Number.isFinite(current) && Number.isFinite(max) && max > 0
+      ? clamp(current / max, 0, 1)
+      : Number.isFinite(current) && current >= 0 && current <= 1
+        ? clamp(current, 0, 1)
+        : null;
+
+    return {
+      current: Number.isFinite(current) ? current : null,
+      max: Number.isFinite(max) ? max : null,
+      ratio,
+      currentText: Number.isFinite(current) ? formatRuntimeCompactNumber(current) : "-",
+      maxText: Number.isFinite(max) ? formatRuntimeCompactNumber(max) : "",
+    };
+  }
+
+  function readRuntimeMapNumber(mapLike, key) {
+    try {
+      if (mapLike instanceof Map) {
+        return coerceRuntimeNumber(mapLike.get(key));
+      }
+    } catch {
+      return NaN;
+    }
+
+    return NaN;
+  }
+
+  function readRuntimeEntityNumber(entity, keys, nestedKeys = keys) {
+    for (const key of keys) {
+      const number = coerceRuntimeNumber(safeReadValue(entity, key));
+      if (Number.isFinite(number)) return number;
+    }
+
+    for (const containerKey of ["health", "hp", "stats", "resources", "combat"]) {
+      const container = safeReadValue(entity, containerKey);
+      if (!isRuntimeObject(container)) continue;
+
+      for (const key of nestedKeys) {
+        const number = coerceRuntimeNumber(safeReadValue(container, key));
+        if (Number.isFinite(number)) return number;
+      }
+    }
+
+    return NaN;
+  }
+
+  function coerceRuntimeNumber(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
+    if (typeof value === "string" && value.trim() !== "") {
+      const number = Number(value.replace(/,/g, ""));
+      return Number.isFinite(number) ? number : NaN;
+    }
+    return NaN;
+  }
+
+  function formatRuntimeCompactNumber(value) {
+    if (!Number.isFinite(value)) return "-";
+    if (Math.abs(value) >= 1000) return String(Math.round(value).toLocaleString("en-US"));
+    if (Math.abs(value) >= 100) return String(Math.round(value));
+    return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+  }
+
   function isSameRuntimeEntity(left, right) {
     if (!left || !right) return false;
     if (left === right) return true;
@@ -5514,6 +13576,1337 @@
     );
   }
 
+  function saveGearPresetConfig() {
+    saveJsonConfig(GEAR_PRESET_CONFIG_KEY, GEAR_PRESET_CONFIG);
+  }
+
+  function initGameWebSocketCapture() {
+    const OriginalWebSocket = pageWindow.WebSocket;
+    if (typeof OriginalWebSocket !== "function") return;
+
+    if (!OriginalWebSocket.prototype.__hordesKrGameSocketSendWrapped) {
+      const originalSend = OriginalWebSocket.prototype.send;
+      Object.defineProperty(OriginalWebSocket.prototype, "__hordesKrGameSocketSendWrapped", {
+        configurable: true,
+        value: true,
+      });
+      Object.defineProperty(OriginalWebSocket.prototype, "__hordesKrOriginalSend", {
+        configurable: true,
+        value: originalSend,
+      });
+      OriginalWebSocket.prototype.send = function hordesKrTrackedSend(data) {
+        rememberGameWebSocket(this);
+        return originalSend.call(this, data);
+      };
+    }
+
+    if (OriginalWebSocket.__hordesKrGameSocketCtorWrapped) return;
+
+    function HordesKrTrackedWebSocket(url, protocols) {
+      const socket = protocols === undefined
+        ? new OriginalWebSocket(url)
+        : new OriginalWebSocket(url, protocols);
+      rememberGameWebSocket(socket);
+      return socket;
+    }
+
+    HordesKrTrackedWebSocket.prototype = OriginalWebSocket.prototype;
+    Object.setPrototypeOf(HordesKrTrackedWebSocket, OriginalWebSocket);
+    Object.defineProperty(HordesKrTrackedWebSocket, "__hordesKrGameSocketCtorWrapped", {
+      configurable: true,
+      value: true,
+    });
+
+    try {
+      pageWindow.WebSocket = HordesKrTrackedWebSocket;
+      GEAR_PRESET_STATE.socketWrapped = true;
+    } catch (error) {
+      GEAR_PRESET_STATE.lastError = error && error.message ? error.message : String(error);
+    }
+  }
+
+  function rememberGameWebSocket(socket) {
+    if (!socket || !isHordesGameSocketUrl(socket.url)) return;
+
+    GEAR_PRESET_STATE.gameSocket = socket;
+    if (!socket.__hordesKrGameSocketTracked) {
+      Object.defineProperty(socket, "__hordesKrGameSocketTracked", {
+        configurable: true,
+        value: true,
+      });
+      socket.addEventListener("close", () => {
+        if (GEAR_PRESET_STATE.gameSocket === socket) GEAR_PRESET_STATE.gameSocket = null;
+      });
+    }
+  }
+
+  function isHordesGameSocketUrl(url) {
+    return /^wss:\/\/game\d+\.hordes\.io:\d+\/play/i.test(String(url || ""));
+  }
+
+  function getGameWebSocket() {
+    const socket = GEAR_PRESET_STATE.gameSocket;
+    if (!socket || socket.readyState !== HORDES_WEB_SOCKET_OPEN) return null;
+    return socket;
+  }
+
+  function getGearSocketStatus() {
+    const socket = GEAR_PRESET_STATE.gameSocket;
+    return {
+      wrapped: GEAR_PRESET_STATE.socketWrapped,
+      available: Boolean(socket && socket.readyState === HORDES_WEB_SOCKET_OPEN),
+      url: socket && socket.url || "",
+      readyState: socket ? socket.readyState : null,
+    };
+  }
+
+  function sendHordesClientCommand(command, payload) {
+    const socket = getGameWebSocket();
+    if (!socket) throw new Error("게임 WebSocket을 찾지 못했습니다. 새로고침 후 다시 시도하세요.");
+
+    socket.send(encodeHordesClientCommand(command, String(payload || "")));
+    rememberGameWebSocket(socket);
+    return true;
+  }
+
+  function sendHordesItemMove(fromSlot, toSlot) {
+    if (!Number.isInteger(fromSlot) || !Number.isInteger(toSlot)) {
+      throw new Error(`잘못된 슬롯입니다: ${fromSlot} -> ${toSlot}`);
+    }
+
+    return sendHordesClientCommand("itemmove", `${fromSlot} ${toSlot}`);
+  }
+
+  function encodeHordesClientCommand(command, payload) {
+    const commandBytes = encodeUtf8(command);
+    const payloadBytes = encodeUtf8(payload);
+    const commandLength = encodeVarUint(commandBytes.length);
+    const payloadLength = encodeVarUint(payloadBytes.length);
+    const packet = new Uint8Array(
+      1 + commandLength.length + commandBytes.length + payloadLength.length + payloadBytes.length
+    );
+    let offset = 0;
+    packet[offset++] = HORDES_CLIENT_COMMAND_HEADER;
+    packet.set(commandLength, offset);
+    offset += commandLength.length;
+    packet.set(commandBytes, offset);
+    offset += commandBytes.length;
+    packet.set(payloadLength, offset);
+    offset += payloadLength.length;
+    packet.set(payloadBytes, offset);
+    return packet;
+  }
+
+  function encodeUtf8(text) {
+    if (typeof TextEncoder === "function") return new TextEncoder().encode(String(text));
+
+    const encoded = unescape(encodeURIComponent(String(text)));
+    const bytes = new Uint8Array(encoded.length);
+    for (let index = 0; index < encoded.length; index += 1) {
+      bytes[index] = encoded.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  function encodeVarUint(value) {
+    const bytes = [];
+    let next = Math.max(0, Number(value) || 0);
+    while (next > 127) {
+      bytes.push((next & 127) | 128);
+      next >>= 7;
+    }
+    bytes.push(next & 127);
+    return Uint8Array.from(bytes);
+  }
+
+  function normalizeGearPresetName(name) {
+    const normalized = String(name || GEAR_PRESET_CONFIG.lastPreset || GEAR_PRESET_DEFAULT_NAME).trim();
+    return normalized || GEAR_PRESET_DEFAULT_NAME;
+  }
+
+  function scanVisibleBagGearItems() {
+    return Array.from(document.querySelectorAll('[id^="bag"].slot.filled'))
+      .map((slot) => summarizeBagGearSlot(slot))
+      .filter((item) => item && item.iconKey && isGearPresetEquippableItem(item));
+  }
+
+  function scanRuntimeGearItems() {
+    return getRuntimeInventorySlotEntries()
+      .map(([slotIndex, item]) => summarizeRuntimeGearItem(slotIndex, item))
+      .filter((item) => item && item.dbid && isGearPresetEquippableItem(item));
+  }
+
+  function scanRuntimeEquippedGearItems() {
+    return scanRuntimeGearItems()
+      .filter((item) => isGearEquipSlot(item.slotIndex))
+      .sort((left, right) => left.slotIndex - right.slotIndex);
+  }
+
+  function getRuntimeInventorySlotEntries() {
+    const runtime = getExposedRuntime();
+    const player = runtime && runtime.player;
+    const inventory = player && safeReadValue(player, "inventory");
+    const slots = inventory && safeReadValue(inventory, "slots");
+    if (!slots) return [];
+
+    if (slots instanceof Map) {
+      return Array.from(slots.entries())
+        .map(([slot, item]) => [Number(slot), item])
+        .filter(([slot, item]) => Number.isInteger(slot) && item);
+    }
+
+    if (Array.isArray(slots)) {
+      return slots
+        .map((item, slot) => [slot, item])
+        .filter(([slot, item]) => Number.isInteger(slot) && item);
+    }
+
+    if (isObject(slots)) {
+      return Object.entries(slots)
+        .map(([slot, item]) => [Number(slot), item])
+        .filter(([slot, item]) => Number.isInteger(slot) && item);
+    }
+
+    return [];
+  }
+
+  function getRuntimeInventorySize() {
+    const runtime = getExposedRuntime();
+    const player = runtime && runtime.player;
+    const inventory = player && safeReadValue(player, "inventory");
+    const size = Number(inventory && safeReadValue(inventory, "size"));
+    if (Number.isInteger(size) && size > 0) return size;
+
+    const bagSlots = getRuntimeInventorySlotEntries()
+      .map(([slotIndex]) => slotIndex)
+      .filter((slotIndex) => Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex < 100);
+    return bagSlots.length > 0 ? Math.max(...bagSlots) + 1 : 0;
+  }
+
+  function getRuntimeUsedSlotIndexes() {
+    return new Set(getRuntimeInventorySlotEntries().map(([slotIndex]) => slotIndex));
+  }
+
+  function takeEmptyRuntimeBagSlots(count, usedSlots = getRuntimeUsedSlotIndexes()) {
+    const size = getRuntimeInventorySize();
+    const slots = [];
+    for (let slotIndex = 0; slotIndex < size && slots.length < count; slotIndex += 1) {
+      if (usedSlots.has(slotIndex)) continue;
+
+      usedSlots.add(slotIndex);
+      slots.push(slotIndex);
+    }
+    return slots;
+  }
+
+  function summarizeRuntimeGearItem(slotIndex, item) {
+    if (!item || !Number.isInteger(slotIndex)) return null;
+
+    const itemType = String(safeReadValue(item, "type") || "").toLowerCase();
+    const tier = safeReadValue(item, "tier");
+    const dbid = safeReadValue(item, "dbid");
+    if (!itemType || dbid === undefined || dbid === null) return null;
+
+    const iconKey = getRuntimeGearIconKey(itemType, tier);
+    const equipSlot = isGearEquipSlot(slotIndex) ? slotIndex : getGearEquipSlotForItem({ itemType });
+    return {
+      slotId: isGearEquipSlot(slotIndex) ? `equip${slotIndex}` : `bag${slotIndex}`,
+      slotIndex,
+      equipSlot,
+      dbid: String(dbid),
+      itemType,
+      tier: Number.isFinite(Number(tier)) ? Number(tier) : null,
+      upgrade: Number.isFinite(Number(safeReadValue(item, "upgrade"))) ? Number(safeReadValue(item, "upgrade")) : 0,
+      quality: Number.isFinite(Number(safeReadValue(item, "quality"))) ? Number(safeReadValue(item, "quality")) : null,
+      stacks: Number.isFinite(Number(safeReadValue(item, "stacks"))) ? Number(safeReadValue(item, "stacks")) : null,
+      gearScore: Number.isFinite(Number(safeReadValue(item, "gs"))) ? Number(safeReadValue(item, "gs")) : null,
+      iconKey,
+      iconSrc: iconKey,
+      source: "runtime",
+      fromRuntime: true,
+    };
+  }
+
+  function getRuntimeGearIconKey(itemType, tier) {
+    if (!itemType || tier === undefined || tier === null) return "";
+    return `/data/items/${itemType}/${tier}.avif`;
+  }
+
+  function isGearEquipSlot(slotIndex) {
+    return GEAR_EQUIP_SLOT_SET.has(Number(slotIndex));
+  }
+
+  function summarizeBagGearSlot(slot) {
+    if (!slot || !slot.id) return null;
+
+    const icon = slot.querySelector("img.icon");
+    const iconSrc = icon && icon.getAttribute("src");
+    const iconKey = normalizeGearIconSrc(iconSrc);
+    if (!iconKey) return null;
+
+    const rect = slot.getBoundingClientRect();
+    const stack = slot.querySelector(".stacks");
+    const slotIndex = getBagSlotIndex(slot.id);
+    return {
+      slotId: slot.id,
+      slotIndex,
+      itemType: getGearItemTypeFromIconKey(iconKey),
+      equipSlot: null,
+      dbid: "",
+      iconKey,
+      iconSrc: icon ? icon.src : iconSrc,
+      rarity: getGearSlotRarity(slot),
+      upgradeText: stack ? stack.textContent.trim() : "",
+      rect: {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      element: slot,
+    };
+  }
+
+  function getBagSlotIndex(slotId) {
+    const match = String(slotId || "").match(/^bag(\d+)$/);
+    return match ? Number(match[1]) : null;
+  }
+
+  function normalizeGearIconSrc(src) {
+    if (!src) return "";
+
+    try {
+      return new URL(src, location.href).pathname;
+    } catch {
+      return String(src).split("?")[0];
+    }
+  }
+
+  function getGearItemTypeFromIconKey(iconKey) {
+    const match = String(iconKey || "").match(/\/data\/items\/([^/]+)\//i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function getGearSlotRarity(slot) {
+    const className = String(slot && slot.className || "");
+    const match = className.match(/\b(grey|white|green|blue|purp|orange|red)\b/i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function isGearPresetEquippableItem(item) {
+    if (!item || !item.itemType) return false;
+    return !GEAR_PRESET_NON_EQUIP_TYPES.has(item.itemType);
+  }
+
+  function stripGearPresetElement(item) {
+    if (!item) return item;
+    const { element, ...safeItem } = item;
+    return safeItem;
+  }
+
+  function saveGearPresetFromVisibleBag(name) {
+    const presetName = normalizeGearPresetName(name);
+    const items = scanVisibleBagGearItems().map(stripGearPresetElement);
+
+    if (items.length === 0) {
+      GEAR_PRESET_STATE.lastState = "저장 실패";
+      GEAR_PRESET_STATE.lastError = "현재 보이는 가방에서 장착 가능한 아이템을 찾지 못했습니다.";
+      renderStatusUi();
+      return getGearPresetStatus();
+    }
+
+    GEAR_PRESET_CONFIG.presets[presetName] = {
+      name: presetName,
+      savedAt: new Date().toISOString(),
+      items,
+    };
+    GEAR_PRESET_CONFIG.lastPreset = presetName;
+    saveGearPresetConfig();
+
+    GEAR_PRESET_STATE.lastState = `${items.length}개 저장됨`;
+    GEAR_PRESET_STATE.lastError = "";
+    GEAR_PRESET_STATE.lastSavedAt = new Date();
+    renderStatusUi();
+    return getGearPresetStatus();
+  }
+
+  function saveGearPresetFromCurrentEquipment(name) {
+    const presetName = normalizeGearPresetName(name);
+    const items = scanRuntimeEquippedGearItems().map(stripGearPresetElement);
+
+    if (items.length === 0) {
+      GEAR_PRESET_STATE.lastState = "저장 실패";
+      GEAR_PRESET_STATE.lastError = "현재 장착 중인 아이템을 런타임 인벤토리에서 찾지 못했습니다. 새로고침 후 다시 시도하세요.";
+      renderStatusUi();
+      return getGearPresetStatus();
+    }
+
+    GEAR_PRESET_CONFIG.presets[presetName] = {
+      name: presetName,
+      savedAt: new Date().toISOString(),
+      source: "equipped",
+      exactSlots: true,
+      items,
+    };
+    GEAR_PRESET_CONFIG.lastPreset = presetName;
+    saveGearPresetConfig();
+
+    GEAR_PRESET_STATE.lastState = `프리셋 ${presetName} / ${items.length}개 저장`;
+    GEAR_PRESET_STATE.lastError = "";
+    GEAR_PRESET_STATE.lastSavedAt = new Date();
+    renderStatusUi();
+    return getGearPresetStatus();
+  }
+
+  function getGearPreset(name) {
+    const presetName = normalizeGearPresetName(name);
+    return GEAR_PRESET_CONFIG.presets[presetName] || null;
+  }
+
+  async function runGearPresetByName(name) {
+    const presetName = normalizeGearPresetName(name);
+    const preset = getGearPreset(presetName);
+    if (!preset || !Array.isArray(preset.items) || preset.items.length === 0) {
+      GEAR_PRESET_STATE.lastState = "장착 실패";
+      GEAR_PRESET_STATE.lastError = "저장된 장비 프리셋이 없습니다.";
+      renderStatusUi();
+      return getGearPresetStatus();
+    }
+
+    return equipGearItems(preset.items, `preset:${presetName}`, {
+      allowSavedSlots: true,
+      exactSlots: preset.exactSlots === true || preset.source === "equipped",
+      presetName,
+    });
+  }
+
+  async function equipVisibleBagGear() {
+    const items = scanVisibleBagGearItems().map(stripGearPresetElement);
+    if (items.length === 0) {
+      GEAR_PRESET_STATE.lastState = "장착 실패";
+      GEAR_PRESET_STATE.lastError = "현재 보이는 가방에서 장착 가능한 아이템을 찾지 못했습니다.";
+      renderStatusUi();
+      return getGearPresetStatus();
+    }
+
+    return equipGearItems(items, "visibleBag", { allowSavedSlots: false });
+  }
+
+  async function equipGearItems(items, source, options = {}) {
+    if (GEAR_PRESET_STATE.running) return getGearPresetStatus();
+
+    const presetName = String(options.presetName || "").trim();
+    const requested = sortGearPresetItemsForEquip(Array.isArray(items) ? items.filter(Boolean) : []);
+    const resolved = resolveGearPresetItemsAtStart(requested, options);
+    const plannedEquipCount = resolved.filter((item) => item.slotIndex !== item.equipSlot).length;
+    const plannedUnequipCount = options.exactSlots === true
+      ? resolveGearPresetUnequipMoves(requested).length
+      : 0;
+    let progressDone = 0;
+    let progressTotal = plannedEquipCount + plannedUnequipCount;
+    const result = {
+      source,
+      presetName,
+      requested: requested.length,
+      resolved: resolved.length,
+      equipped: 0,
+      unequipped: 0,
+      skipped: 0,
+      alreadyMissing: 0,
+      savedSlotFallback: 0,
+      exactSlots: options.exactSlots === true,
+      verify: null,
+      errors: [],
+      items: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+
+    GEAR_PRESET_STATE.running = true;
+    GEAR_PRESET_STATE.pendingPresetName = presetName;
+    GEAR_PRESET_STATE.lastRequestedPresetName = presetName;
+    GEAR_PRESET_STATE.lastVerifiedPresetName = "";
+    GEAR_PRESET_STATE.lastState = "장착 중";
+    GEAR_PRESET_STATE.lastError = "";
+    GEAR_PRESET_STATE.lastResult = result;
+    renderStatusUi();
+    if (presetName) {
+      showGearPresetProgressOverlay(formatGearPresetProgressMessage(presetName, progressDone, progressTotal));
+    }
+
+    let fatalError = null;
+    try {
+      if (!getGameWebSocket()) {
+        throw new Error("게임 WebSocket을 찾지 못했습니다. 새로고침 후 다시 시도하세요.");
+      }
+
+      for (const item of requested) {
+        const current = resolved.find((candidate) => candidate.requestedItem === item);
+        if (!current) {
+          result.alreadyMissing += 1;
+          result.items.push({ ...stripGearPresetElement(item), state: "not-found-or-already-equipped" });
+          continue;
+        }
+
+        let sentMove = false;
+        try {
+          if (current.slotIndex === current.equipSlot) {
+            result.skipped += 1;
+            result.items.push({ ...stripGearPresetElement(current), state: "already-equipped" });
+            continue;
+          }
+
+          sendHordesItemMove(current.slotIndex, current.equipSlot);
+          sentMove = true;
+          result.equipped += 1;
+          if (current.fromSavedSlot) result.savedSlotFallback += 1;
+          result.items.push({ ...stripGearPresetElement(current), state: "sent" });
+        } catch (error) {
+          result.errors.push(error && error.message ? error.message : String(error));
+          result.items.push({ ...stripGearPresetElement(current), state: "error" });
+        }
+
+        progressDone += 1;
+        if (presetName) {
+          showGearPresetProgressOverlay(formatGearPresetProgressMessage(presetName, progressDone, progressTotal));
+        }
+        if (sentMove) await delay(GEAR_PRESET_EQUIP_DELAY_MS);
+      }
+
+      if (options.exactSlots === true) {
+        const unequipMoves = resolveGearPresetUnequipMoves(requested);
+        result.unequipRequested = unequipMoves.length;
+        progressTotal = Math.max(progressTotal, progressDone + unequipMoves.length);
+        if (presetName) {
+          showGearPresetProgressOverlay(formatGearPresetProgressMessage(presetName, progressDone, progressTotal));
+        }
+
+        for (const move of unequipMoves) {
+          let sentMove = false;
+          try {
+            if (!Number.isInteger(move.toSlot)) {
+              throw new Error(move.error || "빈 가방 칸을 찾지 못했습니다.");
+            }
+
+            sendHordesItemMove(move.slotIndex, move.toSlot);
+            sentMove = true;
+            result.unequipped += 1;
+            result.items.push({ ...stripGearPresetElement(move), state: "unequip-sent" });
+          } catch (error) {
+            result.errors.push(error && error.message ? error.message : String(error));
+            result.items.push({ ...stripGearPresetElement(move), state: "unequip-error" });
+          }
+
+          progressDone += 1;
+          if (presetName) {
+            showGearPresetProgressOverlay(formatGearPresetProgressMessage(presetName, progressDone, progressTotal));
+          }
+          if (sentMove) await delay(GEAR_PRESET_EQUIP_DELAY_MS);
+        }
+      }
+
+      if (presetName) {
+        showGearPresetProgressOverlay(`프리셋 ${presetName} 전환 확인 중`);
+      }
+      await delay(120);
+      result.verify = await waitForGearPresetVerification(requested, {
+        exactSlots: options.exactSlots === true,
+      });
+    } catch (error) {
+      fatalError = error;
+      result.errors.push(error && error.message ? error.message : String(error));
+    } finally {
+      result.finishedAt = new Date().toISOString();
+      GEAR_PRESET_STATE.running = false;
+      GEAR_PRESET_STATE.pendingPresetName = "";
+      GEAR_PRESET_STATE.lastRunAt = new Date();
+      GEAR_PRESET_STATE.lastResult = result;
+      if (presetName && result.verify && result.verify.complete) {
+        GEAR_PRESET_STATE.lastVerifiedPresetName = presetName;
+      }
+      GEAR_PRESET_STATE.lastState = result.verify
+        ? `${result.verify.matched}/${result.verify.total}개 확인`
+        : `${result.equipped}/${result.requested}개 전송`;
+      GEAR_PRESET_STATE.lastError = result.errors[0] ||
+        (result.verify && !result.verify.complete ? `미장착 ${result.verify.missing.length}개` : "");
+      if (presetName) {
+        if (fatalError || result.errors.length > 0) {
+          showGearPresetProgressOverlay(`프리셋 ${presetName} 전환 실패`, "error", 2400);
+        } else if (result.verify && result.verify.complete) {
+          showGearPresetProgressOverlay(`프리셋 ${presetName} 전환 완료`, "success", 1800);
+        } else if (result.verify) {
+          showGearPresetProgressOverlay(formatGearPresetIncompleteMessage(presetName, result.verify), "warn", 3600);
+        } else {
+          showGearPresetProgressOverlay(`프리셋 ${presetName} 전환 확인 실패`, "warn", 2400);
+        }
+      }
+      renderStatusUi();
+    }
+
+    return getGearPresetStatus();
+  }
+
+  function findCurrentBagSlotForGearPresetItem(savedItem, usedSlotIds) {
+    const currentItems = scanVisibleBagGearItems().filter((item) => !usedSlotIds.has(item.slotId));
+    const exactSlot = currentItems.find(
+      (item) => item.slotId === savedItem.slotId && item.iconKey === savedItem.iconKey
+    );
+    if (exactSlot) return exactSlot;
+
+    return currentItems.find((item) => item.iconKey === savedItem.iconKey) || null;
+  }
+
+  function findRuntimeSlotForGearPresetItem(savedItem, usedSlotIds) {
+    const dbid = savedItem && savedItem.dbid ? String(savedItem.dbid) : "";
+    if (!dbid) return null;
+
+    return scanRuntimeGearItems().find((item) => (
+      item.dbid === dbid &&
+      !usedSlotIds.has(item.slotId) &&
+      Number.isInteger(item.slotIndex)
+    )) || null;
+  }
+
+  function resolveGearPresetUnequipMoves(presetItems) {
+    const expectedSlots = getGearPresetExpectedEquipSlots(presetItems);
+    const extras = scanRuntimeEquippedGearItems()
+      .filter((item) => (
+        GEAR_PRESET_EXACT_UNEQUIP_SLOTS.includes(item.slotIndex) &&
+        !expectedSlots.has(item.slotIndex)
+      ));
+    const emptySlots = takeEmptyRuntimeBagSlots(extras.length);
+    const moves = [];
+
+    for (let index = 0; index < extras.length; index += 1) {
+      const toSlot = emptySlots[index];
+      if (!Number.isInteger(toSlot)) {
+        moves.push({
+          ...stripGearPresetElement(extras[index]),
+          toSlot: null,
+          error: "빈 가방 칸 없음",
+        });
+        continue;
+      }
+
+      moves.push({
+        ...stripGearPresetElement(extras[index]),
+        toSlot,
+      });
+    }
+
+    return moves;
+  }
+
+  function getGearPresetExpectedEquipSlots(items) {
+    const slots = new Set();
+    for (const item of Array.isArray(items) ? items : []) {
+      const slot = getGearEquipSlotForPresetItem(item, item);
+      if (isGearEquipSlot(slot)) slots.add(slot);
+    }
+    return slots;
+  }
+
+  function resolveGearPresetItemsAtStart(items, options = {}) {
+    const usedSlotIds = new Set();
+    const resolved = [];
+
+    for (const item of items) {
+      const current = findRuntimeSlotForGearPresetItem(item, usedSlotIds) ||
+        findCurrentBagSlotForGearPresetItem(item, usedSlotIds) ||
+        (options.allowSavedSlots ? resolveSavedGearPresetSlot(item, usedSlotIds) : null);
+      if (!current) continue;
+
+      const equipSlot = getGearEquipSlotForPresetItem(item, current);
+      if (!Number.isInteger(current.slotIndex) || !Number.isInteger(equipSlot)) continue;
+
+      usedSlotIds.add(current.slotId);
+      resolved.push({
+        ...stripGearPresetElement(current),
+        equipSlot,
+        requestedItem: item,
+      });
+    }
+
+    return resolved;
+  }
+
+  function resolveSavedGearPresetSlot(savedItem, usedSlotIds) {
+    if (!savedItem) return null;
+
+    const slotIndex = Number(savedItem.slotIndex);
+    const slotId = savedItem.slotId || (Number.isInteger(slotIndex) ? `bag${slotIndex}` : "");
+    if (!slotId || usedSlotIds.has(slotId) || !Number.isInteger(slotIndex)) return null;
+
+    return {
+      ...stripGearPresetElement(savedItem),
+      slotId,
+      slotIndex,
+      fromSavedSlot: true,
+    };
+  }
+
+  function getGearEquipSlotForItem(item) {
+    return GEAR_EQUIP_SLOT_BY_TYPE[item && item.itemType] || null;
+  }
+
+  function getGearEquipSlotForPresetItem(savedItem, currentItem) {
+    const savedSlot = Number(savedItem && savedItem.equipSlot);
+    if (isGearEquipSlot(savedSlot)) return savedSlot;
+
+    const currentSlot = Number(currentItem && currentItem.equipSlot);
+    if (isGearEquipSlot(currentSlot)) return currentSlot;
+
+    return getGearEquipSlotForItem(currentItem || savedItem);
+  }
+
+  function verifyGearPresetItemsEquipped(items, options = {}) {
+    const equippedItems = scanRuntimeEquippedGearItems();
+    const expectedSlots = getGearPresetExpectedEquipSlots(items);
+    const expected = (Array.isArray(items) ? items : [])
+      .filter((item) => item && item.dbid)
+      .map((item) => ({
+        dbid: String(item.dbid),
+        equipSlot: getGearEquipSlotForPresetItem(item, item),
+        itemType: item.itemType || "",
+      }));
+    const matched = [];
+    const missing = [];
+
+    for (const item of expected) {
+      const found = equippedItems.find((candidate) => (
+        candidate.dbid === item.dbid &&
+        (!isGearEquipSlot(item.equipSlot) || candidate.slotIndex === item.equipSlot)
+      ));
+
+      if (found) {
+        matched.push({
+          dbid: item.dbid,
+          slotIndex: found.slotIndex,
+          itemType: found.itemType,
+        });
+      } else {
+        missing.push(item);
+      }
+    }
+
+    const extraEquipped = options.exactSlots === true
+      ? equippedItems
+        .filter((item) => (
+          GEAR_PRESET_EXACT_UNEQUIP_SLOTS.includes(item.slotIndex) &&
+          !expectedSlots.has(item.slotIndex)
+        ))
+        .map(stripGearPresetElement)
+      : [];
+
+    return {
+      total: expected.length,
+      matched: matched.length,
+      complete: expected.length > 0 && missing.length === 0 && extraEquipped.length === 0,
+      missing,
+      extraEquipped,
+      matchedItems: matched,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  async function waitForGearPresetVerification(items, options = {}) {
+    const maxAttempts = GEAR_PRESET_VERIFY_RETRY_DELAYS_MS.length + 1;
+    let verify = null;
+
+    for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
+      if (attemptIndex > 0) {
+        await delay(GEAR_PRESET_VERIFY_RETRY_DELAYS_MS[attemptIndex - 1]);
+      }
+
+      verify = verifyGearPresetItemsEquipped(items, options);
+      verify.attempt = attemptIndex + 1;
+      verify.maxAttempts = maxAttempts;
+      if (verify.complete) return verify;
+    }
+
+    return verify;
+  }
+
+  function getGearPresetMatchStatus(presetName) {
+    const preset = getGearPreset(presetName);
+    if (!preset || !Array.isArray(preset.items) || preset.items.length === 0) {
+      return {
+        presetName,
+        saved: false,
+        total: 0,
+        matched: 0,
+        complete: false,
+        missing: [],
+      };
+    }
+
+    return {
+      presetName,
+      saved: true,
+      exactSlots: preset.exactSlots === true || preset.source === "equipped",
+      ...verifyGearPresetItemsEquipped(preset.items, {
+        exactSlots: preset.exactSlots === true || preset.source === "equipped",
+      }),
+    };
+  }
+
+  function sortGearPresetItemsForEquip(items) {
+    return items.slice().sort((left, right) => {
+      const leftTypeWeight = getGearPresetEquipTypeWeight(left);
+      const rightTypeWeight = getGearPresetEquipTypeWeight(right);
+      if (leftTypeWeight !== rightTypeWeight) return leftTypeWeight - rightTypeWeight;
+
+      const leftSlot = Number.isFinite(left.slotIndex) ? left.slotIndex : -1;
+      const rightSlot = Number.isFinite(right.slotIndex) ? right.slotIndex : -1;
+      return rightSlot - leftSlot;
+    });
+  }
+
+  function getGearPresetEquipTypeWeight(item) {
+    const type = item && item.itemType;
+    if (type === "bag") return 100;
+    return 0;
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => {
+      pageWindow.setTimeout(resolve, ms);
+    });
+  }
+
+  function getGearPresetStatus() {
+    const visibleItems = scanVisibleBagGearItems().map(stripGearPresetElement);
+    const runtimeItems = scanRuntimeGearItems().map(stripGearPresetElement);
+    const equippedItems = runtimeItems.filter((item) => isGearEquipSlot(item.slotIndex));
+    const preset = getGearPreset(GEAR_PRESET_CONFIG.lastPreset);
+    return {
+      running: GEAR_PRESET_STATE.running,
+      lastState: GEAR_PRESET_STATE.lastState,
+      lastError: GEAR_PRESET_STATE.lastError,
+      lastSavedAt: GEAR_PRESET_STATE.lastSavedAt,
+      lastRunAt: GEAR_PRESET_STATE.lastRunAt,
+      visibleCount: visibleItems.length,
+      visibleItems,
+      runtimeCount: runtimeItems.length,
+      runtimeItems,
+      equippedCount: equippedItems.length,
+      equippedItems,
+      quickPresets: GEAR_PRESET_QUICK_NAMES.map((presetName) => {
+        const quickPreset = getGearPreset(presetName);
+        const match = getGearPresetMatchStatus(presetName);
+        return {
+          name: presetName,
+          savedAt: quickPreset && quickPreset.savedAt || "",
+          count: quickPreset && Array.isArray(quickPreset.items) ? quickPreset.items.length : 0,
+          match,
+        };
+      }),
+      preset: preset
+        ? {
+            name: preset.name || GEAR_PRESET_CONFIG.lastPreset,
+            savedAt: preset.savedAt || "",
+            count: Array.isArray(preset.items) ? preset.items.length : 0,
+            items: Array.isArray(preset.items) ? preset.items.slice() : [],
+          }
+        : null,
+      socket: getGearSocketStatus(),
+      lastResult: GEAR_PRESET_STATE.lastResult,
+    };
+  }
+
+  function saveSkillPresetConfig() {
+    saveJsonConfig(SKILL_PRESET_CONFIG_KEY, SKILL_PRESET_CONFIG);
+  }
+
+  function normalizeSkillPresetName(name) {
+    const normalized = String(name || SKILL_PRESET_CONFIG.lastPreset || SKILL_PRESET_DEFAULT_NAME).trim();
+    return normalized || SKILL_PRESET_DEFAULT_NAME;
+  }
+
+  function getSkillPreset(name) {
+    const presetName = normalizeSkillPresetName(name);
+    return SKILL_PRESET_CONFIG.presets[presetName] || null;
+  }
+
+  function getRuntimeSkillController() {
+    const runtime = getExposedRuntime();
+    const player = runtime && runtime.player;
+    return player && safeReadValue(player, "skills") || null;
+  }
+
+  function scanRuntimeActiveSkillIds() {
+    const storeIds = scanRuntimeActiveSkillStoreIds();
+    if (storeIds.length > 0) return storeIds;
+
+    const controller = getRuntimeSkillController();
+    if (!controller) return [];
+
+    const activeIds = safeReadValue(controller, "skillIdsActive");
+    if (Array.isArray(activeIds) && activeIds.length > 0) {
+      return normalizeSkillPresetIds(activeIds);
+    }
+
+    return expandSkillEntriesToIds(scanRuntimeActiveSkillEntries());
+  }
+
+  function scanRuntimeActiveSkillEntries() {
+    const storeEntries = scanRuntimeActiveSkillStoreEntries();
+    if (storeEntries.length > 0) return storeEntries;
+
+    const controller = getRuntimeSkillController();
+    const skills = controller && safeReadValue(controller, "skills");
+    if (!skills) return [];
+
+    const entries = [];
+    const pushEntry = (rawId, value) => {
+      const skill = summarizeRuntimeSkillEntry(rawId, value);
+      if (skill && skill.configurable) entries.push(skill);
+    };
+
+    if (skills instanceof Map) {
+      skills.forEach((value, key) => pushEntry(key, value));
+    } else if (Array.isArray(skills)) {
+      skills.forEach((value, key) => value && pushEntry(key, value));
+    } else if (isObject(skills)) {
+      Object.entries(skills).forEach(([key, value]) => pushEntry(key, value));
+    }
+
+    return entries.sort((left, right) => left.id - right.id);
+  }
+
+  function scanRuntimeActiveSkillStoreIds() {
+    const runtime = getExposedRuntime();
+    if (!runtime) return [];
+
+    const getter = safeReadValue(runtime, "getActiveSkillConfig");
+    if (typeof getter === "function") {
+      try {
+        const ids = normalizeSkillPresetIds(getter.call(runtime));
+        if (ids.length > 0) return ids;
+      } catch {
+        // Fall back to reading the Svelte store directly.
+      }
+    }
+
+    return expandSkillEntriesToIds(scanRuntimeActiveSkillStoreEntries());
+  }
+
+  function scanRuntimeActiveSkillStoreEntries() {
+    const runtime = getExposedRuntime();
+    const stores = runtime && safeReadValue(runtime, "skillStores");
+    const activeStore = stores && safeReadValue(stores, "active");
+    const activeValue = readSvelteStoreValue(activeStore);
+    return summarizeSkillStoreEntries(activeValue, runtime);
+  }
+
+  function readSvelteStoreValue(store) {
+    const subscribe = safeReadValue(store, "subscribe");
+    if (typeof subscribe !== "function") return null;
+
+    let value = null;
+    let gotValue = false;
+    let unsubscribe = null;
+    try {
+      unsubscribe = subscribe.call(store, (nextValue) => {
+        if (gotValue) return;
+        value = nextValue;
+        gotValue = true;
+      });
+    } catch {
+      return null;
+    } finally {
+      if (typeof unsubscribe === "function") {
+        try {
+          unsubscribe();
+        } catch {
+          // Store reads are diagnostic and should not affect game execution.
+        }
+      }
+    }
+
+    return gotValue ? value : null;
+  }
+
+  function summarizeSkillStoreEntries(value, runtime) {
+    const entries = [];
+    const pushEntry = (rawId, rawLevel) => {
+      const id = normalizeSkillPresetId(rawId);
+      const level = normalizeSkillStoreLevel(rawLevel);
+      if (!Number.isInteger(id) || level <= 0) return;
+      if (!isRuntimeSkillConfigurable(runtime, id)) return;
+
+      entries.push({
+        id,
+        level,
+        engineOnly: false,
+        configurable: true,
+        minlevel: 0,
+      });
+    };
+
+    if (!value) return entries;
+
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => {
+        if (Array.isArray(entry)) {
+          pushEntry(entry[0], entry[1] === undefined ? 1 : entry[1]);
+        } else if (isObject(entry)) {
+          pushEntry(safeReadValue(entry, "id") ?? safeReadValue(entry, "skillId") ?? index, safeReadValue(entry, "level") ?? 1);
+        } else {
+          pushEntry(entry, 1);
+        }
+      });
+    } else if (typeof safeReadValue(value, "forEach") === "function") {
+      try {
+        value.forEach((level, id) => pushEntry(id, level));
+      } catch {
+        // Fall back to object scanning below.
+      }
+    } else if (isObject(value)) {
+      Object.entries(value).forEach(([id, level]) => pushEntry(id, level));
+    }
+
+    return entries.sort((left, right) => left.id - right.id);
+  }
+
+  function isRuntimeSkillConfigurable(runtime, id) {
+    const normalizedId = normalizeSkillPresetId(id);
+    if (!Number.isInteger(normalizedId)) return false;
+
+    const helper = runtime && safeReadValue(runtime, "isSkillConfigurable");
+    if (typeof helper === "function") {
+      try {
+        return helper.call(runtime, normalizedId) !== false;
+      } catch {
+        // Fall through to exposed skill definition metadata.
+      }
+    }
+
+    const definitions = runtime && safeReadValue(runtime, "skillDefinitions");
+    const definition = readRuntimeSkillDefinition(definitions, normalizedId);
+    if (definition) return !Boolean(safeReadValue(definition, "engineOnly"));
+
+    return true;
+  }
+
+  function readRuntimeSkillDefinition(definitions, id) {
+    if (!definitions) return null;
+
+    if (typeof safeReadValue(definitions, "get") === "function") {
+      try {
+        return definitions.get(id) || null;
+      } catch {
+        return null;
+      }
+    }
+
+    if (Array.isArray(definitions)) return definitions[id] || null;
+    if (isObject(definitions)) return definitions[id] || definitions[String(id)] || null;
+    return null;
+  }
+
+  function normalizeSkillStoreLevel(value) {
+    if (isObject(value)) {
+      for (const key of ["level", "count", "points", "value"]) {
+        const normalized = normalizeSkillStoreLevel(safeReadValue(value, key));
+        if (normalized > 0) return normalized;
+      }
+      return 0;
+    }
+
+    return Math.max(0, Math.floor(Number(value) || 0));
+  }
+
+  function summarizeRuntimeSkillEntry(rawId, value) {
+    const logic = value && safeReadValue(value, "logic");
+    const id = normalizeSkillPresetId(
+      logic && safeReadValue(logic, "id") !== undefined ? safeReadValue(logic, "id") : rawId
+    );
+    const level = Math.max(0, Math.floor(Number(value && safeReadValue(value, "level")) || 0));
+    if (!Number.isInteger(id) || level <= 0) return null;
+
+    const engineOnly = Boolean(logic && safeReadValue(logic, "engineOnly"));
+    return {
+      id,
+      level,
+      engineOnly,
+      configurable: !engineOnly,
+      minlevel: Number(logic && safeReadValue(logic, "minlevel")) || 0,
+    };
+  }
+
+  function expandSkillEntriesToIds(entries) {
+    const ids = [];
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const id = normalizeSkillPresetId(entry && entry.id);
+      const level = Math.max(0, Math.floor(Number(entry && entry.level) || 0));
+      if (!Number.isInteger(id) || level <= 0) continue;
+      for (let index = 0; index < level; index += 1) ids.push(id);
+    }
+    return ids;
+  }
+
+  function normalizeSkillPresetId(value) {
+    const id = Number(value);
+    return Number.isInteger(id) && id > 0 ? id : null;
+  }
+
+  function normalizeSkillPresetIds(values) {
+    return (Array.isArray(values) ? values : [])
+      .map(normalizeSkillPresetId)
+      .filter(Number.isInteger);
+  }
+
+  function saveSkillPresetFromCurrentConfig(name) {
+    const presetName = normalizeSkillPresetName(name);
+    const skillIds = scanRuntimeActiveSkillIds();
+
+    if (skillIds.length === 0) {
+      SKILL_PRESET_STATE.lastState = "저장 실패";
+      SKILL_PRESET_STATE.lastError = "현재 활성 스킬 구성을 찾지 못했습니다. 스킬 패널에서 스킬을 적용한 뒤 다시 저장하세요.";
+      renderStatusUi();
+      return getSkillPresetStatus();
+    }
+
+    SKILL_PRESET_CONFIG.presets[presetName] = {
+      name: presetName,
+      savedAt: new Date().toISOString(),
+      skillIds,
+    };
+    SKILL_PRESET_CONFIG.lastPreset = presetName;
+    saveSkillPresetConfig();
+
+    SKILL_PRESET_STATE.lastState = `스킬 프리셋 ${presetName} / ${skillIds.length}포인트 저장`;
+    SKILL_PRESET_STATE.lastError = "";
+    SKILL_PRESET_STATE.lastSavedAt = new Date();
+    renderStatusUi();
+    return getSkillPresetStatus();
+  }
+
+  async function runSkillPresetByName(name) {
+    if (SKILL_PRESET_STATE.running) return getSkillPresetStatus();
+
+    const presetName = normalizeSkillPresetName(name);
+    const preset = getSkillPreset(presetName);
+    const skillIds = filterConfigurableSkillPresetIds(preset && preset.skillIds || []);
+    if (!preset || skillIds.length === 0) {
+      SKILL_PRESET_STATE.lastState = "적용 실패";
+      SKILL_PRESET_STATE.lastError = "저장된 스킬 프리셋이 없습니다.";
+      renderStatusUi();
+      return getSkillPresetStatus();
+    }
+
+    const result = {
+      presetName,
+      requested: skillIds.length,
+      sent: false,
+      verify: null,
+      errors: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+
+    SKILL_PRESET_STATE.running = true;
+    SKILL_PRESET_STATE.pendingPresetName = presetName;
+    SKILL_PRESET_STATE.lastRequestedPresetName = presetName;
+    SKILL_PRESET_STATE.lastVerifiedPresetName = "";
+    SKILL_PRESET_STATE.lastState = "적용 중";
+    SKILL_PRESET_STATE.lastError = "";
+    SKILL_PRESET_STATE.lastResult = result;
+    showGearPresetProgressOverlay(`스킬 프리셋 ${presetName} 적용 중`);
+    renderStatusUi();
+
+    let fatalError = null;
+    try {
+      if (!getGameWebSocket()) {
+        throw new Error("게임 WebSocket을 찾지 못했습니다. 새로고침 후 다시 시도하세요.");
+      }
+
+      sendHordesSkillConfig(skillIds);
+      result.sent = true;
+      showGearPresetProgressOverlay(`스킬 프리셋 ${presetName} 적용 확인 중`);
+      result.verify = await waitForSkillPresetVerification(skillIds);
+    } catch (error) {
+      fatalError = error;
+      result.errors.push(error && error.message ? error.message : String(error));
+    } finally {
+      result.finishedAt = new Date().toISOString();
+      SKILL_PRESET_STATE.running = false;
+      SKILL_PRESET_STATE.pendingPresetName = "";
+      SKILL_PRESET_STATE.lastRunAt = new Date();
+      SKILL_PRESET_STATE.lastResult = result;
+      if (presetName && result.verify && result.verify.complete) {
+        SKILL_PRESET_STATE.lastVerifiedPresetName = presetName;
+      }
+      SKILL_PRESET_STATE.lastState = result.verify
+        ? `${result.verify.matched}/${result.verify.total}포인트 확인`
+        : result.sent
+          ? "전송됨"
+          : "적용 실패";
+      SKILL_PRESET_STATE.lastError = result.errors[0] ||
+        (result.verify && !result.verify.complete ? `미적용 ${result.verify.missing.length}포인트` : "");
+
+      if (fatalError || result.errors.length > 0) {
+        showGearPresetProgressOverlay(`스킬 프리셋 ${presetName} 적용 실패`, "error", 2400);
+      } else if (result.verify && result.verify.complete) {
+        showGearPresetProgressOverlay(`스킬 프리셋 ${presetName} 적용 완료`, "success", 1800);
+      } else if (result.verify) {
+        showGearPresetProgressOverlay(formatSkillPresetIncompleteMessage(presetName, result.verify), "warn", 3600);
+      } else {
+        showGearPresetProgressOverlay(`스킬 프리셋 ${presetName} 적용 확인 실패`, "warn", 2400);
+      }
+
+      renderStatusUi();
+    }
+
+    return getSkillPresetStatus();
+  }
+
+  function sendHordesSkillConfig(skillIds) {
+    const ids = filterConfigurableSkillPresetIds(normalizeSkillPresetIds(skillIds));
+    if (ids.length === 0) throw new Error("적용할 스킬 ID가 없습니다.");
+    return sendHordesClientCommand("skillconfig", ids.join(","));
+  }
+
+  function filterConfigurableSkillPresetIds(skillIds) {
+    const runtime = getExposedRuntime();
+    return normalizeSkillPresetIds(skillIds).filter((id) => isRuntimeSkillConfigurable(runtime, id));
+  }
+
+  async function waitForSkillPresetVerification(skillIds) {
+    const maxAttempts = GEAR_PRESET_VERIFY_RETRY_DELAYS_MS.length + 1;
+    let verify = null;
+
+    for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1) {
+      if (attemptIndex > 0) {
+        await delay(GEAR_PRESET_VERIFY_RETRY_DELAYS_MS[attemptIndex - 1]);
+      }
+
+      verify = verifySkillPresetApplied(skillIds);
+      verify.attempt = attemptIndex + 1;
+      verify.maxAttempts = maxAttempts;
+      if (verify.complete) return verify;
+    }
+
+    return verify;
+  }
+
+  function verifySkillPresetApplied(skillIds) {
+    const expected = normalizeSkillPresetIds(skillIds);
+    const actual = scanRuntimeActiveSkillIds();
+    const expectedCounts = countSkillPresetIds(expected);
+    const actualCounts = countSkillPresetIds(actual);
+    const missing = [];
+    const extra = [];
+
+    expectedCounts.forEach((count, id) => {
+      const actualCount = actualCounts.get(id) || 0;
+      for (let index = actualCount; index < count; index += 1) missing.push(id);
+    });
+
+    actualCounts.forEach((count, id) => {
+      const expectedCount = expectedCounts.get(id) || 0;
+      for (let index = expectedCount; index < count; index += 1) extra.push(id);
+    });
+
+    return {
+      total: expected.length,
+      matched: Math.max(0, expected.length - missing.length),
+      complete: expected.length > 0 && missing.length === 0 && extra.length === 0,
+      missing,
+      extra,
+      active: actual,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  function countSkillPresetIds(skillIds) {
+    const counts = new Map();
+    for (const id of normalizeSkillPresetIds(skillIds)) {
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    return counts;
+  }
+
+  function getSkillPresetMatchStatus(presetName) {
+    const preset = getSkillPreset(presetName);
+    const skillIds = filterConfigurableSkillPresetIds(preset && preset.skillIds || []);
+    if (!preset || skillIds.length === 0) {
+      return {
+        presetName,
+        saved: false,
+        total: 0,
+        matched: 0,
+        complete: false,
+        missing: [],
+        extra: [],
+      };
+    }
+
+    return {
+      presetName,
+      saved: true,
+      ...verifySkillPresetApplied(skillIds),
+    };
+  }
+
+  function getSkillPresetStatus() {
+    const activeSkillIds = scanRuntimeActiveSkillIds();
+    return {
+      running: SKILL_PRESET_STATE.running,
+      lastState: SKILL_PRESET_STATE.lastState,
+      lastError: SKILL_PRESET_STATE.lastError,
+      lastSavedAt: SKILL_PRESET_STATE.lastSavedAt,
+      lastRunAt: SKILL_PRESET_STATE.lastRunAt,
+      activeSkillIds,
+      activeSkillCounts: summarizeSkillPresetIds(activeSkillIds),
+      quickPresets: SKILL_PRESET_QUICK_NAMES.map((presetName) => {
+        const preset = getSkillPreset(presetName);
+        const skillIds = filterConfigurableSkillPresetIds(preset && preset.skillIds || []);
+        return {
+          name: presetName,
+          savedAt: preset && preset.savedAt || "",
+          count: skillIds.length,
+          match: getSkillPresetMatchStatus(presetName),
+        };
+      }),
+      lastResult: SKILL_PRESET_STATE.lastResult,
+      socket: getGearSocketStatus(),
+    };
+  }
+
+  function getCurrentSkillConfigSummary() {
+    const activeSkillIds = scanRuntimeActiveSkillIds();
+    return {
+      activeSkillIds,
+      activeSkillCounts: summarizeSkillPresetIds(activeSkillIds),
+      entries: scanRuntimeActiveSkillEntries(),
+    };
+  }
+
+  function summarizeSkillPresetIds(skillIds) {
+    const counts = countSkillPresetIds(skillIds);
+    return Array.from(counts.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([id, count]) => count > 1 ? `${id}x${count}` : String(id))
+      .join(", ");
+  }
+
+  function formatSkillPresetIncompleteMessage(presetName, verify) {
+    const title = presetName ? `스킬 프리셋 ${presetName}` : "스킬 프리셋";
+    const lines = [
+      `${title} 적용 불완전`,
+      `${verify.matched}/${verify.total}포인트 확인`,
+    ];
+    if (verify.missing && verify.missing.length > 0) {
+      lines.push(`미적용: ${summarizeSkillPresetIds(verify.missing)}`);
+    }
+    if (verify.extra && verify.extra.length > 0) {
+      lines.push(`추가활성: ${summarizeSkillPresetIds(verify.extra)}`);
+    }
+    return lines.join("\n");
+  }
+
   function getElementSelector(element) {
     if (!element || !element.tagName) return "";
 
@@ -5528,193 +14921,6 @@
     return `${tag}${id}${classes}`;
   }
 
-  function initEventScheduler() {
-    updateEventState();
-    checkEventAlarms();
-
-    if (EVENT_STATE.timer) clearInterval(EVENT_STATE.timer);
-    EVENT_STATE.timer = setInterval(() => {
-      updateEventState();
-      checkEventAlarms();
-      renderStatusUi();
-    }, 1000);
-  }
-
-  function updateEventState() {
-    const now = Date.now();
-    const current = getEventPhaseAt(new Date(now));
-    current.remainingMs = Math.max(0, current.endAt - now);
-
-    EVENT_STATE.current = current;
-    EVENT_STATE.schedule = buildEventSchedule(now, 8);
-    EVENT_STATE.next = EVENT_STATE.schedule.find((event) => event.startAt > now) || null;
-    pruneFiredEventAlarms(now);
-  }
-
-  function getEventPhaseAt(date) {
-    const startAt = Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      date.getUTCHours(),
-      0,
-      0,
-      0
-    );
-    const phaseIndex = ((date.getUTCHours() % 3) + 3) % 3;
-    const phaseKey = phaseIndex === 0 ? "obelisk" : phaseIndex === 1 ? "gloomfury" : "rest";
-    const phase = EVENT_PHASES[phaseKey];
-
-    return {
-      key: phaseKey,
-      name: phase.name,
-      label: phase.label,
-      description: phase.description,
-      startAt,
-      endAt: startAt + HOUR_MS,
-    };
-  }
-
-  function buildEventSchedule(now, count) {
-    const date = new Date(now);
-    const currentHourStart = Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      date.getUTCHours(),
-      0,
-      0,
-      0
-    );
-    const events = [];
-
-    for (let offset = 0; offset < 36 && events.length < count; offset += 1) {
-      const phase = getEventPhaseAt(new Date(currentHourStart + offset * HOUR_MS));
-      if (phase.key === "rest" || phase.endAt <= now) continue;
-      events.push(phase);
-    }
-
-    return events;
-  }
-
-  function checkEventAlarms() {
-    if (!EVENT_CONFIG.alarmsEnabled) return;
-
-    const now = Date.now();
-    for (const event of EVENT_STATE.schedule.slice(0, 4)) {
-      if (event.startAt <= now) continue;
-
-      for (const minute of EVENT_CONFIG.alarmMinutes) {
-        const beforeMs = minute * MINUTE_MS;
-        const diff = event.startAt - now;
-        const alarmKey = `${event.key}:${event.startAt}:${minute}`;
-
-        if (diff <= beforeMs && diff > -5000 && !EVENT_STATE.firedAlarms.has(alarmKey)) {
-          EVENT_STATE.firedAlarms.add(alarmKey);
-          fireEventAlarm(event, minute);
-        }
-      }
-    }
-  }
-
-  function pruneFiredEventAlarms(now) {
-    for (const key of EVENT_STATE.firedAlarms) {
-      const parts = key.split(":");
-      const startAt = Number(parts[1]);
-      if (Number.isFinite(startAt) && startAt + HOUR_MS < now) {
-        EVENT_STATE.firedAlarms.delete(key);
-      }
-    }
-  }
-
-  function fireEventAlarm(event, minute) {
-    const message = `${event.label} 시작 ${minute}분 전`;
-    EVENT_STATE.lastAlarm = `${message} (${formatKstTime(event.startAt)})`;
-    setStatus({
-      lastState: `이벤트 알림: ${message}`,
-      lastError: "",
-    });
-
-    if (EVENT_CONFIG.soundEnabled) playEventSound();
-    showBrowserNotification("Hordes KR Mod", EVENT_STATE.lastAlarm);
-  }
-
-  function requestNotificationPermission() {
-    if (!("Notification" in pageWindow)) return;
-
-    if (pageWindow.Notification.permission === "granted") {
-      EVENT_CONFIG.browserNotification = true;
-      saveJsonConfig(EVENT_CONFIG_KEY, EVENT_CONFIG);
-      return;
-    }
-
-    if (pageWindow.Notification.permission === "default") {
-      pageWindow.Notification.requestPermission().then((permission) => {
-        EVENT_CONFIG.browserNotification = permission === "granted";
-        saveJsonConfig(EVENT_CONFIG_KEY, EVENT_CONFIG);
-        renderStatusUi();
-      });
-    }
-  }
-
-  function showBrowserNotification(title, body) {
-    if (!EVENT_CONFIG.browserNotification || !("Notification" in pageWindow)) return;
-    if (pageWindow.Notification.permission !== "granted") return;
-
-    try {
-      new pageWindow.Notification(title, {
-        body,
-        silent: !EVENT_CONFIG.soundEnabled,
-      });
-    } catch {
-      // Browser notification can fail if the page is not allowed to show it.
-    }
-  }
-
-  function playEventSound() {
-    try {
-      const AudioContext = pageWindow.AudioContext || pageWindow.webkitAudioContext;
-      if (!AudioContext) return;
-
-      const audioContext = new AudioContext();
-      const oscillator = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-
-      oscillator.type = "sine";
-      oscillator.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.08, audioContext.currentTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.35);
-      oscillator.connect(gain);
-      gain.connect(audioContext.destination);
-      oscillator.start();
-      oscillator.stop(audioContext.currentTime + 0.4);
-      setTimeout(() => audioContext.close(), 700);
-    } catch {
-      // Autoplay policies can block audio until the user interacts with the page.
-    }
-  }
-
-  function formatKstTime(timestamp) {
-    return new Intl.DateTimeFormat("ko-KR", {
-      timeZone: "Asia/Seoul",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(new Date(timestamp));
-  }
-
-  function formatDuration(ms) {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    if (hours > 0) return `${hours}시간 ${minutes}분 ${seconds}초`;
-    if (minutes > 0) return `${minutes}분 ${seconds}초`;
-    return `${seconds}초`;
-  }
-
   function initStatusUi() {
     installStatusUiKeyboardGuard();
 
@@ -5724,6 +14930,7 @@
         return;
       }
 
+      document.getElementById("hordes-kr-mod-bootstrap-fallback-root")?.remove();
       if (document.getElementById("hordes-kr-mod-status-root")) return;
 
       const host = document.createElement("div");
@@ -5849,6 +15056,11 @@
           .actions.three {
             grid-template-columns: repeat(3, 1fr);
           }
+          .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+          }
           .action {
             border: 1px solid rgba(166, 220, 213, 0.28);
             background: rgba(61, 89, 95, 0.75);
@@ -5862,11 +15074,19 @@
           .action:hover {
             border-color: rgba(245, 194, 71, 0.8);
           }
+          .action.off {
+            background: rgba(35, 41, 55, 0.78);
+            color: #8ea6aa;
+            border-color: rgba(142, 166, 170, 0.22);
+          }
           .input-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
             gap: 6px;
             margin-top: 7px;
+          }
+          .input-row.api-key {
+            grid-template-columns: minmax(0, 1fr) auto auto;
           }
           .text-input {
             min-width: 0;
@@ -5902,6 +15122,22 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            background: transparent;
+            border: none;
+            padding: 0;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+          }
+          .highlight-name:hover {
+            color: #f5c247;
+          }
+          .highlight-item.locked {
+            border-color: rgba(245, 194, 71, 0.8);
+            background: rgba(245, 194, 71, 0.14);
+          }
+          .highlight-item.locked .highlight-name {
+            color: #f5c247;
           }
           .remove {
             border: 1px solid rgba(166, 220, 213, 0.24);
@@ -5927,22 +15163,6 @@
             padding-top: 9px;
             margin-top: 2px;
           }
-          .schedule {
-            display: grid;
-            gap: 5px;
-            padding-top: 2px;
-          }
-          .schedule-row {
-            display: grid;
-            grid-template-columns: 82px 1fr;
-            gap: 8px;
-            color: #dff8f5;
-            line-height: 1.3;
-          }
-          .schedule-time {
-            color: #a6dcd5;
-            font-weight: 800;
-          }
         </style>
         <div id="panel" class="panel" hidden>
           <div class="header">
@@ -5951,14 +15171,75 @@
           </div>
           <div class="body">
             <div class="section">
-              <div class="row"><span class="label">남은 시간</span><span id="eventRemaining" class="value"></span></div>
-              <div class="row"><span class="label">다음</span><span id="eventNext" class="value"></span></div>
               <div class="row"><span class="label">타겟 거리</span><span id="targetDistance" class="value"></span></div>
-              <div id="eventSchedule" class="schedule"></div>
             </div>
             <div class="actions">
               <button id="toggle" class="action" type="button"></button>
               <button id="toggleHighlight" class="action" type="button"></button>
+            </div>
+            <div class="section feature-grid">
+              <button id="toggleMinimapLabels" class="action" type="button"></button>
+              <button id="toggleIncomingSkill" class="action" type="button"></button>
+              <button id="toggleIncomingSkillList" class="action" type="button"></button>
+              <button id="toggleIncomingTargetWatch" class="action" type="button"></button>
+              <button id="toggleTargetDistance" class="action" type="button"></button>
+              <button id="toggleChatTranslation" class="action" type="button"></button>
+              <button id="toggleTargetOrder" class="action" type="button"></button>
+              <button id="toggleTargetOrderAlert" class="action" type="button"></button>
+              <button id="toggleHighlightList" class="action" type="button"></button>
+              <button id="togglePartyUi" class="action" type="button"></button>
+              <button id="partyPreset5x2" class="action" type="button">파티5x2</button>
+            </div>
+            <div class="section">
+              <div class="row"><span class="label">타겟오더</span><span id="targetOrderStatus" class="value"></span></div>
+              <div class="input-row">
+                <input id="targetOrderServerInput" class="text-input" type="text" placeholder="ws://localhost:8787" autocomplete="off" spellcheck="false" />
+                <button id="saveTargetOrderConfig" class="action" type="button">저장</button>
+              </div>
+              <div class="input-row">
+                <input id="targetOrderRoomInput" class="text-input" type="text" maxlength="48" placeholder="방 코드" autocomplete="off" spellcheck="false" />
+                <input id="targetOrderNameInput" class="text-input" type="text" maxlength="32" placeholder="닉네임" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="input-row">
+                <input id="targetOrderTokenInput" class="text-input" type="password" placeholder="유저 토큰" autocomplete="off" spellcheck="false" />
+                <input id="targetOrderHotkeyInput" class="text-input" type="text" readonly placeholder="단축키" autocomplete="off" spellcheck="false" />
+              </div>
+            </div>
+            <div class="section">
+              <div class="row"><span class="label">장비프리셋</span><span id="gearPresetStatus" class="value"></span></div>
+              <div class="actions three">
+                <button id="saveGearPreset1" class="action" type="button">1 저장</button>
+                <button id="saveGearPreset2" class="action" type="button">2 저장</button>
+                <button id="saveGearPreset3" class="action" type="button">3 저장</button>
+              </div>
+              <div class="actions three">
+                <button id="equipGearPreset1" class="action" type="button">1 장착</button>
+                <button id="equipGearPreset2" class="action" type="button">2 장착</button>
+                <button id="equipGearPreset3" class="action" type="button">3 장착</button>
+              </div>
+              <div id="gearPresetNote" class="note"></div>
+            </div>
+            <div class="section">
+              <div class="row"><span class="label">스킬프리셋</span><span id="skillPresetStatus" class="value"></span></div>
+              <div class="actions three">
+                <button id="saveSkillPreset1" class="action" type="button">1 저장</button>
+                <button id="saveSkillPreset2" class="action" type="button">2 저장</button>
+                <button id="saveSkillPreset3" class="action" type="button">3 저장</button>
+              </div>
+              <div class="actions three">
+                <button id="applySkillPreset1" class="action" type="button">1 적용</button>
+                <button id="applySkillPreset2" class="action" type="button">2 적용</button>
+                <button id="applySkillPreset3" class="action" type="button">3 적용</button>
+              </div>
+              <div id="skillPresetNote" class="note"></div>
+            </div>
+            <div class="section">
+              <div class="row"><span class="label">채팅 키</span><span id="chatApiKeyStatus" class="value"></span></div>
+              <div class="input-row api-key">
+                <input id="chatApiKeyInput" class="text-input" type="password" placeholder="OpenAI API 키" autocomplete="off" spellcheck="false" />
+                <button id="saveChatApiKey" class="action" type="button">저장</button>
+                <button id="clearChatApiKey" class="action" type="button">삭제</button>
+              </div>
             </div>
             <div class="section">
               <div class="row"><span class="label">강조 ID</span><span id="highlightCount" class="value"></span></div>
@@ -5987,17 +15268,19 @@
       });
 
       shadow.getElementById("toggle").addEventListener("click", () => {
-        if (isEnabled()) {
-          pageWindow.HordesKrMod.disable();
-        } else {
-          pageWindow.HordesKrMod.enable();
-        }
+        pageWindow.HordesKrMod.toggleTranslation();
       });
 
       shadow.getElementById("toggleHighlight").addEventListener("click", () => {
         pageWindow.HordesKrMod.toggleNameHighlight();
         renderStatusUi();
       });
+
+      installFeatureToggleHandlers(shadow);
+      installChatApiKeyHandlers(shadow);
+      installTargetOrderConfigHandlers(shadow);
+      installGearPresetHandlers(shadow);
+      installSkillPresetHandlers(shadow);
 
       shadow.getElementById("addHighlight").addEventListener("click", () => {
         addHighlightNameFromUi();
@@ -6011,6 +15294,8 @@
       });
 
       installHighlightInputGuards(shadow);
+      installChatApiKeyInputGuards(shadow);
+      installTargetOrderInputGuards(shadow);
       installUiDragging(shadow);
       installUiResizeObserver(shadow);
       renderStatusUi();
@@ -6043,14 +15328,32 @@
   }
 
   function isStatusUiKeyboardEvent(event) {
-    const input = STATUS_UI.shadow && STATUS_UI.shadow.getElementById("highlightInput");
-    if (!input) return false;
+    const inputs = getStatusUiTextInputs();
+    if (inputs.length === 0) return false;
 
-    if (typeof event.composedPath === "function" && event.composedPath().includes(input)) {
-      return true;
+    if (typeof event.composedPath === "function") {
+      const path = event.composedPath();
+      if (inputs.some((input) => path.includes(input))) return true;
     }
 
-    return getStatusUiActiveElement() === input;
+    return inputs.includes(getStatusUiActiveElement());
+  }
+
+  function getStatusUiTextInputs() {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return [];
+
+    return [
+      "highlightInput",
+      "chatApiKeyInput",
+      "targetOrderServerInput",
+      "targetOrderRoomInput",
+      "targetOrderNameInput",
+      "targetOrderTokenInput",
+      "targetOrderHotkeyInput",
+    ]
+      .map((id) => shadow.getElementById(id))
+      .filter(Boolean);
   }
 
   function getStatusUiActiveElement() {
@@ -6062,11 +15365,17 @@
 
   function handleStatusUiKeydown(event) {
     const active = getStatusUiActiveElement();
-    if (!active || active.id !== "highlightInput") return;
+    if (!active) return;
 
     if (event.key === "Enter") {
       event.preventDefault();
-      addHighlightNameFromUi();
+      if (active.id === "highlightInput") {
+        addHighlightNameFromUi();
+      } else if (active.id === "chatApiKeyInput") {
+        saveChatApiKeyFromUi();
+      } else if (active.id && active.id.startsWith("targetOrder")) {
+        saveTargetOrderConfigFromUi();
+      }
     } else if (event.key === "Escape") {
       event.preventDefault();
       active.blur();
@@ -6077,6 +15386,41 @@
     const input = shadow.getElementById("highlightInput");
     if (!input) return;
 
+    HIGHLIGHT_INPUT_POINTER_EVENTS.forEach((type) => {
+      input.addEventListener(type, (event) => {
+        event.stopPropagation();
+        pageWindow.requestAnimationFrame(() => input.focus({ preventScroll: true }));
+      });
+    });
+
+    STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
+      input.addEventListener(type, (event) => {
+        event.stopPropagation();
+      });
+    });
+  }
+
+  function installChatApiKeyInputGuards(shadow) {
+    const input = shadow.getElementById("chatApiKeyInput");
+    if (!input) return;
+
+    installInputEventGuards(input);
+  }
+
+  function installTargetOrderInputGuards(shadow) {
+    [
+      "targetOrderServerInput",
+      "targetOrderRoomInput",
+      "targetOrderNameInput",
+      "targetOrderTokenInput",
+      "targetOrderHotkeyInput",
+    ].forEach((id) => {
+      const input = shadow.getElementById(id);
+      if (input) installInputEventGuards(input);
+    });
+  }
+
+  function installInputEventGuards(input) {
     HIGHLIGHT_INPUT_POINTER_EVENTS.forEach((type) => {
       input.addEventListener(type, (event) => {
         event.stopPropagation();
@@ -6202,7 +15546,7 @@
 
     const enabled = isEnabled();
     const state = MOD_STATUS.lastState || "";
-    const isError = state.includes("오류") || state.includes("실패");
+    const isError = state.includes("오류") || state.includes("실패") || state.includes("키 없음");
     const isApplied =
       state === "적용됨" ||
       state.includes("적용됨") ||
@@ -6218,11 +15562,448 @@
     shadow.getElementById("panel").hidden = !STATUS_UI.panelOpen;
     shadow.getElementById("version").textContent = `v${MOD_VERSION}`;
     shadow.getElementById("badgeState").textContent = badgeState;
-    shadow.getElementById("toggle").textContent = enabled ? "번역 끄기" : "번역 켜기";
-    shadow.getElementById("toggleHighlight").textContent = HIGHLIGHT_CONFIG.enabled ? "강조 끄기" : "강조 켜기";
-    renderEventUi(shadow);
+    setFeatureToggleButton(shadow, "toggle", "번역", enabled);
+    setFeatureToggleButton(shadow, "toggleHighlight", "강조", HIGHLIGHT_CONFIG.enabled);
+    renderFeatureToggles(shadow);
+    renderChatApiKeyUi(shadow);
+    renderTargetOrderUi(shadow);
+    renderGearPresetUi(shadow);
+    renderSkillPresetUi(shadow);
     renderTargetDistanceUi(shadow);
     renderHighlightUi(shadow);
+  }
+
+  function installFeatureToggleHandlers(shadow) {
+    const actions = {
+      toggleMinimapLabels: () => pageWindow.HordesKrMod.toggleMinimapNameLabels(),
+      toggleIncomingSkill: () => pageWindow.HordesKrMod.toggleIncomingSkillOverlay(),
+      toggleIncomingSkillList: () => pageWindow.HordesKrMod.toggleIncomingSkillList(),
+      toggleIncomingTargetWatch: () => pageWindow.HordesKrMod.toggleIncomingTargetWatch(),
+      toggleTargetDistance: () => pageWindow.HordesKrMod.toggleTargetDistanceOverlay(),
+      toggleChatTranslation: () => pageWindow.HordesKrMod.toggleChatTranslation(),
+      toggleTargetOrder: () => pageWindow.HordesKrMod.toggleTargetOrder(),
+      toggleTargetOrderAlert: () => pageWindow.HordesKrMod.toggleTargetOrderAlert(),
+      toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
+      togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
+      partyPreset5x2: () => pageWindow.HordesKrMod.partyUiPreset5x2(),
+    };
+
+    Object.entries(actions).forEach(([id, action]) => {
+      const button = shadow.getElementById(id);
+      if (!button) return;
+
+      button.addEventListener("click", () => {
+        action();
+        renderStatusUi();
+      });
+    });
+  }
+
+  function installChatApiKeyHandlers(shadow) {
+    const input = shadow.getElementById("chatApiKeyInput");
+    const save = shadow.getElementById("saveChatApiKey");
+    const clear = shadow.getElementById("clearChatApiKey");
+
+    if (save) {
+      save.addEventListener("click", () => {
+        saveChatApiKeyFromUi();
+      });
+    }
+
+    if (clear) {
+      clear.addEventListener("click", () => {
+        clearChatApiKeyFromUi();
+      });
+    }
+
+    if (input) {
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          saveChatApiKeyFromUi();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          input.blur();
+        }
+      });
+    }
+  }
+
+  function installTargetOrderConfigHandlers(shadow) {
+    const save = shadow.getElementById("saveTargetOrderConfig");
+    const hotkey = shadow.getElementById("targetOrderHotkeyInput");
+    if (save) {
+      save.addEventListener("click", () => {
+        saveTargetOrderConfigFromUi();
+      });
+    }
+
+    if (hotkey) {
+      hotkey.addEventListener("keydown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const code = normalizeKeyboardCode(event.code);
+        if (!code || event.key === "Escape") {
+          hotkey.blur();
+          return;
+        }
+
+        TARGET_ORDER_CONFIG.hotkeyCode = code;
+        hotkey.value = formatKeyboardCode(code);
+        saveTargetOrderConfigFromUi();
+      });
+      hotkey.addEventListener("focus", () => {
+        TARGET_ORDER_STATE.hotkeyCaptureActive = true;
+        hotkey.value = "누를 키 입력...";
+      });
+      hotkey.addEventListener("blur", () => {
+        TARGET_ORDER_STATE.hotkeyCaptureActive = false;
+        hotkey.value = formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode);
+      });
+    }
+  }
+
+  function installGearPresetHandlers(shadow) {
+    for (const presetName of GEAR_PRESET_QUICK_NAMES) {
+      const save = shadow.getElementById(`saveGearPreset${presetName}`);
+      const equip = shadow.getElementById(`equipGearPreset${presetName}`);
+
+      if (save) {
+        save.addEventListener("click", () => {
+          pageWindow.HordesKrMod.saveEquippedGearPreset(presetName);
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          renderStatusUi();
+        });
+      }
+
+      if (equip) {
+        equip.addEventListener("click", () => {
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          pageWindow.HordesKrMod.equipGearPreset(presetName).finally(() => {
+            HIGHLIGHT_STATE.presetBarRenderKey = "";
+            updatePresetQuickBar();
+            renderStatusUi();
+          });
+          renderStatusUi();
+        });
+      }
+    }
+  }
+
+  function installSkillPresetHandlers(shadow) {
+    for (const presetName of SKILL_PRESET_QUICK_NAMES) {
+      const save = shadow.getElementById(`saveSkillPreset${presetName}`);
+      const apply = shadow.getElementById(`applySkillPreset${presetName}`);
+
+      if (save) {
+        save.addEventListener("click", () => {
+          pageWindow.HordesKrMod.saveSkillPreset(presetName);
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          renderStatusUi();
+        });
+      }
+
+      if (apply) {
+        apply.addEventListener("click", () => {
+          HIGHLIGHT_STATE.presetBarRenderKey = "";
+          updatePresetQuickBar();
+          pageWindow.HordesKrMod.applySkillPreset(presetName).finally(() => {
+            HIGHLIGHT_STATE.presetBarRenderKey = "";
+            updatePresetQuickBar();
+            renderStatusUi();
+          });
+          renderStatusUi();
+        });
+      }
+    }
+  }
+
+  function renderFeatureToggles(shadow) {
+    setFeatureToggleButton(shadow, "toggleMinimapLabels", "미니맵", HIGHLIGHT_CONFIG.minimapLabelsEnabled);
+    setFeatureToggleButton(shadow, "toggleIncomingSkill", "시전경고", FEATURE_CONFIG.incomingSkillOverlayEnabled);
+    setFeatureToggleButton(shadow, "toggleIncomingSkillList", "경고목록", isIncomingSkillListEnabled());
+    setFeatureToggleButton(shadow, "toggleIncomingTargetWatch", "주시경고", isIncomingTargetWatchEnabled());
+    setFeatureToggleButton(shadow, "toggleTargetDistance", "타겟거리", FEATURE_CONFIG.targetDistanceEnabled);
+    renderChatTranslationToggle(shadow);
+    setFeatureToggleButton(shadow, "toggleTargetOrder", "타겟오더", TARGET_ORDER_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "toggleTargetOrderAlert", "오더알림", TARGET_ORDER_CONFIG.alertEnabled);
+    setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
+    setFeatureToggleButton(shadow, "togglePartyUi", "파티UI", PARTY_UI_CONFIG.enabled);
+    const preset = shadow.getElementById("partyPreset5x2");
+    if (preset) {
+      preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
+      preset.title = "내 체력바 위에 5열 2행으로 배치";
+    }
+  }
+
+  function setFeatureToggleButton(shadow, id, label, enabled) {
+    const button = shadow.getElementById(id);
+    if (!button) return;
+
+    button.textContent = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
+    button.classList.toggle("off", !enabled);
+    button.title = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
+  }
+
+  function renderChatTranslationToggle(shadow) {
+    const button = shadow.getElementById("toggleChatTranslation");
+    if (!button) return;
+
+    if (!hasChatTranslationApiKey()) {
+      button.textContent = "채팅번역 키없음";
+      button.classList.add("off");
+      button.title = '콘솔에서 HordesKrMod.setChatTranslationApiKey("...")로 API 키를 저장한 뒤 켜세요.';
+      return;
+    }
+
+    setFeatureToggleButton(shadow, "toggleChatTranslation", "채팅번역", isChatTranslationEnabled());
+  }
+
+  function renderChatApiKeyUi(shadow) {
+    const status = shadow.getElementById("chatApiKeyStatus");
+    const input = shadow.getElementById("chatApiKeyInput");
+    if (!status) return;
+
+    const hasKey = hasChatTranslationApiKey();
+    const error = CHAT_TRANSLATION_STATE.lastError || "";
+    const active = isChatTranslationEnabled();
+    status.textContent = hasKey
+      ? active
+        ? "저장됨 / 번역 켜짐"
+        : "저장됨"
+      : error === "API 키 없음"
+        ? "키 없음"
+        : "미저장";
+
+    if (input) {
+      input.placeholder = hasKey ? "새 키 입력 시 교체" : "OpenAI API 키";
+    }
+  }
+
+  function renderTargetOrderUi(shadow) {
+    const status = shadow.getElementById("targetOrderStatus");
+    const server = shadow.getElementById("targetOrderServerInput");
+    const room = shadow.getElementById("targetOrderRoomInput");
+    const name = shadow.getElementById("targetOrderNameInput");
+    const token = shadow.getElementById("targetOrderTokenInput");
+    const hotkey = shadow.getElementById("targetOrderHotkeyInput");
+    if (status) {
+      status.textContent = getTargetOrderStatusText();
+      status.title = TARGET_ORDER_STATE.lastError || "";
+    }
+    const active = shadow.activeElement;
+    if (server && active !== server) server.value = TARGET_ORDER_CONFIG.serverUrl;
+    if (room && active !== room) room.value = TARGET_ORDER_CONFIG.roomId;
+    if (name && active !== name) name.value = TARGET_ORDER_CONFIG.userName;
+    if (token && active !== token) token.value = TARGET_ORDER_CONFIG.clientToken;
+    if (hotkey && active !== hotkey) hotkey.value = formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode);
+  }
+
+  function renderGearPresetUi(shadow) {
+    const status = shadow.getElementById("gearPresetStatus");
+    const note = shadow.getElementById("gearPresetNote");
+    if (!status) return;
+
+    const presets = GEAR_PRESET_QUICK_NAMES.map((presetName) => ({
+      name: presetName,
+      preset: getGearPreset(presetName),
+      save: shadow.getElementById(`saveGearPreset${presetName}`),
+      equip: shadow.getElementById(`equipGearPreset${presetName}`),
+    }));
+    const presetSummaryParts = presets.map(({ name, preset }) => {
+      const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+      return `${name}:${count}`;
+    });
+    const equippedItems = STATUS_UI.panelOpen ? scanRuntimeEquippedGearItems().map(stripGearPresetElement) : [];
+    const runtimeItems = STATUS_UI.panelOpen ? scanRuntimeGearItems().map(stripGearPresetElement) : [];
+    const socket = getGearSocketStatus();
+    const socketText = socket.available
+      ? "서버연결"
+      : socket.wrapped
+        ? "서버대기"
+        : "서버미감지";
+
+    const staleScanError =
+      GEAR_PRESET_STATE.lastState === "저장 실패" &&
+      GEAR_PRESET_STATE.lastError &&
+      equippedItems.length > 0;
+
+    if (GEAR_PRESET_STATE.running) {
+      status.textContent = "장착 중";
+    } else if (GEAR_PRESET_STATE.lastError && !staleScanError) {
+      status.textContent = GEAR_PRESET_STATE.lastState || "오류";
+    } else {
+      status.textContent = `장착 ${equippedItems.length}개 / ${presetSummaryParts.join(" ")} / ${socketText}`;
+    }
+    status.title = staleScanError ? "" : GEAR_PRESET_STATE.lastError || "";
+
+    presets.forEach(({ name, preset, save, equip }) => {
+      const presetCount = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+      if (save) {
+        save.disabled = GEAR_PRESET_STATE.running;
+        save.classList.toggle("off", GEAR_PRESET_STATE.running);
+        save.title = `현재 장착 중인 아이템의 고유 ID(dbid)를 프리셋 ${name}에 저장합니다.`;
+      }
+      if (equip) {
+        equip.disabled = GEAR_PRESET_STATE.running || presetCount === 0;
+        equip.classList.toggle("off", GEAR_PRESET_STATE.running || presetCount === 0);
+        equip.title = `프리셋 ${name}의 아이템 dbid를 현재 슬롯에서 찾아 서버 장착 명령을 보냅니다. 가방을 닫아도 실행 가능합니다.`;
+      }
+    });
+
+    if (note) {
+      const equippedSummary = summarizeGearPresetItems(equippedItems);
+      note.textContent = [
+        equippedSummary ? `현재장착: ${equippedSummary}` : "현재 장착 정보 없음",
+        runtimeItems.length ? `인벤토리감지: ${runtimeItems.length}개` : "인벤토리 감지 없음",
+        socket.available ? "전송: dbid 검색 후 itemmove" : "전송: 새로고침 후 연결 감지",
+        GEAR_PRESET_STATE.lastResult
+          ? `최근: 장착 ${GEAR_PRESET_STATE.lastResult.equipped}/${GEAR_PRESET_STATE.lastResult.requested}, 해제 ${GEAR_PRESET_STATE.lastResult.unequipped || 0}${
+              GEAR_PRESET_STATE.lastResult.savedSlotFallback
+                ? `, 저장슬롯 ${GEAR_PRESET_STATE.lastResult.savedSlotFallback}개`
+                : ""
+            }`
+          : "",
+      ].filter(Boolean).join(" / ");
+    }
+  }
+
+  function renderSkillPresetUi(shadow) {
+    const status = shadow.getElementById("skillPresetStatus");
+    const note = shadow.getElementById("skillPresetNote");
+    if (!status) return;
+
+    const presets = SKILL_PRESET_QUICK_NAMES.map((presetName) => ({
+      name: presetName,
+      preset: getSkillPreset(presetName),
+      save: shadow.getElementById(`saveSkillPreset${presetName}`),
+      apply: shadow.getElementById(`applySkillPreset${presetName}`),
+    }));
+    const presetSummaryParts = presets.map(({ name, preset }) => {
+      const count = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+      return `${name}:${count}`;
+    });
+    const activeSkillIds = STATUS_UI.panelOpen ? scanRuntimeActiveSkillIds() : [];
+    const socket = getGearSocketStatus();
+    const socketText = socket.available
+      ? "서버연결"
+      : socket.wrapped
+        ? "서버대기"
+        : "서버미감지";
+
+    const staleScanError =
+      SKILL_PRESET_STATE.lastState === "저장 실패" &&
+      SKILL_PRESET_STATE.lastError &&
+      activeSkillIds.length > 0;
+
+    if (SKILL_PRESET_STATE.running) {
+      status.textContent = "적용 중";
+    } else if (SKILL_PRESET_STATE.lastError && !staleScanError) {
+      status.textContent = SKILL_PRESET_STATE.lastState || "오류";
+    } else {
+      status.textContent = `활성 ${activeSkillIds.length}포인트 / ${presetSummaryParts.join(" ")} / ${socketText}`;
+    }
+    status.title = staleScanError ? "" : SKILL_PRESET_STATE.lastError || "";
+
+    presets.forEach(({ name, preset, save, apply }) => {
+      const presetCount = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+      if (save) {
+        save.disabled = SKILL_PRESET_STATE.running;
+        save.classList.toggle("off", SKILL_PRESET_STATE.running);
+        save.title = `현재 활성 스킬 구성을 프리셋 ${name}에 저장합니다.`;
+      }
+      if (apply) {
+        apply.disabled = SKILL_PRESET_STATE.running || presetCount === 0;
+        apply.classList.toggle("off", SKILL_PRESET_STATE.running || presetCount === 0);
+        apply.title = `프리셋 ${name}의 스킬 ID 목록을 skillconfig 명령으로 적용합니다.`;
+      }
+    });
+
+    if (note) {
+      note.textContent = [
+        activeSkillIds.length ? `현재활성: ${summarizeSkillPresetIds(activeSkillIds)}` : "현재 활성 스킬 정보 없음",
+        socket.available ? "전송: skillconfig" : "전송: 새로고침 후 연결 감지",
+        SKILL_PRESET_STATE.lastResult
+          ? `최근: ${SKILL_PRESET_STATE.lastResult.sent ? "전송됨" : "전송없음"}${
+              SKILL_PRESET_STATE.lastResult.verify
+                ? `, 확인 ${SKILL_PRESET_STATE.lastResult.verify.matched}/${SKILL_PRESET_STATE.lastResult.verify.total}`
+                : ""
+            }`
+          : "",
+      ].filter(Boolean).join(" / ");
+    }
+  }
+
+  function summarizeGearPresetItems(items) {
+    const counts = new Map();
+    for (const item of items || []) {
+      const key = item.itemType || "item";
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+
+    return Array.from(counts.entries())
+      .map(([type, count]) => count > 1 ? `${type}x${count}` : type)
+      .join(", ");
+  }
+
+  function getTargetOrderStatusText() {
+    if (!TARGET_ORDER_CONFIG.enabled) return "꺼짐";
+    if (!isTargetOrderConfigReady()) return "설정 필요";
+    const suffix = TARGET_ORDER_STATE.users.length > 0 ? ` / ${TARGET_ORDER_STATE.users.length}명` : "";
+    return `${TARGET_ORDER_STATE.lastState || "대기"}${suffix}`;
+  }
+
+  function saveTargetOrderConfigFromUi() {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return getTargetOrderStatus();
+
+    const nextConfig = {
+      serverUrl: getInputValue(shadow, "targetOrderServerInput"),
+      roomId: getInputValue(shadow, "targetOrderRoomInput"),
+      userName: getInputValue(shadow, "targetOrderNameInput"),
+      clientToken: getInputValue(shadow, "targetOrderTokenInput"),
+      hotkeyCode: TARGET_ORDER_CONFIG.hotkeyCode,
+    };
+    return setTargetOrderConfig(nextConfig);
+  }
+
+  function getInputValue(shadow, id) {
+    const input = shadow && shadow.getElementById(id);
+    return input ? String(input.value || "").trim() : "";
+  }
+
+  function saveChatApiKeyFromUi() {
+    const shadow = STATUS_UI.shadow;
+    const input = shadow && shadow.getElementById("chatApiKeyInput");
+    const apiKey = input && input.value ? input.value.trim() : "";
+
+    if (!apiKey) {
+      setStatus({
+        lastState: "채팅번역 키 없음",
+        lastError: "API 키를 입력한 뒤 저장하세요.",
+      });
+      if (input) input.focus({ preventScroll: true });
+      return false;
+    }
+
+    const saved = pageWindow.HordesKrMod.setChatTranslationApiKey(apiKey);
+    if (input) input.value = "";
+    renderStatusUi();
+    return saved;
+  }
+
+  function clearChatApiKeyFromUi() {
+    const shadow = STATUS_UI.shadow;
+    const input = shadow && shadow.getElementById("chatApiKeyInput");
+    if (input) input.value = "";
+    const cleared = pageWindow.HordesKrMod.clearChatTranslationApiKey();
+    renderStatusUi();
+    return cleared;
   }
 
   function addHighlightNameFromUi() {
@@ -6244,20 +16025,36 @@
     if (!count || !list) return;
 
     const names = HIGHLIGHT_CONFIG.names.slice();
+    const locked = TARGET_DISTANCE_STATE.lockedTarget;
+    const lockedName = locked && locked.name ? locked.name.toLowerCase() : "";
     count.textContent = names.length > 0 ? `${names.length}개` : "없음";
     list.replaceChildren(
       ...names.map((name) => {
         const row = document.createElement("div");
-        const value = document.createElement("span");
+        const value = document.createElement("button");
         const remove = document.createElement("button");
 
-        row.className = "highlight-item";
+        const isLocked = Boolean(lockedName && lockedName === name.toLowerCase());
+        row.className = isLocked ? "highlight-item locked" : "highlight-item";
         value.className = "highlight-name";
+        value.type = "button";
         value.textContent = name;
+        value.title = isLocked
+          ? "클릭하면 거리 추적을 해제합니다"
+          : "클릭하면 이 이름을 거리 추적 대상으로 고정합니다";
+        value.addEventListener("click", () => {
+          if (isLocked) {
+            pageWindow.HordesKrMod.unlockTargetDistance();
+          } else {
+            pageWindow.HordesKrMod.lockTargetDistanceByName(name);
+          }
+          renderStatusUi();
+        });
         remove.className = "remove";
         remove.type = "button";
         remove.textContent = "삭제";
         remove.addEventListener("click", () => {
+          if (isLocked) pageWindow.HordesKrMod.unlockTargetDistance();
           pageWindow.HordesKrMod.removeHighlightName(name);
           renderStatusUi();
         });
@@ -6270,6 +16067,12 @@
   function renderTargetDistanceUi(shadow) {
     const targetDistance = shadow.getElementById("targetDistance");
     if (!targetDistance) return;
+
+    if (!isTargetDistanceEnabled()) {
+      targetDistance.textContent = "꺼짐";
+      targetDistance.title = "";
+      return;
+    }
 
     if (!STATUS_UI.panelOpen) {
       targetDistance.textContent = "-";
@@ -6285,46 +16088,21 @@
     }
 
     const targetName = result.target && result.target.name ? result.target.name : "대상";
-    targetDistance.textContent = `${formatTargetDistance(result.distance)} (${targetName})`;
-    targetDistance.title = `3D ${formatTargetDistance(result.distance3d)} / ${result.target.referenceSource || result.target.path}`;
+    const locked = Boolean(result.tracking && result.tracking.locked);
+    const prefix = locked ? "🔒 " : "";
+    targetDistance.textContent = `${prefix}${result.stale ? "~" : ""}${formatTargetDistance(result.distance)} (${targetName})`;
+    targetDistance.title = [
+      locked ? "이름으로 고정된 타겟" : "",
+      `3D ${formatTargetDistance(result.distance3d)}`,
+      result.target.referenceSource || result.target.path,
+      result.stale ? "마지막 좌표 기준" : "",
+    ].filter(Boolean).join(" / ");
   }
 
   function formatTargetDistance(distance) {
     const value = Number(distance);
     if (!Number.isFinite(value)) return "-";
     return value < 100 ? value.toFixed(1) : String(Math.round(value));
-  }
-
-  function renderEventUi(shadow) {
-    if (!EVENT_STATE.current) updateEventState();
-
-    const current = EVENT_STATE.current;
-    const next = EVENT_STATE.next;
-    shadow.getElementById("eventRemaining").textContent = current
-      ? `${formatDuration(current.remainingMs)} (${formatKstTime(current.endAt)} KST 종료)`
-      : "-";
-    shadow.getElementById("eventNext").textContent = next
-      ? `${next.label} ${formatKstTime(next.startAt)} KST`
-      : "-";
-
-    const schedule = shadow.getElementById("eventSchedule");
-    if (!schedule) return;
-
-    schedule.replaceChildren(
-      ...EVENT_STATE.schedule.slice(0, 3).map((event) => {
-        const row = document.createElement("div");
-        const time = document.createElement("span");
-        const value = document.createElement("span");
-
-        row.className = "schedule-row";
-        time.className = "schedule-time";
-        value.className = "value";
-        time.textContent = `${formatKstTime(event.startAt)} KST`;
-        value.textContent = event.label;
-        row.append(time, value);
-        return row;
-      })
-    );
   }
 
   function getBadgeState(enabled, isApplied, isReady, isBusy, isError) {
