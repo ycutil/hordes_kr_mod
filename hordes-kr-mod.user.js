@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.91-local
+// @version      0.9.92-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -18,7 +18,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.91-local";
+  const BOOT_VERSION = "0.9.92-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -303,12 +303,12 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY = "hordesKrMod.highlight.minimapListScaleDefaultVersion";
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
-  const RUNTIME_OVERLAY_INTERVAL_MS = 100;
-  const RUNTIME_NAME_OVERLAY_REFRESH_MS = 130;
-  const MINIMAP_OVERLAY_REFRESH_MS = 200;
-  const PRESET_QUICKBAR_REFRESH_MS = 500;
-  const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
-  const TARGET_DISTANCE_CACHE_MS = 100;
+  const RUNTIME_OVERLAY_INTERVAL_MS = 250;
+  const RUNTIME_NAME_OVERLAY_REFRESH_MS = 250;
+  const MINIMAP_OVERLAY_REFRESH_MS = 500;
+  const PRESET_QUICKBAR_REFRESH_MS = 1000;
+  const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 200;
+  const TARGET_DISTANCE_CACHE_MS = 200;
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
@@ -319,16 +319,16 @@
   const CHAT_TRANSLATION_DEFAULT_MODEL = "gpt-4.1-nano";
   const CHAT_TRANSLATION_MODEL_MIGRATION_VERSION = "2026-05-21-gpt-4.1-nano";
   const CHAT_TRANSLATION_PREVIOUS_DEFAULT_MODELS = new Set(["gpt-5-nano"]);
-  const CHAT_TRANSLATION_SCAN_DELAY_MS = 20;
+  const CHAT_TRANSLATION_SCAN_DELAY_MS = 80;
   const CHAT_TRANSLATION_TIMEOUT_MS = 12000;
   const CHAT_TRANSLATION_SCAN_LIMIT = 10;
   const CHAT_TRANSLATION_MAX_QUEUE = 12;
   const CHAT_TRANSLATION_MAX_CACHE = 300;
   const CHAT_TRANSLATION_CACHE_TTL_MS = 30 * 60 * 1000;
-  const CHAT_TRANSLATION_MAX_CONCURRENT = 4;
+  const CHAT_TRANSLATION_MAX_CONCURRENT = 2;
   const CHAT_TRANSLATION_BATCH_SIZE = 1;
   const CHAT_TRANSLATION_MAX_TEXT_LENGTH = 220;
-  const CHAT_TRANSLATION_TOGGLE_REFRESH_MS = 350;
+  const CHAT_TRANSLATION_TOGGLE_REFRESH_MS = 1000;
   const CHAT_TRANSLATION_ALLOWED_CHANNELS = new Set(["faction", "party", "yell", "whisper"]);
   const CHAT_TRANSLATION_BRIDGE_REQUEST = "HORDES_KR_MOD_OPENAI_REQUEST";
   const CHAT_TRANSLATION_BRIDGE_RESPONSE = "HORDES_KR_MOD_OPENAI_RESPONSE";
@@ -607,7 +607,7 @@
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   HIGHLIGHT_CONFIG.domEnabled = HIGHLIGHT_CONFIG.domEnabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
-  HIGHLIGHT_CONFIG.runtimeOverlayEnabled = true;
+  HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
   HIGHLIGHT_CONFIG.minimapLabelsEnabled = HIGHLIGHT_CONFIG.minimapLabelsEnabled !== false;
   HIGHLIGHT_CONFIG.minimapListEnabled = HIGHLIGHT_CONFIG.minimapListEnabled !== false;
   HIGHLIGHT_CONFIG.minimapListScale = normalizeMinimapHighlightListScale(HIGHLIGHT_CONFIG.minimapListScale);
@@ -652,6 +652,7 @@
     quickToggleRenderKey: "",
     pendingScan: false,
     activeRequests: 0,
+    observedRootKey: "",
     queue: [],
     queuedKeys: new Set(),
     cache: new Map(),
@@ -770,6 +771,7 @@
     scriptHookAttemptedScripts: [],
     scriptHookPatchedScripts: [],
     scriptHookErrors: [],
+    queuedHighlightRoots: new Set(),
     runtimeOverlayHost: null,
     runtimeOverlayItems: new Map(),
     runtimeOverlayTimer: null,
@@ -3566,10 +3568,10 @@
 
       for (const mutation of mutations) {
         if (mutation.type === "characterData") {
-          DOM_TRANSLATION_STATE.queuedRoots.add(mutation.target);
+          if (!shouldSkipNode(mutation.target)) DOM_TRANSLATION_STATE.queuedRoots.add(mutation.target);
         } else {
           mutation.addedNodes.forEach((node) => {
-            DOM_TRANSLATION_STATE.queuedRoots.add(node);
+            if (!shouldSkipNode(node)) DOM_TRANSLATION_STATE.queuedRoots.add(node);
           });
         }
       }
@@ -3634,6 +3636,7 @@
           if (mutation.type === "childList") {
             mutation.addedNodes.forEach((node) => {
               if (isChatTranslationNode(node)) return;
+              if (isLikelyChatRootNode(node)) observeChatTranslationRoots();
               if (isNodeInsideChat(node)) scheduleChatTranslationScan();
             });
           } else if (mutation.type === "characterData" && isNodeInsideChat(mutation.target)) {
@@ -3643,11 +3646,7 @@
         }
       });
 
-      CHAT_TRANSLATION_STATE.observer.observe(document.body, {
-        childList: true,
-        characterData: true,
-        subtree: true,
-      });
+      observeChatTranslationRoots();
     }
 
     scheduleChatTranslationScan();
@@ -3660,6 +3659,7 @@
     }
 
     CHAT_TRANSLATION_STATE.pendingScan = false;
+    CHAT_TRANSLATION_STATE.observedRootKey = "";
     CHAT_TRANSLATION_STATE.queue.length = 0;
     CHAT_TRANSLATION_STATE.queuedKeys.clear();
   }
@@ -3676,9 +3676,47 @@
     setTimeout(() => {
       CHAT_TRANSLATION_STATE.pendingScan = false;
       if (!isChatTranslationEnabled()) return;
+      observeChatTranslationRoots();
       scanChatForTranslations();
       processChatTranslationQueue();
     }, CHAT_TRANSLATION_SCAN_DELAY_MS);
+  }
+
+  function observeChatTranslationRoots() {
+    const observer = CHAT_TRANSLATION_STATE.observer;
+    if (!observer || !document.body) return;
+
+    const roots = getChatRoots();
+    const observedRoots = roots.length > 0 ? roots.slice(0, 4) : [document.body];
+    const key = observedRoots.map(getChatRootKey).join("|");
+    if (CHAT_TRANSLATION_STATE.observedRootKey === key) return;
+
+    observer.disconnect();
+    CHAT_TRANSLATION_STATE.observedRootKey = key;
+    observedRoots.forEach((root) => {
+      observer.observe(root, {
+        childList: true,
+        characterData: root !== document.body,
+        subtree: true,
+      });
+    });
+  }
+
+  function getChatRootKey(root) {
+    if (!root) return "";
+    if (root === document.body) return "body";
+    return [
+      root.id || "",
+      String(root.className || ""),
+      getElementSelector(root),
+    ].join(":");
+  }
+
+  function isLikelyChatRootNode(node) {
+    const element = node && node.nodeType === Node.ELEMENT_NODE ? node : null;
+    if (!element) return false;
+    if (element.id === "chat" || element.matches(".chat, [class*='chat'], [id*='chat'], [class*='Chat'], [id*='Chat']")) return true;
+    return Boolean(element.querySelector && element.querySelector("#chat, .chat, [class*='chat'], [id*='chat'], [class*='Chat'], [id*='Chat']"));
   }
 
   function scanChatForTranslations() {
@@ -5932,7 +5970,7 @@
       }
 
       let replaced = 0;
-      const roots = Array.from(DOM_TRANSLATION_STATE.queuedRoots).slice(0, 160);
+      const roots = Array.from(DOM_TRANSLATION_STATE.queuedRoots).slice(0, 60);
       DOM_TRANSLATION_STATE.queuedRoots.clear();
       roots.forEach((root) => {
         replaced += translateDomTree(root, DOM_TRANSLATION_STATE.dictionary);
@@ -6080,8 +6118,20 @@
     const start = () => {
       if (!document.body) return;
 
-      HIGHLIGHT_STATE.observer = new MutationObserver(() => {
+      HIGHLIGHT_STATE.observer = new MutationObserver((mutations) => {
         if (!shouldRunDomNameHighlight()) return;
+        for (const mutation of mutations) {
+          if (mutation.type === "characterData") {
+            const parent = mutation.target && mutation.target.parentElement;
+            if (parent && !shouldSkipHighlightNode(parent)) HIGHLIGHT_STATE.queuedHighlightRoots.add(parent);
+          } else {
+            mutation.addedNodes.forEach((node) => {
+              if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+              if (shouldSkipHighlightNode(node)) return;
+              HIGHLIGHT_STATE.queuedHighlightRoots.add(node);
+            });
+          }
+        }
         scheduleNameHighlightRefresh();
       });
       installNameHighlightStyle();
@@ -6103,19 +6153,37 @@
 
     setTimeout(() => {
       HIGHLIGHT_STATE.pending = false;
-      refreshNameHighlights();
-    }, 80);
+      refreshQueuedNameHighlights();
+    }, 200);
   }
 
   function refreshNameHighlights() {
     if (!document.body) return;
 
+    HIGHLIGHT_STATE.queuedHighlightRoots.clear();
     disconnectNameHighlights();
     unwrapNameHighlights(document.body);
     if (shouldRunDomNameHighlight()) {
       highlightNamesInTree(document.body);
       observeNameHighlights();
     }
+  }
+
+  function refreshQueuedNameHighlights() {
+    if (!document.body) return;
+
+    const roots = Array.from(HIGHLIGHT_STATE.queuedHighlightRoots).slice(0, 50);
+    HIGHLIGHT_STATE.queuedHighlightRoots.clear();
+    if (!shouldRunDomNameHighlight()) return;
+    if (roots.length === 0) return;
+
+    disconnectNameHighlights();
+    roots.forEach((root) => {
+      if (!root || !document.contains(root) || shouldSkipHighlightNode(root)) return;
+      unwrapNameHighlights(root);
+      highlightNamesInTree(root);
+    });
+    observeNameHighlights();
   }
 
   function observeNameHighlights() {
@@ -6224,6 +6292,7 @@
     if (element.closest("#hordes-kr-target-distance-overlay")) return true;
     if (element.closest("#hordes-kr-minimap-name-overlay")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
+    if (element.closest("#chat, #chatinput, .chat, [class*='chat']")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
   }
 
@@ -6371,6 +6440,10 @@
         }
 
         const imageText = getCanvasImageText(arguments[0]);
+        if (!imageText) {
+          return originalDrawImage.apply(this, arguments);
+        }
+
         const dest = getDrawImageDestination(arguments);
         if (shouldHideStandaloneCanvasClanTag(imageText)) {
           rememberHiddenCanvasClanTag(imageText);
@@ -6385,7 +6458,9 @@
         }
 
         const result = originalDrawImage.apply(this, arguments);
-        drawCanvasTargetDistanceOverlay(this, imageText, dest, originalFillText, originalStrokeText);
+        if (isTargetDistanceEnabled()) {
+          drawCanvasTargetDistanceOverlay(this, imageText, dest, originalFillText, originalStrokeText);
+        }
         return result;
       };
     }
@@ -7190,9 +7265,9 @@
 
     const path = url.pathname.toLowerCase();
     if (path.includes("/data/") || path.includes("/loc/")) return false;
+    if (path.includes("/menu/")) return false;
 
     return (
-      path.endsWith("/script.js") ||
       path.endsWith("/client.js") ||
       path.includes("/play/") ||
       path.includes("/game/") ||
@@ -8620,8 +8695,8 @@
           HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0
             ? collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
                 limit: 16,
-                maxDepth: 7,
-                maxObjects: 9000,
+                maxDepth: 5,
+                maxObjects: 3000,
               })
             : []
         ),
@@ -9049,8 +9124,8 @@
 
       const candidates = collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
         limit: 24,
-        maxDepth: 7,
-        maxObjects: 9000,
+        maxDepth: 5,
+        maxObjects: 3000,
       });
       const projected = [];
 
