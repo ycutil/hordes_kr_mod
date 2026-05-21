@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.92-local
+// @version      0.9.93-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -18,7 +18,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.92-local";
+  const BOOT_VERSION = "0.9.93-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -303,12 +303,12 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY = "hordesKrMod.highlight.minimapListScaleDefaultVersion";
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
-  const RUNTIME_OVERLAY_INTERVAL_MS = 250;
-  const RUNTIME_NAME_OVERLAY_REFRESH_MS = 250;
-  const MINIMAP_OVERLAY_REFRESH_MS = 500;
-  const PRESET_QUICKBAR_REFRESH_MS = 1000;
-  const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 200;
-  const TARGET_DISTANCE_CACHE_MS = 200;
+  const RUNTIME_OVERLAY_INTERVAL_MS = 100;
+  const RUNTIME_NAME_OVERLAY_REFRESH_MS = 100;
+  const MINIMAP_OVERLAY_REFRESH_MS = 100;
+  const PRESET_QUICKBAR_REFRESH_MS = 500;
+  const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
+  const TARGET_DISTANCE_CACHE_MS = 100;
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
@@ -7927,6 +7927,19 @@
         filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) !important;
         will-change: left, top, transform !important;
       }
+      .hordes-kr-runtime-name-label.normal-highlight {
+        transform: translate(-50%, -145%) !important;
+        color: #fff4b0 !important;
+        font-size: 20px !important;
+        -webkit-text-stroke: 0.85px rgba(5, 10, 22, 0.98) !important;
+        text-shadow:
+          2px 0 0 rgba(5, 10, 22, 0.98),
+          -2px 0 0 rgba(5, 10, 22, 0.98),
+          0 2px 0 rgba(5, 10, 22, 0.98),
+          0 -2px 0 rgba(5, 10, 22, 0.98),
+          0 3px 3px rgba(0, 0, 0, 0.94),
+          0 0 7px rgba(245, 194, 71, 0.88) !important;
+      }
       .hordes-kr-runtime-name-label.incoming-skill {
         color: #ff3838 !important;
         display: inline-flex !important;
@@ -10910,9 +10923,14 @@
 
   function renderRuntimeNameOverlayLabels(host, candidates) {
     const activeKeys = new Set();
+    const activeVisualKeys = new Set();
     const now = Date.now();
 
     for (const candidate of candidates) {
+      const visualKey = getRuntimeOverlayVisualKey(candidate);
+      if (visualKey && activeVisualKeys.has(visualKey)) continue;
+      if (visualKey) activeVisualKeys.add(visualKey);
+
       const id = getRuntimeEntityId(candidate.entity);
       const key = id !== undefined ? `id:${String(id)}` : `${candidate.name}:${candidate.path}`;
       activeKeys.add(key);
@@ -10927,10 +10945,11 @@
 
       label.classList.toggle("incoming-skill", Boolean(candidate.incomingSkill));
       label.classList.toggle("incoming-watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
+      label.classList.toggle("normal-highlight", !candidate.incomingSkill && !candidate.incomingTargetWatch);
       renderRuntimeNameOverlayLabelContent(label, candidate);
 
       const left = `${Math.round(candidate.screen.x)}px`;
-      const top = `${Math.round(candidate.screen.y)}px`;
+      const top = `${Math.round(candidate.screen.y - getRuntimeOverlayLabelYOffset(candidate))}px`;
       if (label.style.left !== left) label.style.left = left;
       if (label.style.top !== top) label.style.top = top;
       label.dataset.hordesKrSeenAt = String(now);
@@ -10939,11 +10958,31 @@
     for (const [key, label] of HIGHLIGHT_STATE.runtimeOverlayItems.entries()) {
       if (activeKeys.has(key)) continue;
       const seenAt = Number(label.dataset.hordesKrSeenAt) || 0;
-      if (now - seenAt < 500) continue;
+      if (now - seenAt < 120) continue;
 
       label.remove();
       HIGHLIGHT_STATE.runtimeOverlayItems.delete(key);
     }
+  }
+
+  function getRuntimeOverlayVisualKey(candidate) {
+    if (!candidate || !candidate.screen) return "";
+    const name = String(candidate.name || "").trim().toLowerCase();
+    if (!name) return "";
+
+    const kind = candidate.incomingSkill
+      ? "skill"
+      : candidate.incomingTargetWatch
+        ? "watch"
+        : "normal";
+    const x = Math.round(Number(candidate.screen.x) / 12);
+    const y = Math.round(Number(candidate.screen.y) / 12);
+    return `${kind}:${name}:${x}:${y}`;
+  }
+
+  function getRuntimeOverlayLabelYOffset(candidate) {
+    if (!candidate || candidate.incomingSkill || candidate.incomingTargetWatch) return 0;
+    return 10;
   }
 
   function renderRuntimeNameOverlayLabelContent(label, candidate) {
