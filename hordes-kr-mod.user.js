@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.107-local
+// @version      0.9.108-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -18,7 +18,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.107-local";
+  const BOOT_VERSION = "0.9.108-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -5047,7 +5047,7 @@
     const elements = [element, ...Array.from(element.querySelectorAll("[class*='text']") || [])];
     for (const item of elements) {
       const className = String(item.className || "");
-      const match = className.match(/(?:^|\s)text(party|faction|yell|whisper|clan|system|lvlup)(?:\s|$)/i);
+      const match = className.match(/(?:^|\s)text(party|faction|yell|whisper|to|from|pm|tell|clan|system|lvlup)(?:\s|$)/i);
       const channel = normalizeChatChannelName(match && match[1]);
       if (channel) return channel;
     }
@@ -5056,13 +5056,27 @@
   }
 
   function normalizeChatChannelName(value) {
-    const text = String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z]/g, "")
-      .trim();
+    const raw = String(value || "").toLowerCase().trim();
+    const compact = raw.replace(/\s+/g, "");
+    if (/귓|속삭|개인|쪽지/.test(compact)) return "whisper";
+
+    const text = raw.replace(/[^a-z]/g, "").trim();
 
     if (!text) return "";
-    if (text === "w" || text === "pm" || text === "tell") return "whisper";
+    if (
+      text === "w" ||
+      text === "pm" ||
+      text === "dm" ||
+      text === "tell" ||
+      text === "to" ||
+      text === "from" ||
+      text === "private" ||
+      text === "direct" ||
+      text === "whisperto" ||
+      text === "whisperfrom"
+    ) {
+      return "whisper";
+    }
     return text;
   }
 
@@ -5103,10 +5117,11 @@
     if (!value) return "";
 
     value = value.replace(/^\d{1,2}[.:]\d{2}\s*/, "");
+    value = value.replace(/^(?:to|from|tell|pm|dm|w)\s+/i, "");
     if (channel) {
       value = value.replace(new RegExp(`^${escapeRegExp(channel)}\\s+`, "i"), "");
     } else {
-      value = value.replace(/^(?:party|clan|faction|pvp|yell|inv|whisper|local|system)\s+/i, "");
+      value = value.replace(/^(?:party|clan|faction|pvp|yell|inv|whisper|local|system|to|from|tell|pm|dm|w)\s+/i, "");
     }
     value = value.replace(/^\d{1,3}\s+/, "");
 
