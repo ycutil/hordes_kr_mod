@@ -1,1 +1,5 @@
 .DS_Store
+node_modules/
+server/target-order-data.json
+*.zip
+gcd_loop.js

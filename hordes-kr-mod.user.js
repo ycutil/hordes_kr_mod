@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.93-local
+// @version      0.9.107-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -18,7 +18,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.93-local";
+  const BOOT_VERSION = "0.9.107-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -293,6 +293,7 @@
   const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
   const GEAR_PRESET_CONFIG_KEY = "hordesKrMod.gearPreset.config";
   const SKILL_PRESET_CONFIG_KEY = "hordesKrMod.skillPreset.config";
+  const AUCTION_WATCH_CONFIG_KEY = "hordesKrMod.auctionWatch.config";
   const CHAT_TRANSLATION_API_KEY_KEY = "hordesKrMod.chatTranslation.apiKey";
   const CHAT_TRANSLATION_MODEL_KEY = "hordesKrMod.chatTranslation.model";
   const CHAT_TRANSLATION_MODEL_MIGRATION_KEY = "hordesKrMod.chatTranslation.modelMigration";
@@ -312,6 +313,7 @@
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
+  const INCOMING_WARNING_SCAN_LIMIT = 700;
   const INCOMING_SKILL_LIST_MAX_ROWS = 6;
   const MINIMAP_DEFAULT_SCALE = 0.6;
   const MINIMAP_LIST_DEFAULT_SCALE = 1.5;
@@ -535,15 +537,15 @@
     domTranslationEnabled: true,
     targetDistanceEnabled: true,
     incomingSkillOverlayEnabled: true,
-    incomingSkillListEnabled: true,
-    incomingTargetWatchEnabled: true,
+    incomingSkillListEnabled: false,
+    incomingTargetWatchEnabled: false,
     chatTranslationEnabled: false,
   });
   FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
-  FEATURE_CONFIG.incomingSkillListEnabled = FEATURE_CONFIG.incomingSkillListEnabled !== false;
-  FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+  FEATURE_CONFIG.incomingSkillListEnabled = false;
+  FEATURE_CONFIG.incomingTargetWatchEnabled = false;
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
   const PARTY_UI_CONFIG = loadJsonConfig(PARTY_UI_CONFIG_KEY, {
     enabled: true,
@@ -595,6 +597,7 @@
     runtimeOverlayEnabled: true,
     minimapLabelsEnabled: true,
     minimapListEnabled: true,
+    minimapListAllHostiles: false,
     minimapListScale: MINIMAP_LIST_DEFAULT_SCALE,
     minimapListX: null,
     minimapListY: null,
@@ -610,6 +613,7 @@
   HIGHLIGHT_CONFIG.runtimeOverlayEnabled = HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false;
   HIGHLIGHT_CONFIG.minimapLabelsEnabled = HIGHLIGHT_CONFIG.minimapLabelsEnabled !== false;
   HIGHLIGHT_CONFIG.minimapListEnabled = HIGHLIGHT_CONFIG.minimapListEnabled !== false;
+  HIGHLIGHT_CONFIG.minimapListAllHostiles = HIGHLIGHT_CONFIG.minimapListAllHostiles === true;
   HIGHLIGHT_CONFIG.minimapListScale = normalizeMinimapHighlightListScale(HIGHLIGHT_CONFIG.minimapListScale);
   HIGHLIGHT_CONFIG.minimapListX = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.minimapListX);
   HIGHLIGHT_CONFIG.minimapListY = normalizeOptionalScreenCoordinate(HIGHLIGHT_CONFIG.minimapListY);
@@ -650,6 +654,11 @@
     quickToggleHost: null,
     quickToggleTimer: null,
     quickToggleRenderKey: "",
+    outgoingBusy: false,
+    outgoingLastInput: "",
+    outgoingLastTranslation: "",
+    outgoingLastError: "",
+    outgoingLastAt: null,
     pendingScan: false,
     activeRequests: 0,
     observedRootKey: "",
@@ -720,6 +729,142 @@
     progressOverlayHost: null,
     progressOverlayTimer: null,
   };
+  const AUCTION_AUTOLIST_DEFAULT_ITEM = {
+    type: "rune",
+    tier: 0,
+    name: "Lucid",
+  };
+  const AUCTION_AUTOLIST_MAX_COUNT = 150;
+  const AUCTION_AUTOLIST_DEFAULT_SPLIT_DELAY_MS = 220;
+  const AUCTION_AUTOLIST_DEFAULT_POST_DELAY_MS = 320;
+  const AUCTION_AUTOLIST_VERIFY_TIMEOUT_MS = 3000;
+  const AUCTION_AUTOLIST_POLL_MS = 80;
+  const AUCTION_ITEM_TYPES = [
+    "all",
+    "wand",
+    "bow",
+    "dagger",
+    "hammer",
+    "staff",
+    "sword",
+    null,
+    "orb",
+    "quiver",
+    "shield",
+    "totem",
+    null,
+    "armlet",
+    "armor",
+    "boot",
+    "glove",
+    null,
+    "amulet",
+    "bag",
+    "ring",
+    null,
+    "book",
+    "rune",
+    "material",
+    "misc",
+    null,
+    "mount",
+    "pet",
+    "box",
+  ];
+  const AUCTION_WATCH_STAT_OPTIONS = [
+    [1, "스태미나"],
+    [2, "민첩"],
+    [3, "지능"],
+    [4, "지혜"],
+    [5, "행운"],
+    [10, "최소 데미지"],
+    [11, "최대 데미지"],
+    [12, "방어"],
+    [13, "막기"],
+    [14, "치명타"],
+    [15, "이동 속도"],
+    [16, "가속"],
+    [17, "공격 속도"],
+    [18, "아이템 발견"],
+    [19, "가방 칸"],
+    [30, "피해 증가"],
+    [31, "어그로 증가"],
+    [32, "이동 속도 감소"],
+    [33, "치유 감소"],
+  ];
+  const AUCTION_STAT_LABELS = AUCTION_WATCH_STAT_OPTIONS.reduce((labels, [id, label]) => {
+    labels[id] = label;
+    return labels;
+  }, {});
+  const AUCTION_ITEM_TYPE_LABELS = {
+    amulet: "목걸이",
+    armlet: "팔찌",
+    armor: "갑옷",
+    bag: "가방",
+    boot: "신발",
+    bow: "활",
+    glove: "장갑",
+    hammer: "망치",
+    orb: "오브",
+    quiver: "화살통",
+    ring: "반지",
+    shield: "방패",
+    staff: "지팡이",
+    sword: "검",
+    totem: "토템",
+  };
+  const AUCTION_WATCH_DEFAULT_RULE_ID = "bag-stamina-dex-maxdmg";
+  const AUCTION_WATCH_DEFAULT_RULE = {
+    id: AUCTION_WATCH_DEFAULT_RULE_ID,
+    label: "Bag: 스태미나 + 민첩 + 최대 데미지",
+    type: "bag",
+    tier: "all",
+    requiredStatIds: [1, 2, 11],
+    pages: 1,
+    sortMode: 1,
+    sortDirection: 1,
+  };
+  const AUCTION_WATCH_REFRESH_MS = 60000;
+  const AUCTION_WATCH_PAGE_DELAY_MS = 280;
+  const AUCTION_WATCH_TIMEOUT_MS = 5000;
+  const AUCTION_WATCH_MAX_PAGES = 10;
+  const AUCTION_WATCH_MAX_LIST_ROWS = 8;
+  const AUCTION_WATCH_ALERT_TTL_MS = 10 * 60 * 1000;
+  const AUCTION_AUTOLIST_STATE = {
+    running: false,
+    stopRequested: false,
+    lastState: "대기",
+    lastError: "",
+    lastRunAt: null,
+    lastResult: null,
+  };
+  const AUCTION_WATCH_CONFIG = loadJsonConfig(AUCTION_WATCH_CONFIG_KEY, {
+    enabled: false,
+    rules: [AUCTION_WATCH_DEFAULT_RULE],
+    refreshMs: AUCTION_WATCH_REFRESH_MS,
+  });
+  AUCTION_WATCH_CONFIG.enabled = AUCTION_WATCH_CONFIG.enabled === true;
+  if (!Array.isArray(AUCTION_WATCH_CONFIG.rules) || AUCTION_WATCH_CONFIG.rules.length === 0) {
+    AUCTION_WATCH_CONFIG.rules = [AUCTION_WATCH_DEFAULT_RULE];
+  }
+  AUCTION_WATCH_CONFIG.refreshMs = clampNumber(
+    AUCTION_WATCH_CONFIG.refreshMs,
+    15000,
+    10 * 60 * 1000,
+    AUCTION_WATCH_REFRESH_MS
+  );
+  const AUCTION_WATCH_STATE = {
+    timer: null,
+    running: false,
+    lastState: "꺼짐",
+    lastError: "",
+    lastRunAt: null,
+    lastResult: null,
+    lastMatches: [],
+    lastSelfItems: [],
+    alertHistory: new Map(),
+    querySeq: 0,
+  };
   const SKILL_PRESET_STATE = {
     running: false,
     lastState: "대기",
@@ -775,6 +920,8 @@
     runtimeOverlayHost: null,
     runtimeOverlayItems: new Map(),
     runtimeOverlayTimer: null,
+    runtimeOverlayRafId: 0,
+    runtimeOverlayActiveEntries: [],
     lastRuntimeOverlayTickAt: 0,
     runtimeDeepScanCacheKey: "",
     runtimeDeepScanAt: 0,
@@ -812,6 +959,15 @@
     lastMinimapTargetResult: null,
     minimapListRenderKey: "",
     minimapListDragging: null,
+    contextMenuObserver: null,
+    contextMenuActionHost: null,
+    contextMenuLastInjectedAt: 0,
+    contextMenuLastTargetName: "",
+    contextMenuLastError: "",
+    contextMenuLastAt: 0,
+    contextMenuLastX: 0,
+    contextMenuLastY: 0,
+    contextMenuLastElement: null,
     presetBarHost: null,
     lastPresetBarTickAt: 0,
     presetBarRenderKey: "",
@@ -2631,8 +2787,10 @@
     initChatTranslator();
     initNameHighlighter();
     initRuntimeNameOverlay();
+    initTargetContextMenuHighlight();
     initPartyUiManager();
     initTargetOrderClient();
+    initAuctionWatchManager();
   } catch (error) {
     showBootstrapFailureBadge("KR Mod 초기화 실패", [
       "Hordes KR Mod 초기화 중 오류가 발생했습니다.",
@@ -2750,23 +2908,22 @@
       return FEATURE_CONFIG.incomingSkillOverlayEnabled;
     },
     toggleIncomingSkillList() {
-      FEATURE_CONFIG.incomingSkillListEnabled = !FEATURE_CONFIG.incomingSkillListEnabled;
+      FEATURE_CONFIG.incomingSkillListEnabled = false;
       saveFeatureConfig();
-      if (!FEATURE_CONFIG.incomingSkillListEnabled) clearIncomingSkillList();
+      clearIncomingSkillList();
       updateRuntimeNameOverlay();
       renderStatusUi();
-      return FEATURE_CONFIG.incomingSkillListEnabled;
+      return false;
     },
     toggleIncomingTargetWatch() {
-      FEATURE_CONFIG.incomingTargetWatchEnabled = !FEATURE_CONFIG.incomingTargetWatchEnabled;
+      FEATURE_CONFIG.incomingTargetWatchEnabled = false;
       saveFeatureConfig();
-      if (!FEATURE_CONFIG.incomingTargetWatchEnabled) {
-        HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
-      }
+      HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
+      HIGHLIGHT_STATE.lastIncomingTargetWatchError = "";
       if (!isIncomingSkillListEnabled()) clearIncomingSkillList();
       updateRuntimeNameOverlay();
       renderStatusUi();
-      return FEATURE_CONFIG.incomingTargetWatchEnabled;
+      return false;
     },
     toggleChatTranslation() {
       return setChatTranslationEnabled(!isChatTranslationEnabled());
@@ -2846,6 +3003,36 @@
     scanRuntimeGearItems() {
       return scanRuntimeGearItems().map(stripGearPresetElement);
     },
+    scanRuntimeInventoryItems() {
+      return scanRuntimeInventoryItems().map(stripGearPresetElement);
+    },
+    scanLucidAuctionItems() {
+      return scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM);
+    },
+    auctionAutoListStatus() {
+      return getAuctionAutoListStatus();
+    },
+    autoListLucid(options) {
+      return runAuctionAutoList(options);
+    },
+    stopAutoListLucid() {
+      return stopAuctionAutoList();
+    },
+    toggleAuctionWatch() {
+      return setAuctionWatchEnabled(!AUCTION_WATCH_CONFIG.enabled);
+    },
+    auctionWatchStatus() {
+      return getAuctionWatchStatus();
+    },
+    refreshAuctionWatch() {
+      return refreshAuctionWatchNow();
+    },
+    setAuctionWatchRules(rules) {
+      return setAuctionWatchRules(rules);
+    },
+    sendItemAuctionFind(type, tier = "all", sortMode = 1, sortDirection = 1, page = 0) {
+      return sendHordesItemAuctionFind(type, tier, sortMode, sortDirection, page);
+    },
     scanEquippedGearItems() {
       return scanRuntimeEquippedGearItems().map(stripGearPresetElement);
     },
@@ -2872,6 +3059,12 @@
     },
     sendItemMove(fromSlot, toSlot) {
       return sendHordesItemMove(Number(fromSlot), Number(toSlot));
+    },
+    sendItemSplitOne(slotIndex) {
+      return sendHordesItemSplitOne(Number(slotIndex));
+    },
+    sendItemAuctionPost(dbid, price) {
+      return sendHordesItemAuctionPost(dbid, Number(price));
     },
     scanActiveSkills() {
       return scanRuntimeActiveSkillIds();
@@ -2905,18 +3098,7 @@
       return [...HIGHLIGHT_CONFIG.names];
     },
     addHighlightName(name) {
-      const normalized = normalizeHighlightName(name);
-      if (!normalized) return [...HIGHLIGHT_CONFIG.names];
-
-      const exists = HIGHLIGHT_CONFIG.names.some(
-        (current) => current.toLowerCase() === normalized.toLowerCase()
-      );
-      if (!exists) {
-        HIGHLIGHT_CONFIG.names.push(normalized);
-        saveHighlightConfig();
-      }
-
-      refreshNameHighlights();
+      addHighlightNameDirect(name);
       return [...HIGHLIGHT_CONFIG.names];
     },
     removeHighlightName(name) {
@@ -2969,6 +3151,9 @@
       renderStatusUi();
       return HIGHLIGHT_CONFIG.minimapListEnabled;
     },
+    toggleMinimapHighlightListAllHostiles() {
+      return toggleMinimapHighlightListAllHostiles();
+    },
     toggleClanNameHide() {
       HIGHLIGHT_CONFIG.hideClanNames = !HIGHLIGHT_CONFIG.hideClanNames;
       saveHighlightConfig();
@@ -2992,11 +3177,20 @@
     minimapHighlightListStatus() {
       return getMinimapHighlightListStatus();
     },
+    contextMenuHighlightStatus() {
+      return getTargetContextMenuHighlightStatus();
+    },
+    addSelectedTargetToHighlight() {
+      return addSelectedTargetToHighlightNames();
+    },
     setMinimapHighlightListScale(scale) {
       return setMinimapHighlightListScale(scale);
     },
     resetMinimapHighlightListPosition() {
       return resetMinimapHighlightListPosition();
+    },
+    translateOutgoingChat(text) {
+      return translateOutgoingChatToGameInput(text);
     },
     targetMinimapHighlight(id, name) {
       return targetRuntimeEntityById(id, name, "minimapHighlightList");
@@ -3117,6 +3311,10 @@
     saveJsonConfig(PARTY_UI_CONFIG_KEY, PARTY_UI_CONFIG);
   }
 
+  function saveAuctionWatchConfig() {
+    saveJsonConfig(AUCTION_WATCH_CONFIG_KEY, AUCTION_WATCH_CONFIG);
+  }
+
   function isDomTranslationEnabled() {
     return isEnabled() && FEATURE_CONFIG.domTranslationEnabled !== false;
   }
@@ -3130,12 +3328,11 @@
   }
 
   function isIncomingSkillListEnabled() {
-    return FEATURE_CONFIG.incomingSkillListEnabled !== false &&
-      (isIncomingSkillOverlayEnabled() || isIncomingTargetWatchEnabled());
+    return false;
   }
 
   function isIncomingTargetWatchEnabled() {
-    return FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+    return false;
   }
 
   function isChatTranslationEnabled() {
@@ -3164,7 +3361,7 @@
       CHAT_TRANSLATION_STATE.lastError = "API 키 없음";
       setStatus({
         lastState: "채팅번역 키 없음",
-        lastError: "콘솔에서 HordesKrMod.setChatTranslationApiKey(\"...\")로 API 키를 저장하세요.",
+        lastError: "메인 패널의 채팅 번역 키에서 API 키를 저장하세요.",
       });
       updateChatTranslationQuickToggle(true);
       return false;
@@ -3621,7 +3818,7 @@
       CHAT_TRANSLATION_STATE.lastError = "API 키 없음";
       setStatus({
         lastState: "채팅번역 키 없음",
-        lastError: "콘솔에서 HordesKrMod.setChatTranslationApiKey(\"...\")로 API 키를 저장하세요.",
+        lastError: "메인 패널의 채팅 번역 키에서 API 키를 저장하세요.",
       });
       updateChatTranslationQuickToggle(true);
       return;
@@ -3992,7 +4189,7 @@
     }
 
     const apiKey = getChatTranslationApiKey();
-    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. HordesKrMod.setChatTranslationApiKey(...)로 저장하세요.");
+    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. 메인 패널의 채팅 번역 키에서 저장하세요.");
 
     const inFlightKey = normalizeChatTranslationKey(normalizedText);
     const existingRequest = CHAT_TRANSLATION_STATE.inFlight.get(inFlightKey);
@@ -4163,7 +4360,7 @@
     if (remoteItems.length === 0) return results;
 
     const apiKey = getChatTranslationApiKey();
-    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. HordesKrMod.setChatTranslationApiKey(...)로 저장하세요.");
+    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. 메인 패널의 채팅 번역 키에서 저장하세요.");
 
     CHAT_TRANSLATION_STATE.lastText = remoteItems[0].text.slice(0, 220);
     const response = await requestOpenAiChatTranslations(apiKey, remoteItems.map((item) => item.text));
@@ -4181,6 +4378,169 @@
     });
 
     return results;
+  }
+
+  async function translateOutgoingChatFromQuickInput(input) {
+    const source = String(input && input.value || "").trim();
+    if (!source || CHAT_TRANSLATION_STATE.outgoingBusy) return null;
+
+    try {
+      CHAT_TRANSLATION_STATE.outgoingBusy = true;
+      CHAT_TRANSLATION_STATE.outgoingLastError = "";
+      updateChatTranslationQuickToggle(true);
+
+      const translation = await translateOutgoingChatToEnglish(source);
+      const inserted = insertTextIntoGameChatInput(translation);
+      if (!inserted.ok) throw new Error(inserted.reason || "게임 채팅 입력칸을 찾지 못했습니다.");
+
+      CHAT_TRANSLATION_STATE.outgoingLastInput = source.slice(0, 220);
+      CHAT_TRANSLATION_STATE.outgoingLastTranslation = translation.slice(0, 220);
+      CHAT_TRANSLATION_STATE.outgoingLastAt = new Date();
+      CHAT_TRANSLATION_STATE.outgoingLastError = "";
+      if (input) input.value = "";
+      return { ok: true, input: source, translation };
+    } catch (error) {
+      CHAT_TRANSLATION_STATE.outgoingLastError = error && error.message ? error.message : String(error);
+      return { ok: false, error: CHAT_TRANSLATION_STATE.outgoingLastError };
+    } finally {
+      CHAT_TRANSLATION_STATE.outgoingBusy = false;
+      updateChatTranslationQuickToggle(true);
+    }
+  }
+
+  async function translateOutgoingChatToGameInput(text) {
+    const translation = await translateOutgoingChatToEnglish(text);
+    const inserted = insertTextIntoGameChatInput(translation);
+    if (!inserted.ok) throw new Error(inserted.reason || "게임 채팅 입력칸을 찾지 못했습니다.");
+    return { ok: true, input: String(text || "").trim(), translation };
+  }
+
+  async function translateOutgoingChatToEnglish(text) {
+    const normalizedText = String(text || "").trim();
+    if (!normalizedText) throw new Error("영어로 번역할 문장이 비어 있습니다.");
+
+    const apiKey = getChatTranslationApiKey();
+    if (!apiKey) throw new Error("채팅번역 API 키가 없습니다. 메인 패널의 채팅 번역 키에서 저장하세요.");
+
+    const inFlightKey = `out:${normalizeChatTranslationKey(normalizedText)}`;
+    const existingRequest = CHAT_TRANSLATION_STATE.inFlight.get(inFlightKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async () => {
+      const response = await requestOpenAiOutgoingChatTranslation(apiKey, normalizedText);
+      const translation = sanitizeOutgoingChatTranslation(extractOpenAiText(response));
+      if (!translation) throw new Error("영어 번역 결과가 비어 있습니다.");
+      CHAT_TRANSLATION_STATE.lastText = normalizedText.slice(0, 220);
+      CHAT_TRANSLATION_STATE.lastTranslation = translation.slice(0, 220);
+      CHAT_TRANSLATION_STATE.lastAt = new Date();
+      CHAT_TRANSLATION_STATE.lastError = "";
+      return translation;
+    })();
+
+    CHAT_TRANSLATION_STATE.inFlight.set(inFlightKey, request);
+    try {
+      return await request;
+    } finally {
+      CHAT_TRANSLATION_STATE.inFlight.delete(inFlightKey);
+    }
+  }
+
+  async function requestOpenAiOutgoingChatTranslation(apiKey, text) {
+    const model = getChatTranslationModel();
+    const body = {
+      model,
+      instructions:
+        "Translate the Korean MMORPG chat message into concise natural English for in-game chat. Preserve player names, item names, skill names, place names, numbers, slash commands, abbreviations, URLs, and emojis. Return only the English chat message.",
+      input: text,
+      max_output_tokens: 80,
+      store: false,
+    };
+    configureFastChatTranslationRequestBody(body, model);
+
+    const raw = await requestTimedOpenAiResponses(apiKey, body);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("OpenAI 응답 JSON 파싱 실패");
+    }
+
+    if (parsed.error) {
+      throw new Error(parsed.error.message || "OpenAI API 오류");
+    }
+
+    return parsed;
+  }
+
+  function sanitizeOutgoingChatTranslation(text) {
+    return String(text || "")
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, CHAT_TRANSLATION_MAX_TEXT_LENGTH);
+  }
+
+  function insertTextIntoGameChatInput(text) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return { ok: false, reason: "입력할 영어 문장이 비어 있습니다." };
+
+    const input = findGameChatInputElement();
+    if (!input) return { ok: false, reason: "게임 채팅 입력칸을 찾지 못했습니다. 채팅창을 한 번 열고 다시 시도하세요." };
+
+    setEditableElementValue(input, normalized);
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      try {
+        input.focus();
+      } catch {}
+    }
+    return { ok: true, element: describeChatInputElement(input), text: normalized };
+  }
+
+  function findGameChatInputElement() {
+    const root = document.getElementById("chatinput")
+      || document.querySelector("#chat input, #chat textarea, #chat [contenteditable='true']")
+      || document.querySelector(".chat input, .chat textarea, .chat [contenteditable='true']");
+    if (!root) return null;
+    if (isEditableChatInputElement(root)) return root;
+    return root.querySelector && root.querySelector("input, textarea, [contenteditable='true'], [contenteditable='']");
+  }
+
+  function isEditableChatInputElement(element) {
+    if (!element) return false;
+    const tagName = String(element.tagName || "").toLowerCase();
+    return tagName === "input" || tagName === "textarea" || element.isContentEditable;
+  }
+
+  function setEditableElementValue(element, value) {
+    const tagName = String(element && element.tagName || "").toLowerCase();
+    if (tagName === "input" || tagName === "textarea") {
+      const proto = tagName === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+      if (descriptor && typeof descriptor.set === "function") {
+        descriptor.set.call(element, value);
+      } else {
+        element.value = value;
+      }
+    } else if (element && element.isContentEditable) {
+      element.textContent = value;
+    }
+
+    const inputEvent = typeof InputEvent === "function"
+      ? new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: value })
+      : new Event("input", { bubbles: true, cancelable: true });
+    element.dispatchEvent(inputEvent);
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function describeChatInputElement(element) {
+    if (!element) return "";
+    return [
+      String(element.tagName || "").toLowerCase(),
+      element.id ? `#${element.id}` : "",
+      element.className ? `.${String(element.className).trim().replace(/\s+/g, ".")}` : "",
+    ].join("");
   }
 
   async function requestOpenAiChatTranslation(apiKey, text) {
@@ -4836,6 +5196,9 @@
         position: fixed !important;
         z-index: 2147483647 !important;
         pointer-events: auto !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 4px !important;
         font-family: Arial, Helvetica, sans-serif !important;
         line-height: 1 !important;
         touch-action: manipulation !important;
@@ -4877,6 +5240,36 @@
         border-color: rgba(245, 194, 71, 0.9) !important;
         color: #ffffff !important;
       }
+      #hordes-kr-chat-translation-toggle .outgoing-input {
+        width: 178px !important;
+        height: 24px !important;
+        box-sizing: border-box !important;
+        border: 1px solid rgba(166, 220, 213, 0.36) !important;
+        border-radius: 5px !important;
+        background: rgba(4, 8, 16, 0.9) !important;
+        color: #ffffff !important;
+        padding: 0 7px !important;
+        font: 900 11px/22px Arial, Helvetica, sans-serif !important;
+        letter-spacing: 0 !important;
+        outline: none !important;
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28) !important;
+      }
+      #hordes-kr-chat-translation-toggle .outgoing-input:focus {
+        border-color: rgba(245, 194, 71, 0.9) !important;
+      }
+      #hordes-kr-chat-translation-toggle .outgoing-input::placeholder {
+        color: rgba(166, 220, 213, 0.72) !important;
+      }
+      #hordes-kr-chat-translation-toggle .outgoing-input:disabled {
+        color: #8ea6aa !important;
+        border-color: rgba(142, 166, 170, 0.22) !important;
+        background: rgba(35, 41, 55, 0.78) !important;
+      }
+      #hordes-kr-chat-translation-toggle button.outgoing-send {
+        min-width: 28px !important;
+        width: 28px !important;
+        padding: 0 !important;
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -4894,6 +5287,7 @@
 
     const button = document.createElement("button");
     button.type = "button";
+    button.className = "toggle-button";
     button.textContent = "채팅번역";
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -4903,13 +5297,66 @@
       renderStatusUi();
     });
 
-    [...HIGHLIGHT_INPUT_POINTER_EVENTS, "pointerup", "pointermove", "contextmenu", "wheel"].forEach((type) => {
-      button.addEventListener(type, (event) => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "outgoing-input";
+    input.placeholder = "한국어→영어 Enter";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.maxLength = CHAT_TRANSLATION_MAX_TEXT_LENGTH;
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        translateOutgoingChatFromQuickInput(input).catch(() => {});
+        return;
+      }
+      if (event.key === "Escape") {
+        input.value = "";
+        event.preventDefault();
+      }
+      event.stopPropagation();
+    });
+
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "outgoing-send";
+    send.textContent = "→";
+    send.title = "한국어를 영어로 번역해서 게임 채팅 입력칸에 넣기";
+    send.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      translateOutgoingChatFromQuickInput(input).catch(() => {});
+    });
+
+    [button, input, send].forEach((element) => {
+      [...HIGHLIGHT_INPUT_POINTER_EVENTS, "pointerup", "pointermove", "contextmenu", "wheel"].forEach((type) => {
+        element.addEventListener(type, (event) => {
+          event.stopPropagation();
+        });
+      });
+      STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
+        element.addEventListener(type, (event) => {
+          event.stopPropagation();
+        });
+      });
+    });
+
+    input.addEventListener("focus", () => {
+      input.select();
+    });
+
+    input.addEventListener("paste", (event) => {
+      event.stopPropagation();
+    });
+
+    [input, send].forEach((element) => {
+      element.addEventListener("click", (event) => {
         event.stopPropagation();
       });
     });
 
-    host.appendChild(button);
+    host.append(button, input, send);
     document.body.appendChild(host);
     CHAT_TRANSLATION_STATE.quickToggleHost = host;
     CHAT_TRANSLATION_STATE.quickToggleRenderKey = "";
@@ -4937,11 +5384,13 @@
       return;
     }
 
-    const button = host.querySelector("button");
+    const button = host.querySelector(".toggle-button");
+    const input = host.querySelector(".outgoing-input");
+    const send = host.querySelector(".outgoing-send");
     if (!button) return;
 
     const hostRect = host.getBoundingClientRect();
-    const width = Math.max(96, Math.round(hostRect.width || 96));
+    const width = Math.max(306, Math.round(hostRect.width || 306));
     const height = Math.max(24, Math.round(hostRect.height || 24));
     const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
     const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
@@ -4952,6 +5401,7 @@
     const hasKey = hasChatTranslationApiKey();
     const enabled = isChatTranslationEnabled();
     const busy = enabled && (CHAT_TRANSLATION_STATE.activeRequests > 0 || CHAT_TRANSLATION_STATE.queue.length > 0);
+    const outgoingBusy = CHAT_TRANSLATION_STATE.outgoingBusy;
     const text = hasKey
       ? busy
         ? "채팅번역 중"
@@ -4959,7 +5409,7 @@
       : "채팅번역 키없음";
     const title = hasKey
       ? `채팅 번역 ${enabled ? "켜짐" : "꺼짐"}`
-      : '콘솔에서 HordesKrMod.setChatTranslationApiKey("...")로 API 키를 저장하세요.';
+      : "메인 패널의 채팅 번역 키에서 API 키를 저장하세요.";
 
     const renderKey = [
       left,
@@ -4968,7 +5418,9 @@
       title,
       enabled ? "1" : "0",
       busy ? "1" : "0",
+      outgoingBusy ? "1" : "0",
       hasKey ? "1" : "0",
+      CHAT_TRANSLATION_STATE.outgoingLastError || "",
     ].join("|");
     if (!force && CHAT_TRANSLATION_STATE.quickToggleRenderKey === renderKey && !host.hidden) return;
     CHAT_TRANSLATION_STATE.quickToggleRenderKey = renderKey;
@@ -4979,10 +5431,26 @@
     button.textContent = text;
     button.title = title;
     button.className = [
+      "toggle-button",
       enabled ? "enabled" : "",
       busy ? "busy" : "",
       hasKey ? "" : "missing",
     ].filter(Boolean).join(" ");
+    if (input) {
+      input.disabled = outgoingBusy || !hasKey;
+      input.placeholder = hasKey
+        ? outgoingBusy
+          ? "영어로 번역 중..."
+          : "한국어→영어 Enter"
+        : "API 키 필요";
+      input.title = CHAT_TRANSLATION_STATE.outgoingLastError || "한국어를 입력하고 Enter를 누르면 영어로 바꿔 게임 채팅 입력칸에 넣습니다.";
+    }
+    if (send) {
+      send.disabled = outgoingBusy || !hasKey;
+      send.classList.toggle("busy", outgoingBusy);
+      send.classList.toggle("missing", !hasKey);
+      send.title = CHAT_TRANSLATION_STATE.outgoingLastError || "한국어를 영어로 번역해서 게임 채팅 입력칸에 넣기";
+    }
   }
 
   function getChatTranslationStatus() {
@@ -5029,6 +5497,13 @@
       quickToggle: {
         host: Boolean(CHAT_TRANSLATION_STATE.quickToggleHost && document.contains(CHAT_TRANSLATION_STATE.quickToggleHost)),
         hidden: CHAT_TRANSLATION_STATE.quickToggleHost ? CHAT_TRANSLATION_STATE.quickToggleHost.hidden : true,
+      },
+      outgoing: {
+        busy: CHAT_TRANSLATION_STATE.outgoingBusy,
+        lastInput: CHAT_TRANSLATION_STATE.outgoingLastInput,
+        lastTranslation: CHAT_TRANSLATION_STATE.outgoingLastTranslation,
+        lastError: CHAT_TRANSLATION_STATE.outgoingLastError,
+        lastAt: CHAT_TRANSLATION_STATE.outgoingLastAt,
       },
     };
   }
@@ -6109,6 +6584,7 @@
     if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
     if (element.closest("#hordes-kr-target-distance-overlay")) return true;
     if (element.closest("#hordes-kr-minimap-name-overlay")) return true;
+    if (element.closest(".hordes-kr-context-highlight-add")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
     if (element.closest("#chat, #chatinput, .chat, [class*='chat']")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
@@ -6144,6 +6620,313 @@
     } else {
       document.addEventListener("DOMContentLoaded", start, { once: true });
     }
+  }
+
+  function initTargetContextMenuHighlight() {
+    const start = () => {
+      if (!document.body || HIGHLIGHT_STATE.contextMenuObserver) return;
+
+      HIGHLIGHT_STATE.contextMenuObserver = new MutationObserver(() => {
+        scheduleTargetContextMenuHighlightInjection();
+      });
+      HIGHLIGHT_STATE.contextMenuObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+      document.addEventListener("contextmenu", (event) => {
+        HIGHLIGHT_STATE.contextMenuLastAt = Date.now();
+        HIGHLIGHT_STATE.contextMenuLastX = Math.round(event.clientX || 0);
+        HIGHLIGHT_STATE.contextMenuLastY = Math.round(event.clientY || 0);
+        HIGHLIGHT_STATE.contextMenuLastElement = getContextMenuEventElement(event.target);
+        clearTargetContextMenuHighlightActions();
+        setTimeout(injectTargetContextMenuHighlightAction, 40);
+        setTimeout(injectTargetContextMenuHighlightAction, 140);
+        setTimeout(injectTargetContextMenuHighlightAction, 320);
+      }, true);
+      document.addEventListener("mousedown", (event) => {
+        const host = HIGHLIGHT_STATE.contextMenuActionHost;
+        if (!host || !event.target || host.contains(event.target)) return;
+        clearTargetContextMenuHighlightActions();
+      }, true);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") clearTargetContextMenuHighlightActions();
+      }, true);
+    };
+
+    if (document.body) {
+      start();
+    } else {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    }
+  }
+
+  function scheduleTargetContextMenuHighlightInjection() {
+    if (scheduleTargetContextMenuHighlightInjection.pending) return;
+    scheduleTargetContextMenuHighlightInjection.pending = true;
+    setTimeout(() => {
+      scheduleTargetContextMenuHighlightInjection.pending = false;
+      injectTargetContextMenuHighlightAction();
+    }, 60);
+  }
+
+  function injectTargetContextMenuHighlightAction() {
+    try {
+      const target = getSelectedTargetForHighlightMenu();
+      if (!target || !target.name) return;
+      if (!isRecentContextMenuOnSelectedTarget(target)) {
+        clearTargetContextMenuHighlightActions();
+        HIGHLIGHT_STATE.contextMenuLastError = "타겟 체력바 우클릭이 아니어서 강조 ID 메뉴를 표시하지 않았습니다.";
+        return;
+      }
+
+      const menus = findPlayerContextMenuElements();
+      let inserted = false;
+      for (const menu of menus) {
+        if (!menu || menu.querySelector(".hordes-kr-context-highlight-add")) continue;
+
+        const action = createTargetContextMenuHighlightAction(target.name);
+        menu.appendChild(action);
+        HIGHLIGHT_STATE.contextMenuLastInjectedAt = Date.now();
+        HIGHLIGHT_STATE.contextMenuLastTargetName = target.name;
+        HIGHLIGHT_STATE.contextMenuLastError = "";
+        inserted = true;
+      }
+      if (!inserted) {
+        clearFloatingTargetContextMenuHighlightAction();
+        HIGHLIGHT_STATE.contextMenuLastError = "기본 타겟 메뉴를 찾지 못했습니다.";
+      }
+    } catch (error) {
+      HIGHLIGHT_STATE.contextMenuLastError = error && error.message ? error.message : String(error);
+    }
+  }
+
+  function getContextMenuEventElement(target) {
+    if (!target) return null;
+    const elementNode = pageWindow.Node ? pageWindow.Node.ELEMENT_NODE : 1;
+    if (target.nodeType === elementNode) return target;
+    return target.parentElement || null;
+  }
+
+  function isRecentContextMenuOnSelectedTarget(target) {
+    if (!target || !target.name) return false;
+
+    const age = Date.now() - Number(HIGHLIGHT_STATE.contextMenuLastAt || 0);
+    if (!Number.isFinite(age) || age < 0 || age > 1800) return false;
+
+    return isContextMenuElementForSelectedTarget(target);
+  }
+
+  function isContextMenuElementForSelectedTarget(target) {
+    const name = normalizeHighlightName(target && target.name).toLowerCase();
+    const element = HIGHLIGHT_STATE.contextMenuLastElement;
+    if (!name || !element || !document.contains(element)) return false;
+
+    if (element.closest([
+      "#hordes-kr-mod-status-root",
+      "#hordes-kr-chat-translation-toggle",
+      ".hordes-kr-context-highlight-floating",
+      "#chat",
+      "#chatinput",
+      ".chat",
+      "[class*='chat']",
+      "input",
+      "textarea",
+    ].join(","))) {
+      return false;
+    }
+
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 8; depth++) {
+      const rect = current.getBoundingClientRect ? current.getBoundingClientRect() : null;
+      const isUiSized = !rect || (rect.width <= 720 && rect.height <= 280);
+      if (isUiSized && doesElementTextContainName(current, name)) return true;
+      current = current.parentElement;
+    }
+
+    return false;
+  }
+
+  function doesElementTextContainName(element, lowerName) {
+    if (!element || !lowerName) return false;
+
+    const text = normalizeText(element.innerText || element.textContent || "").toLowerCase();
+    if (text && text.includes(lowerName)) return true;
+
+    for (const attr of ["title", "aria-label", "data-tip", "data-tooltip"]) {
+      const value = normalizeText(element.getAttribute && element.getAttribute(attr) || "").toLowerCase();
+      if (value && value.includes(lowerName)) return true;
+    }
+
+    return false;
+  }
+
+  function findPlayerContextMenuElements() {
+    const candidates = Array.from(document.querySelectorAll([
+      "[role='menu']",
+      "[class*='context']",
+      "[class*='Context']",
+      "[class*='menu']",
+      "[class*='Menu']",
+      "[class*='dropdown']",
+      "[class*='Dropdown']",
+      "[class*='popover']",
+      "[class*='Popover']",
+    ].join(",")));
+
+    return candidates.filter(isLikelyPlayerContextMenuElement).slice(-4);
+  }
+
+  function isLikelyPlayerContextMenuElement(element) {
+    if (!element || !document.contains(element)) return false;
+    if (element.closest("#hordes-kr-mod-status-root, #hordes-kr-chat-translation-toggle")) return false;
+
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width < 40 || rect.height < 20 || rect.width > 360 || rect.height > 520) return false;
+
+    const style = pageWindow.getComputedStyle ? pageWindow.getComputedStyle(element) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0)) return false;
+
+    const text = normalizeText(element.innerText || element.textContent || "").toLowerCase();
+    if (!text) return false;
+    const hasPlayerAction = /whisper|message|invite|inspect|block|report|귓속말|귓말|초대|차단|신고|살펴보기|정보/.test(text);
+    const hasTooMuchUi = /hordes kr mod|채팅번역|거래소감시|프리셋/.test(text);
+    return hasPlayerAction && !hasTooMuchUi;
+  }
+
+  function createTargetContextMenuHighlightAction(name) {
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "hordes-kr-context-highlight-add";
+    action.textContent = `강조 ID 추가: ${name}`;
+    action.title = `${name}을 강조 ID 목록에 추가`;
+    action.style.cssText = [
+      "width: 100%",
+      "box-sizing: border-box",
+      "display: block",
+      "border: 1px solid rgba(245, 194, 71, 0.45)",
+      "border-radius: 4px",
+      "background: rgba(84, 72, 30, 0.92)",
+      "color: #fff3b0",
+      "font: 900 12px/1.2 Arial, Helvetica, sans-serif",
+      "letter-spacing: 0",
+      "text-align: left",
+      "padding: 6px 8px",
+      "margin: 3px 0 0",
+      "cursor: pointer",
+    ].join(";");
+
+    action.addEventListener("pointerdown", stopContextMenuActionEvent, true);
+    action.addEventListener("mousedown", stopContextMenuActionEvent, true);
+    action.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const result = addHighlightNameDirect(name);
+      HIGHLIGHT_STATE.contextMenuLastTargetName = result.name || name;
+      HIGHLIGHT_STATE.contextMenuLastError = result.added || result.exists ? "" : result.reason || "";
+      renderStatusUi();
+    }, true);
+
+    return action;
+  }
+
+  function clearFloatingTargetContextMenuHighlightAction() {
+    const host = HIGHLIGHT_STATE.contextMenuActionHost;
+    if (host) host.remove();
+    HIGHLIGHT_STATE.contextMenuActionHost = null;
+  }
+
+  function clearTargetContextMenuHighlightActions() {
+    clearFloatingTargetContextMenuHighlightAction();
+    document.querySelectorAll(".hordes-kr-context-highlight-add").forEach((node) => {
+      node.remove();
+    });
+  }
+
+  function stopContextMenuActionEvent(event) {
+    event.stopPropagation();
+  }
+
+  function getSelectedTargetForHighlightMenu() {
+    const runtime = getExposedRuntime();
+    if (!runtime) return null;
+
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return null;
+
+    const selected = findSelectedTargetEntity(runtime, self.entity);
+    if (!selected || !selected.entity) {
+      return getSelectedTargetForHighlightMenuFromDistance();
+    }
+
+    const name = normalizeHighlightName(getRuntimeEntityLabel(selected.entity));
+    if (!name || name === "unknown") return null;
+
+    return {
+      id: String(getRuntimeEntityId(selected.entity) ?? ""),
+      name,
+      path: selected.path || selected.source || "",
+    };
+  }
+
+  function getSelectedTargetForHighlightMenuFromDistance() {
+    const result = getTargetDistance(true);
+    const target = result && result.target;
+    const name = normalizeHighlightName(target && target.name);
+    if (!name || name === "unknown") return null;
+
+    return {
+      id: String(target.id || ""),
+      name,
+      path: target.path || target.referenceSource || "targetDistance",
+    };
+  }
+
+  function addSelectedTargetToHighlightNames() {
+    const target = getSelectedTargetForHighlightMenu();
+    if (!target || !target.name) {
+      return { ok: false, added: false, reason: "현재 선택된 타겟 이름을 찾지 못했습니다." };
+    }
+    return addHighlightNameDirect(target.name);
+  }
+
+  function addHighlightNameDirect(name) {
+    const normalized = normalizeHighlightName(name);
+    if (!normalized) return { ok: false, added: false, reason: "이름이 비어 있습니다." };
+
+    const exists = HIGHLIGHT_CONFIG.names.some(
+      (current) => current.toLowerCase() === normalized.toLowerCase()
+    );
+    if (!exists) {
+      HIGHLIGHT_CONFIG.names.push(normalized);
+      saveHighlightConfig();
+    }
+
+    refreshNameHighlights();
+    updateRuntimeNameOverlay();
+    return {
+      ok: true,
+      added: !exists,
+      exists,
+      name: normalized,
+      names: [...HIGHLIGHT_CONFIG.names],
+    };
+  }
+
+  function getTargetContextMenuHighlightStatus() {
+    return {
+      installed: Boolean(HIGHLIGHT_STATE.contextMenuObserver),
+      lastInjectedAt: HIGHLIGHT_STATE.contextMenuLastInjectedAt
+        ? new Date(HIGHLIGHT_STATE.contextMenuLastInjectedAt).toISOString()
+        : null,
+      lastTargetName: HIGHLIGHT_STATE.contextMenuLastTargetName,
+      lastError: HIGHLIGHT_STATE.contextMenuLastError,
+      floating: Boolean(HIGHLIGHT_STATE.contextMenuActionHost && document.contains(HIGHLIGHT_STATE.contextMenuActionHost)),
+      lastPoint: {
+        x: HIGHLIGHT_STATE.contextMenuLastX,
+        y: HIGHLIGHT_STATE.contextMenuLastY,
+      },
+      selected: getSelectedTargetForHighlightMenu(),
+    };
   }
 
   function scheduleNameHighlightRefresh() {
@@ -6291,6 +7074,7 @@
     if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
     if (element.closest("#hordes-kr-target-distance-overlay")) return true;
     if (element.closest("#hordes-kr-minimap-name-overlay")) return true;
+    if (element.closest(".hordes-kr-context-highlight-add")) return true;
     if (element.closest(".hordes-kr-name-highlight")) return true;
     if (element.closest("#chat, #chatinput, .chat, [class*='chat']")) return true;
     return !!element.closest("script, style, textarea, input, canvas, code, pre");
@@ -6923,6 +7707,7 @@
       targetDistance: isTargetDistanceEnabled(),
       chatTranslation: getChatTranslationStatus(),
       partyUi: getPartyUiStatus(),
+      auctionWatch: getAuctionWatchStatus(),
       advanced: {
         domTranslation: isDomTranslationEnabled(),
         domHighlight: HIGHLIGHT_CONFIG.domEnabled,
@@ -7574,6 +8359,36 @@
       "try{__hkrRuntime.debug.skillRuntimeStores={active:typeof Hs,learned:typeof Jc,configs:typeof Ea}}catch(__hkrError){}",
       "}catch(o){try{var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"skillRuntime:\"+((o&&o.message)||o))}catch(i){}}",
     ].join("");
+    const exposeClientAuctionRuntime = [
+      "try{",
+      "var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
+      "var __hkrGroupOf=function(__hkrItem){try{var __hkrId=String(__hkrItem&&__hkrItem.dbid);if(n.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"self\";if(o.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"other\";if(i.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"nonOrAcc\";}catch(__hkrError){}return\"unknown\"};",
+      "var __hkrSummarize=function(__hkrItem,__hkrRaw){",
+      "var __hkrStats=[];",
+      "try{__hkrItem.stats&&__hkrItem.stats.forEach(function(__hkrStat,__hkrId){__hkrStats.push({id:Number(__hkrId),type:String(__hkrStat&&__hkrStat.type||\"\"),value:Number(__hkrStat&&__hkrStat.value),qual:Number(__hkrStat&&__hkrStat.qual)})})}catch(__hkrError){}",
+      "return {dbid:String(__hkrItem.dbid),id:String(__hkrRaw&&__hkrRaw.id||__hkrItem.dbid),type:String(__hkrItem.type||__hkrRaw&&__hkrRaw.type||\"\"),tier:Number(__hkrItem.tier),upgrade:Number(__hkrItem.upgrade||0),quality:Number(__hkrItem.quality||0),gearScore:Number(__hkrItem.gs||0),stacks:Number(__hkrItem.stacks||0),bound:Number(__hkrItem.bound||0),owner:String(__hkrItem.owner||__hkrRaw&&__hkrRaw.name||\"\"),auction:String(__hkrItem.auction||__hkrRaw&&__hkrRaw.auction||\"\"),auctionprice:Number(__hkrItem.auctionprice||__hkrRaw&&__hkrRaw.auctionprice||0),group:__hkrGroupOf(__hkrItem),stats:__hkrStats,rawRolls:__hkrRaw&&__hkrRaw.rolls?__hkrRaw.rolls.slice?__hkrRaw.rolls.slice(0):__hkrRaw.rolls:null};",
+      "};",
+      "var __hkrSelf=n.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
+      "var __hkrOther=o.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
+      "var __hkrNonOrAcc=i.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
+      "var __hkrAll=s.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
+      "__hkrRuntime.lastAuctionFind={at:Date.now(),gold:t[1],self:__hkrSelf,other:__hkrOther,nonOrAcc:__hkrNonOrAcc,all:__hkrAll};",
+      "__hkrRuntime.hookHits=__hkrRuntime.hookHits||{};",
+      "__hkrRuntime.hookHits.auctionFind=(__hkrRuntime.hookHits.auctionFind||0)+1;",
+      "if(window.__HORDES_KR_AUCTION_WATCH_ACTIVE__===true&&__hkrAll.length){",
+      "var __hkrRequestAt=Date.now();",
+      "fetch(\"/api/item/getAuction\",{method:\"POST\",body:JSON.stringify({ids:__hkrAll})}).then(async function(__hkrResponse){",
+      "var __hkrJson=await __hkrResponse.json();",
+      "if(__hkrJson===\"error\"||__hkrResponse.ok===false)throw new Error(\"auction detail request failed\");",
+      "var __hkrItems=[];",
+      "__hkrAll.forEach(function(__hkrId){try{var __hkrRaw=__hkrJson.find(function(__hkrCandidate){return String(__hkrCandidate.id)===String(__hkrId)});if(!__hkrRaw)return;var __hkrItem=new Ai(__hkrId);__hkrItem.hydrate(__hkrRaw);__hkrItems.push(__hkrSummarize(__hkrItem,__hkrRaw));}catch(__hkrError){try{__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionHydrateItem:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}}});",
+      "__hkrRuntime.lastAuctionItems={at:Date.now(),requestAt:__hkrRequestAt,gold:t[1],ids:__hkrAll,items:__hkrItems};",
+      "__hkrRuntime.hookHits.auctionHydrate=(__hkrRuntime.hookHits.auctionHydrate||0)+1;",
+      "}).catch(function(__hkrError){try{__hkrRuntime.lastAuctionError={at:Date.now(),message:(__hkrError&&__hkrError.message)||String(__hkrError)};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionHydrate:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}});",
+      "}",
+      "else if(window.__HORDES_KR_AUCTION_WATCH_ACTIVE__===true){__hkrRuntime.lastAuctionItems={at:Date.now(),requestAt:Date.now(),gold:t[1],ids:__hkrAll,items:[]};}",
+      "}catch(__hkrError){try{var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionRuntime:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}}",
+    ].join("");
 
     patched = replaceClientSourceOnce(
       patched,
@@ -7695,6 +8510,14 @@
       "client-skill-runtime"
     );
 
+    patched = replaceClientSourceOnce(
+      patched,
+      "Em.set({self:n,other:o,nonOrAcc:i,all:s}),t[0]&&wt(107),Ro.set({gold:t[1]})",
+      `${exposeClientAuctionRuntime}Em.set({self:n,other:o,nonOrAcc:i,all:s}),t[0]&&wt(107),Ro.set({gold:t[1]})`,
+      patches,
+      "client-auction-runtime"
+    );
+
     if (patches.length > 0) {
       patched += `\n;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.patchedBy="Hordes KR Mod";window.__HORDES_KR_RUNTIME__.patchedVersion=${JSON.stringify(MOD_VERSION)};window.__HORDES_KR_RUNTIME__.patchedSource=${JSON.stringify(shortScriptUrl(url))};}catch(o){}\n`;
     }
@@ -7765,6 +8588,7 @@
 
     if (HIGHLIGHT_STATE.runtimeOverlayTimer) return;
     HIGHLIGHT_STATE.runtimeOverlayTimer = setInterval(updateRuntimeNameOverlay, RUNTIME_OVERLAY_INTERVAL_MS);
+    startRuntimeOverlayPositionLoop();
     pageWindow.addEventListener("resize", updateRuntimeNameOverlay);
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", updateRuntimeNameOverlay, { once: true });
@@ -8182,6 +9006,13 @@
         padding: 4px 5px !important;
         box-sizing: border-box !important;
       }
+      .hordes-kr-preset-quickbar-stack {
+        display: inline-grid !important;
+        grid-template-columns: minmax(0, max-content) !important;
+        gap: 4px !important;
+        align-items: start !important;
+        justify-items: start !important;
+      }
       .hordes-kr-preset-quickbar-panel[data-dragging="true"] {
         border-color: rgba(245, 194, 71, 0.78) !important;
       }
@@ -8308,6 +9139,84 @@
         user-select: none !important;
         touch-action: none !important;
       }
+      .hordes-kr-auction-watch-panel {
+        width: min(360px, calc(100vw - 12px)) !important;
+        max-height: 210px !important;
+        overflow-y: auto !important;
+        display: grid !important;
+        gap: 4px !important;
+        border: 1px solid rgba(245, 194, 71, 0.34) !important;
+        border-radius: 5px !important;
+        background: rgba(16, 19, 29, 0.9) !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34) !important;
+        padding: 5px !important;
+        box-sizing: border-box !important;
+        font: 900 11px/1.15 Arial, Helvetica, sans-serif !important;
+      }
+      .hordes-kr-auction-watch-title {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: 6px !important;
+        color: #fff3b0 !important;
+        border-bottom: 1px solid rgba(245, 194, 71, 0.18) !important;
+        padding-bottom: 4px !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-auction-watch-title button {
+        border: 1px solid rgba(166, 220, 213, 0.24) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.78) !important;
+        color: #dff8f5 !important;
+        font: 1000 10px/1 Arial, Helvetica, sans-serif !important;
+        padding: 3px 6px !important;
+        cursor: pointer !important;
+      }
+      .hordes-kr-auction-watch-title button:hover {
+        border-color: rgba(245, 194, 71, 0.82) !important;
+        color: #f5c247 !important;
+      }
+      .hordes-kr-auction-watch-row {
+        min-width: 0 !important;
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto !important;
+        gap: 6px !important;
+        align-items: center !important;
+        border: 1px solid rgba(166, 220, 213, 0.16) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.74) !important;
+        color: #dff8f5 !important;
+        padding: 4px 5px !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-auction-watch-row.match {
+        border-color: rgba(52, 203, 73, 0.56) !important;
+        background: rgba(18, 65, 35, 0.78) !important;
+      }
+      .hordes-kr-auction-watch-row.self {
+        border-color: rgba(116, 184, 255, 0.42) !important;
+      }
+      .hordes-kr-auction-watch-main {
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-auction-watch-sub {
+        color: #a6dcd5 !important;
+        font-size: 10px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-auction-watch-price {
+        color: #f5c247 !important;
+        white-space: nowrap !important;
+      }
+      .hordes-kr-auction-watch-empty {
+        color: #8ea6aa !important;
+        padding: 3px 1px !important;
+      }
       .hordes-kr-minimap-list-scale-btn {
         width: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
         height: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
@@ -8329,6 +9238,11 @@
       .hordes-kr-minimap-list-scale-btn:hover {
         border-color: rgba(245, 194, 71, 0.88) !important;
         color: #f5c247 !important;
+      }
+      .hordes-kr-minimap-list-scale-btn.active {
+        border-color: rgba(52, 203, 73, 0.9) !important;
+        background: rgba(18, 65, 35, 0.92) !important;
+        color: #d8ffdf !important;
       }
       .hordes-kr-minimap-list-row {
         width: 100% !important;
@@ -8684,16 +9598,10 @@
         return;
       }
 
-      const incomingCandidates = isIncomingSkillOverlayEnabled()
-        ? collectIncomingSkillOverlayEntities(runtime)
-        : [];
-      const incomingTargetWatchCandidates = isIncomingTargetWatchEnabled()
-        ? collectIncomingTargetWatchOverlayEntities(runtime)
-        : [];
-      renderIncomingSkillList([
-        ...incomingCandidates,
-        ...incomingTargetWatchCandidates,
-      ]);
+      const incomingGroups = collectIncomingWarningOverlayEntities(runtime);
+      const incomingCandidates = incomingGroups.skills;
+      const incomingTargetWatchCandidates = incomingGroups.watches;
+      if (HIGHLIGHT_STATE.incomingSkillListHost) clearIncomingSkillList();
 
       const host = ensureRuntimeNameOverlayHost();
       if (!host || !getRuntimeProjectionMatrix(runtime)) {
@@ -9119,52 +10027,57 @@
     try {
       const labelsEnabled = Boolean(HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.minimapLabelsEnabled);
       const listEnabled = Boolean(HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.minimapListEnabled);
-      if ((!labelsEnabled && !listEnabled) || HIGHLIGHT_CONFIG.names.length === 0) {
+      const hasHighlightNames = HIGHLIGHT_CONFIG.names.length > 0;
+      const listAllHostiles = Boolean(listEnabled && HIGHLIGHT_CONFIG.minimapListAllHostiles);
+      if ((!labelsEnabled && !listEnabled) || (!hasHighlightNames && !listAllHostiles)) {
         clearMinimapNameOverlay();
         clearMinimapHighlightList();
         return;
       }
 
-      const host = labelsEnabled ? ensureMinimapNameOverlayHost() : null;
+      const host = labelsEnabled && hasHighlightNames ? ensureMinimapNameOverlayHost() : null;
       const listHost = listEnabled ? ensureMinimapHighlightListHost() : null;
       const runtime = getExposedRuntime();
       const context = getMinimapProjectionContext(runtime);
-      if ((!host && labelsEnabled) || (!listHost && listEnabled) || !context) {
+      if ((!host && labelsEnabled && hasHighlightNames) || (!listHost && listEnabled) || !context) {
         clearMinimapNameOverlay();
         clearMinimapHighlightList();
         return;
       }
 
-      const candidates = collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
-        limit: 24,
-        maxDepth: 5,
-        maxObjects: 3000,
-      });
-      const projected = [];
-
-      for (const candidate of candidates) {
-        if (context.self && isSameRuntimeEntity(candidate.entity, context.self.entity)) continue;
-
-        const point = projectRuntimeEntityToMinimap(candidate, runtime, context);
-        if (!point) continue;
-
-        projected.push({ ...candidate, minimap: point });
-        if (projected.length >= 16) break;
-      }
+      const highlightedCandidates = hasHighlightNames
+        ? collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
+            limit: 24,
+            maxDepth: 5,
+            maxObjects: 3000,
+          })
+        : [];
+      const hostileCandidates = listAllHostiles
+        ? collectRuntimeHostilePlayerOverlayEntities(runtime, context, { limit: 80 })
+        : [];
+      const labelProjected = projectMinimapOverlayCandidates(highlightedCandidates, runtime, context, 16);
+      const listProjected = projectMinimapOverlayCandidates(
+        listAllHostiles
+          ? dedupeRuntimeOverlayCandidates([...highlightedCandidates, ...hostileCandidates])
+          : highlightedCandidates,
+        runtime,
+        context,
+        listAllHostiles ? 48 : 16
+      );
 
       if (labelsEnabled) {
-        renderMinimapNameOverlayLabels(host, projected);
+        renderMinimapNameOverlayLabels(host, labelProjected);
       } else {
         clearMinimapNameOverlay();
       }
 
       if (listEnabled) {
-        renderMinimapHighlightList(listHost, projected, context);
+        renderMinimapHighlightList(listHost, listProjected, context);
       } else {
         clearMinimapHighlightList();
       }
 
-      HIGHLIGHT_STATE.lastMinimapOverlayMatches = projected.slice(0, 10).map((candidate) => ({
+      HIGHLIGHT_STATE.lastMinimapOverlayMatches = listProjected.slice(0, 10).map((candidate) => ({
         id: String(getRuntimeEntityId(candidate.entity) ?? ""),
         name: candidate.name,
         path: candidate.path,
@@ -9177,12 +10090,12 @@
         },
       }));
 
-      if (projected.length > 0) {
-        HIGHLIGHT_STATE.minimapOverlayHits += projected.length;
+      if (listProjected.length > 0 || labelProjected.length > 0) {
+        HIGHLIGHT_STATE.minimapOverlayHits += labelProjected.length;
         HIGHLIGHT_STATE.lastMinimapOverlayAt = Date.now();
         HIGHLIGHT_STATE.lastMinimapOverlayError = "";
         if (listEnabled) {
-          HIGHLIGHT_STATE.minimapListHits += projected.length;
+          HIGHLIGHT_STATE.minimapListHits += listProjected.length;
           HIGHLIGHT_STATE.lastMinimapListAt = Date.now();
           HIGHLIGHT_STATE.lastMinimapListError = "";
         }
@@ -9193,6 +10106,20 @@
       clearMinimapNameOverlay();
       clearMinimapHighlightList();
     }
+  }
+
+  function projectMinimapOverlayCandidates(candidates, runtime, context, limit) {
+    const projected = [];
+    for (const candidate of candidates || []) {
+      if (context.self && isSameRuntimeEntity(candidate.entity, context.self.entity)) continue;
+
+      const point = projectRuntimeEntityToMinimap(candidate, runtime, context);
+      if (!point) continue;
+
+      projected.push({ ...candidate, minimap: point });
+      if (projected.length >= limit) break;
+    }
+    return projected;
   }
 
   function renderMinimapNameOverlayLabels(host, candidates) {
@@ -9290,7 +10217,8 @@
     controls.append(
       createMinimapListScaleButton("-", -0.1),
       createMinimapListScaleButton("+", 0.1),
-      createMinimapListResetButton()
+      createMinimapListResetButton(),
+      createMinimapListAllHostilesButton()
     );
     title.append(titleMain, controls);
     panel.appendChild(title);
@@ -9345,6 +10273,7 @@
       top,
       getQuickGearPresetRenderKey(),
       getQuickSkillPresetRenderKey(),
+      getAuctionWatchQuickbarRenderKey(),
       combatStatus.key,
     ].join("\u0002");
     if (HIGHLIGHT_STATE.presetBarRenderKey === renderKey) return;
@@ -9359,7 +10288,14 @@
       createPresetQuickBarResetButton(),
       createPresetQuickBarDragHandle()
     );
-    host.replaceChildren(panel);
+    const stack = document.createElement("div");
+    stack.className = "hordes-kr-preset-quickbar-stack";
+    stack.appendChild(panel);
+
+    const auctionPanel = createAuctionWatchQuickbarPanel();
+    if (auctionPanel) stack.appendChild(auctionPanel);
+
+    host.replaceChildren(stack);
   }
 
   function getPresetQuickBarPosition(widthNumber) {
@@ -9743,6 +10679,23 @@
     return button;
   }
 
+  function createMinimapListAllHostilesButton() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hordes-kr-minimap-list-scale-btn";
+    button.classList.toggle("active", HIGHLIGHT_CONFIG.minimapListAllHostiles === true);
+    button.textContent = "A";
+    button.title = HIGHLIGHT_CONFIG.minimapListAllHostiles
+      ? "주변 적대 유저 전체 표시 중"
+      : "강조 ID만 표시 중. 클릭하면 주변 적대 유저 전체 표시";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleMinimapHighlightListAllHostiles();
+    });
+    return button;
+  }
+
   function installMinimapHighlightListDragHandle(handle, host) {
     if (!handle || !host) return;
 
@@ -9830,6 +10783,110 @@
     if (host.style.top !== top) host.style.top = top;
   }
 
+  function createAuctionWatchQuickbarPanel() {
+    if (!AUCTION_WATCH_CONFIG.enabled) return null;
+
+    const panel = document.createElement("div");
+    panel.className = "hordes-kr-auction-watch-panel";
+
+    const title = document.createElement("div");
+    const titleText = document.createElement("span");
+    const refresh = document.createElement("button");
+    title.className = "hordes-kr-auction-watch-title";
+    titleText.textContent = AUCTION_WATCH_STATE.running
+      ? "거래소 조회 중"
+      : AUCTION_WATCH_STATE.lastMatches.length > 0
+        ? `거래소 발견 ${AUCTION_WATCH_STATE.lastMatches.length}`
+        : "거래소 감시";
+    refresh.type = "button";
+    refresh.textContent = "조회";
+    refresh.disabled = AUCTION_WATCH_STATE.running || !getGearSocketStatus().available;
+    refresh.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      refreshAuctionWatchNow().catch(() => {}).finally(() => {
+        HIGHLIGHT_STATE.presetBarRenderKey = "";
+        updatePresetQuickBar();
+        renderStatusUi();
+      });
+      HIGHLIGHT_STATE.presetBarRenderKey = "";
+      updatePresetQuickBar();
+    });
+    title.append(titleText, refresh);
+    panel.appendChild(title);
+
+    const rows = [
+      ...AUCTION_WATCH_STATE.lastMatches.map((item) => ({ item, kind: "match" })),
+      ...AUCTION_WATCH_STATE.lastSelfItems.map((item) => ({ item, kind: "self" })),
+    ];
+    dedupeAuctionWatchPanelRows(rows);
+
+    if (rows.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "hordes-kr-auction-watch-empty";
+      empty.textContent = AUCTION_WATCH_STATE.lastError || "조건에 맞는 등록 없음";
+      panel.appendChild(empty);
+      return panel;
+    }
+
+    rows.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).forEach(({ item, kind }) => {
+      panel.appendChild(createAuctionWatchQuickbarRow(item, kind));
+    });
+
+    return panel;
+  }
+
+  function createAuctionWatchQuickbarRow(item, kind) {
+    const row = document.createElement("div");
+    const main = document.createElement("div");
+    const mainText = document.createElement("div");
+    const sub = document.createElement("div");
+    const price = document.createElement("div");
+
+    row.className = `hordes-kr-auction-watch-row ${kind || ""} ${item.group === "self" ? "self" : ""}`;
+    main.className = "hordes-kr-auction-watch-main";
+    sub.className = "hordes-kr-auction-watch-sub";
+    price.className = "hordes-kr-auction-watch-price";
+
+    mainText.textContent = `${item.group === "self" ? "내판매 " : ""}${formatAuctionWatchItemName(item)}`;
+    sub.textContent = formatAuctionWatchStats(item.stats) || item.owner || item.dbid;
+    price.textContent = item.auctionprice ? formatCoinAmount(item.auctionprice) : "-";
+    row.title = formatAuctionWatchItemLine(item);
+
+    main.append(mainText, sub);
+    row.append(main, price);
+    return row;
+  }
+
+  function dedupeAuctionWatchPanelRows(rows) {
+    const seen = new Set();
+    for (let index = 0; index < rows.length; index += 1) {
+      const key = rows[index] && rows[index].item && rows[index].item.dbid;
+      if (!key || seen.has(key)) {
+        rows.splice(index, 1);
+        index -= 1;
+      } else {
+        seen.add(key);
+      }
+    }
+    return rows;
+  }
+
+  function getAuctionWatchQuickbarRenderKey() {
+    return [
+      AUCTION_WATCH_CONFIG.enabled ? 1 : 0,
+      AUCTION_WATCH_STATE.running ? 1 : 0,
+      AUCTION_WATCH_STATE.lastState || "",
+      AUCTION_WATCH_STATE.lastError || "",
+      ...AUCTION_WATCH_STATE.lastMatches.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).map((item) => (
+        `${item.dbid}:${item.auctionprice}:${item.group}:${item.stats.map((stat) => `${stat.id}:${stat.value}`).join(",")}`
+      )),
+      ...AUCTION_WATCH_STATE.lastSelfItems.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).map((item) => (
+        `s:${item.dbid}:${item.auctionprice}`
+      )),
+    ].join("|");
+  }
+
   function getQuickGearPresetRenderKey() {
     return [
       GEAR_PRESET_STATE.running ? "running" : "idle",
@@ -9864,6 +10921,7 @@
       lockedId || "",
       selectedId || "",
       scale,
+      HIGHLIGHT_CONFIG.minimapListAllHostiles ? "all" : "highlight",
       candidates.map((candidate) => [
         candidate.id || "",
         candidate.name || "",
@@ -10038,6 +11096,7 @@
   function getMinimapHighlightListStatus() {
     return {
       enabled: HIGHLIGHT_CONFIG.minimapListEnabled,
+      allHostiles: HIGHLIGHT_CONFIG.minimapListAllHostiles === true,
       scale: getMinimapHighlightListScale(),
       position: hasCustomMinimapHighlightListPosition()
         ? {
@@ -10123,6 +11182,14 @@
   function resetMinimapHighlightListPosition() {
     HIGHLIGHT_CONFIG.minimapListX = null;
     HIGHLIGHT_CONFIG.minimapListY = null;
+    HIGHLIGHT_STATE.minimapListRenderKey = "";
+    saveHighlightConfig();
+    updateMinimapNameOverlay();
+    return getMinimapHighlightListStatus();
+  }
+
+  function toggleMinimapHighlightListAllHostiles() {
+    HIGHLIGHT_CONFIG.minimapListAllHostiles = !HIGHLIGHT_CONFIG.minimapListAllHostiles;
     HIGHLIGHT_STATE.minimapListRenderKey = "";
     saveHighlightConfig();
     updateMinimapNameOverlay();
@@ -10759,6 +11826,83 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
+  function collectIncomingWarningOverlayEntities(runtime) {
+    const self = findLocalPlayerEntity(runtime);
+    if (!self) return { skills: [], watches: [] };
+
+    const selfPosition = getRuntimeWorldPosition(self.entity);
+    if (!selfPosition) return { skills: [], watches: [] };
+
+    const wantsSkill = isIncomingSkillOverlayEnabled();
+    const wantsWatch = isIncomingTargetWatchEnabled();
+    if (!wantsSkill && !wantsWatch) return { skills: [], watches: [] };
+
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      limit: INCOMING_WARNING_SCAN_LIMIT,
+      playersOnly: false,
+    });
+    const skills = [];
+    const watches = [];
+
+    for (const item of entities.items) {
+      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
+
+      const relation = getRuntimeEntityRelation(item.entity, self.entity);
+      if (relation.friendly) continue;
+
+      const distance = getHorizontalRuntimeDistance(selfPosition.position, item.position);
+
+      if (wantsSkill) {
+        const skillField = getIncomingSkillField({
+          activeFields: getRuntimeSkillTargetFields(item.entity, runtime, self.entity),
+        });
+        if (skillField) {
+          const skillId = normalizeSkillIconId(skillField.skill && skillField.skill.id);
+          skills.push({
+            entity: item.entity,
+            path: item.path,
+            name: item.name,
+            matchedName: item.name.toLowerCase(),
+            position: item.position,
+            positionSource: item.positionSource,
+            score: 1000 + (item.type === 0 ? 120 : 0),
+            incomingSkill: true,
+            relation,
+            skillId,
+            skillIconUrl: skillId ? getSkillIconUrl(skillId) : "",
+            skillTargetField: skillField.key,
+            skillRemaining: skillField.skill && skillField.skill.remaining,
+            distance,
+            distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+          });
+        }
+      }
+
+      if (wantsWatch && item.type === 0) {
+        const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self.entity);
+        const watchField = getIncomingTargetWatchField(targetInfo);
+        if (watchField) {
+          watches.push({
+            entity: item.entity,
+            path: item.path,
+            name: item.name,
+            matchedName: item.name.toLowerCase(),
+            position: item.position,
+            positionSource: item.positionSource,
+            score: 920 + (relation.hostile ? 80 : 0),
+            incomingTargetWatch: true,
+            relation,
+            watchTargetField: watchField.key,
+            distance,
+            distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+          });
+        }
+      }
+    }
+
+    return { skills, watches };
+  }
+
   function collectIncomingSkillOverlayEntities(runtime) {
     const self = findLocalPlayerEntity(runtime);
     if (!self) return [];
@@ -10918,12 +12062,14 @@
     const host = HIGHLIGHT_STATE.runtimeOverlayHost;
     if (host) host.replaceChildren();
     HIGHLIGHT_STATE.runtimeOverlayItems.clear();
+    HIGHLIGHT_STATE.runtimeOverlayActiveEntries = [];
     HIGHLIGHT_STATE.lastRuntimeOverlayMatches = [];
   }
 
   function renderRuntimeNameOverlayLabels(host, candidates) {
     const activeKeys = new Set();
     const activeVisualKeys = new Set();
+    const activeEntries = [];
     const now = Date.now();
 
     for (const candidate of candidates) {
@@ -10953,7 +12099,10 @@
       if (label.style.left !== left) label.style.left = left;
       if (label.style.top !== top) label.style.top = top;
       label.dataset.hordesKrSeenAt = String(now);
+      activeEntries.push({ key, candidate });
     }
+
+    HIGHLIGHT_STATE.runtimeOverlayActiveEntries = activeEntries;
 
     for (const [key, label] of HIGHLIGHT_STATE.runtimeOverlayItems.entries()) {
       if (activeKeys.has(key)) continue;
@@ -10962,6 +12111,46 @@
 
       label.remove();
       HIGHLIGHT_STATE.runtimeOverlayItems.delete(key);
+    }
+  }
+
+  function startRuntimeOverlayPositionLoop() {
+    if (HIGHLIGHT_STATE.runtimeOverlayRafId) return;
+
+    const tick = () => {
+      HIGHLIGHT_STATE.runtimeOverlayRafId = pageWindow.requestAnimationFrame(tick);
+      updateRuntimeOverlayLabelPositionsFast();
+    };
+
+    HIGHLIGHT_STATE.runtimeOverlayRafId = pageWindow.requestAnimationFrame(tick);
+  }
+
+  function updateRuntimeOverlayLabelPositionsFast() {
+    const entries = HIGHLIGHT_STATE.runtimeOverlayActiveEntries;
+    if (!entries || entries.length === 0) return;
+    if (!shouldRunRuntimeNameOverlay()) return;
+
+    const runtime = getExposedRuntime();
+    if (!runtime || !getRuntimeProjectionMatrix(runtime)) return;
+
+    for (const entry of entries) {
+      const label = HIGHLIGHT_STATE.runtimeOverlayItems.get(entry.key);
+      const candidate = entry.candidate;
+      if (!label || !candidate || !candidate.entity || !document.contains(label)) continue;
+
+      const positionInfo = getRuntimeWorldPosition(candidate.entity);
+      if (!positionInfo) continue;
+
+      candidate.position = positionInfo.position;
+      candidate.positionSource = positionInfo.source;
+      const point = projectRuntimeEntityToScreen(candidate, runtime);
+      if (!point) continue;
+
+      const left = `${Math.round(point.x)}px`;
+      const top = `${Math.round(point.y - getRuntimeOverlayLabelYOffset(candidate))}px`;
+      if (label.style.left !== left) label.style.left = left;
+      if (label.style.top !== top) label.style.top = top;
+      candidate.screen = point;
     }
   }
 
@@ -11112,6 +12301,167 @@
     HIGHLIGHT_STATE.runtimeDeepScanAt = now;
     HIGHLIGHT_STATE.runtimeDeepScanCandidates = result;
     return result;
+  }
+
+  function collectRuntimeHostilePlayerOverlayEntities(runtime, context, options = {}) {
+    if (!runtime || !context || !context.self || !context.self.entity) return [];
+
+    const limit = clamp(Number(options.limit) || 48, 1, 120);
+    const entities = collectLoadedRuntimeEntities(runtime, {
+      limit: Math.max(300, limit * 8),
+      playersOnly: true,
+    });
+    const candidates = [];
+
+    for (const item of entities.items) {
+      if (!item || !item.entity || !item.name || !Array.isArray(item.position)) continue;
+      if (isSameRuntimeEntity(item.entity, context.self.entity)) continue;
+      if (!isLikelyRuntimePlayerEntity(item.entity, item.name)) continue;
+
+      const relation = getRuntimeEntityRelation(item.entity, context.self.entity);
+      if (!relation.hostile) continue;
+
+      const distance = getHorizontalRuntimeDistance(context.selfPosition.position, item.position);
+      candidates.push({
+        entity: item.entity,
+        path: item.path,
+        name: item.name,
+        matchedName: item.name.toLowerCase(),
+        position: item.position,
+        positionSource: item.positionSource,
+        relation,
+        score: 900 - (Number.isFinite(distance) ? Math.min(500, distance) : 500),
+      });
+    }
+
+    return dedupeRuntimeOverlayCandidates(candidates)
+      .sort((left, right) => compareRuntimeHostileCandidates(left, right, context))
+      .slice(0, limit);
+  }
+
+  function compareRuntimeHostileCandidates(left, right, context) {
+    const leftDistance = getHorizontalRuntimeDistance(context.selfPosition.position, left.position);
+    const rightDistance = getHorizontalRuntimeDistance(context.selfPosition.position, right.position);
+    const leftSort = Number.isFinite(leftDistance) ? leftDistance : Number.POSITIVE_INFINITY;
+    const rightSort = Number.isFinite(rightDistance) ? rightDistance : Number.POSITIVE_INFINITY;
+    return leftSort - rightSort || String(left.name).localeCompare(String(right.name));
+  }
+
+  function isLikelyRuntimePlayerEntity(entity, name) {
+    if (!isRuntimeObject(entity)) return false;
+    if (getRuntimeEntityType(entity) !== 0) return false;
+    if (hasRuntimeNpcOrBotMarker(entity, name)) return false;
+
+    const classId = getRuntimeEntityClassId(entity);
+    if (classId === 4) return false;
+    if (classId !== null && (classId < 0 || classId > 3)) return false;
+
+    if (hasRuntimePlayerIdentityMarker(entity)) return true;
+    if (hasRuntimeAiControlMarker(entity)) return false;
+
+    return classId !== null;
+  }
+
+  function hasRuntimeNpcOrBotMarker(entity, name) {
+    if (isLikelyBotOrNpcName(name || getRuntimeEntityLabel(entity))) return true;
+
+    const className = String(safeReadValue(entity, "constructor") && safeReadValue(entity, "constructor").name || "").toLowerCase();
+    if (/\b(?:npc|mob|monster|bot|pet|summon|minion)\b/.test(className)) return true;
+
+    return hasRuntimeNpcOrBotFieldMarker(entity);
+  }
+
+  function hasRuntimeNpcOrBotFieldMarker(entity) {
+    const booleanKeys = [
+      "isNpc",
+      "npc",
+      "isMob",
+      "mob",
+      "isMonster",
+      "monster",
+      "isBot",
+      "bot",
+      "isPet",
+      "pet",
+      "isSummon",
+      "summon",
+      "summoned",
+      "isMinion",
+      "minion",
+      "isAi",
+      "isAI",
+      "aiControlled",
+      "ai",
+    ];
+    for (const key of booleanKeys) {
+      const value = safeReadValue(entity, key);
+      if (value === true || value === 1 || value === "1") return true;
+    }
+
+    for (const key of ["owner", "ownerId", "ownerName", "summoner", "summonerId", "master", "masterId", "controller", "controllerId"]) {
+      const value = safeReadValue(entity, key);
+      if (value !== null && value !== undefined && value !== "" && value !== 0 && value !== "0") return true;
+    }
+
+    const kind = [
+      safeReadValue(entity, "kind"),
+      safeReadValue(entity, "category"),
+      safeReadValue(entity, "entityType"),
+      safeReadValue(entity, "unitType"),
+      safeReadValue(entity, "aiType"),
+      safeReadValue(entity, "role"),
+      safeReadValue(entity, "template"),
+    ].map((value) => String(value || "").toLowerCase()).join(" ");
+    return /\b(?:npc|mob|monster|bot|pet|summon|minion)\b/.test(kind);
+  }
+
+  function isLikelyBotOrNpcName(name) {
+    const normalized = String(name || "").trim().toLowerCase();
+    if (!normalized) return true;
+    return /\b(?:bot|dummy|training|guard|sentry|sentinel|totem|pet|summon|minion|wolf|spider|skeleton|zombie|goblin|orc|imp|drone|clone)\b/.test(normalized);
+  }
+
+  function hasRuntimeAiControlMarker(entity) {
+    for (const key of [
+      "aiController",
+      "aiState",
+      "brain",
+      "behavior",
+      "behaviour",
+      "pathfinder",
+      "navAgent",
+      "navigation",
+      "spawn",
+      "spawnId",
+      "spawnid",
+      "templateId",
+      "templateid",
+      "npcId",
+      "npcid",
+      "mobId",
+      "mobid",
+      "monsterId",
+      "monsterid",
+    ]) {
+      const value = safeReadValue(entity, key);
+      if (value !== null && value !== undefined && value !== "" && value !== false && value !== 0 && value !== "0") return true;
+    }
+    return false;
+  }
+
+  function hasRuntimePlayerIdentityMarker(entity) {
+    for (const key of ["accountId", "accountid", "userId", "userid", "characterId", "characterid", "playerId", "playerid"]) {
+      const value = safeReadValue(entity, key);
+      if (value !== null && value !== undefined && value !== "" && value !== 0 && value !== "0") return true;
+    }
+
+    for (const key of ["character", "profile", "player", "user"]) {
+      const value = safeReadValue(entity, key);
+      if (!isRuntimeObject(value)) continue;
+      if (getRuntimeNameValueLoose(value) || getRuntimeEntityClassId(value) !== null) return true;
+    }
+
+    return false;
   }
 
   function collectDirectRuntimeOverlayCandidates(runtime, lowerNames, maxObjects) {
@@ -13791,6 +15141,39 @@
     return sendHordesClientCommand("itemmove", `${fromSlot} ${toSlot}`);
   }
 
+  function sendHordesItemSplitOne(slotIndex) {
+    const slot = Number(slotIndex);
+    if (!Number.isInteger(slot) || slot < 0) {
+      throw new Error(`잘못된 분리 슬롯입니다: ${slotIndex}`);
+    }
+
+    return sendHordesClientCommand("itemsplitone", String(slot));
+  }
+
+  function sendHordesItemAuctionPost(dbid, price) {
+    const normalizedDbid = String(dbid || "").trim();
+    const normalizedPrice = Number(price);
+    if (!normalizedDbid) throw new Error("거래소 등록 아이템 dbid가 없습니다.");
+    if (!Number.isInteger(normalizedPrice) || normalizedPrice <= 0 || normalizedPrice > 2147483646) {
+      throw new Error(`잘못된 거래소 가격입니다: ${price}`);
+    }
+
+    return sendHordesClientCommand("itemauctionpost", `${normalizedDbid} ${normalizedPrice}`);
+  }
+
+  function sendHordesItemAuctionFind(type, tier = "all", sortMode = 1, sortDirection = 1, page = 0) {
+    const typeIndex = normalizeAuctionTypeIndex(type);
+    const normalizedTier = typeIndex === 1 ? "all" : normalizeAuctionTier(tier);
+    const normalizedSortMode = clampInteger(sortMode, 0, 2, 1);
+    const normalizedDirection = clampInteger(sortDirection, 0, 1, 1);
+    const normalizedPage = clampInteger(page, 0, 999, 0);
+
+    return sendHordesClientCommand(
+      "itemauctionfind",
+      `${typeIndex} ${normalizedTier} ${normalizedSortMode} ${normalizedDirection} ${normalizedPage}`
+    );
+  }
+
   function encodeHordesClientCommand(command, payload) {
     const commandBytes = encodeUtf8(command);
     const payloadBytes = encodeUtf8(payload);
@@ -13848,6 +15231,13 @@
     return getRuntimeInventorySlotEntries()
       .map(([slotIndex, item]) => summarizeRuntimeGearItem(slotIndex, item))
       .filter((item) => item && item.dbid && isGearPresetEquippableItem(item));
+  }
+
+  function scanRuntimeInventoryItems() {
+    return getRuntimeInventorySlotEntries()
+      .map(([slotIndex, item]) => summarizeRuntimeInventoryItem(slotIndex, item))
+      .filter((item) => item && item.dbid)
+      .sort((left, right) => left.slotIndex - right.slotIndex);
   }
 
   function scanRuntimeEquippedGearItems() {
@@ -13914,6 +15304,17 @@
   }
 
   function summarizeRuntimeGearItem(slotIndex, item) {
+    const summary = summarizeRuntimeInventoryItem(slotIndex, item);
+    if (!summary) return null;
+
+    const equipSlot = isGearEquipSlot(slotIndex) ? slotIndex : getGearEquipSlotForItem({ itemType: summary.itemType });
+    return {
+      ...summary,
+      equipSlot,
+    };
+  }
+
+  function summarizeRuntimeInventoryItem(slotIndex, item) {
     if (!item || !Number.isInteger(slotIndex)) return null;
 
     const itemType = String(safeReadValue(item, "type") || "").toLowerCase();
@@ -13921,19 +15322,25 @@
     const dbid = safeReadValue(item, "dbid");
     if (!itemType || dbid === undefined || dbid === null) return null;
 
+    const numericTier = Number.isFinite(Number(tier)) ? Number(tier) : null;
+    const bound = Number(safeReadValue(item, "bound"));
+    const auction = safeReadValue(item, "auction");
     const iconKey = getRuntimeGearIconKey(itemType, tier);
-    const equipSlot = isGearEquipSlot(slotIndex) ? slotIndex : getGearEquipSlotForItem({ itemType });
     return {
       slotId: isGearEquipSlot(slotIndex) ? `equip${slotIndex}` : `bag${slotIndex}`,
       slotIndex,
-      equipSlot,
+      equipSlot: null,
       dbid: String(dbid),
       itemType,
-      tier: Number.isFinite(Number(tier)) ? Number(tier) : null,
+      tier: numericTier,
       upgrade: Number.isFinite(Number(safeReadValue(item, "upgrade"))) ? Number(safeReadValue(item, "upgrade")) : 0,
       quality: Number.isFinite(Number(safeReadValue(item, "quality"))) ? Number(safeReadValue(item, "quality")) : null,
       stacks: Number.isFinite(Number(safeReadValue(item, "stacks"))) ? Number(safeReadValue(item, "stacks")) : null,
       gearScore: Number.isFinite(Number(safeReadValue(item, "gs"))) ? Number(safeReadValue(item, "gs")) : null,
+      bound: Number.isFinite(bound) ? bound : null,
+      tradable: !Number.isFinite(bound) || bound === 0,
+      auction: auction ? String(auction) : "",
+      owner: String(safeReadValue(item, "owner") || ""),
       iconKey,
       iconSrc: iconKey,
       source: "runtime",
@@ -14016,6 +15423,712 @@
     if (!item) return item;
     const { element, ...safeItem } = item;
     return safeItem;
+  }
+
+  function getAuctionAutoListStatus() {
+    const scan = scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM);
+    return {
+      running: AUCTION_AUTOLIST_STATE.running,
+      stopRequested: AUCTION_AUTOLIST_STATE.stopRequested,
+      lastState: AUCTION_AUTOLIST_STATE.lastState,
+      lastError: AUCTION_AUTOLIST_STATE.lastError,
+      lastRunAt: AUCTION_AUTOLIST_STATE.lastRunAt,
+      lastResult: AUCTION_AUTOLIST_STATE.lastResult,
+      socket: getGearSocketStatus(),
+      scan,
+    };
+  }
+
+  function scanAuctionAutoListItems(itemSpec = AUCTION_AUTOLIST_DEFAULT_ITEM) {
+    const items = scanRuntimeInventoryItems()
+      .filter((item) => isAuctionAutoListItem(item, itemSpec))
+      .map(stripGearPresetElement);
+    const singles = items.filter((item) => item.stacks === 1);
+    const stacks = items.filter((item) => Number(item.stacks) > 1);
+    const totalUnits = items.reduce((sum, item) => sum + Math.max(1, Number(item.stacks) || 1), 0);
+    return {
+      item: `${itemSpec.name || itemSpec.type} ${itemSpec.type}:${itemSpec.tier}`,
+      totalSlots: items.length,
+      totalUnits,
+      singles: singles.length,
+      stackSlots: stacks.length,
+      stacks: stacks.map((item) => ({
+        slotIndex: item.slotIndex,
+        dbid: item.dbid,
+        stacks: item.stacks,
+        tradable: item.tradable,
+      })),
+      singleItems: singles.slice(0, 20).map((item) => ({
+        slotIndex: item.slotIndex,
+        dbid: item.dbid,
+        tradable: item.tradable,
+      })),
+    };
+  }
+
+  async function runAuctionAutoList(options = {}) {
+    if (AUCTION_AUTOLIST_STATE.running) return getAuctionAutoListStatus();
+
+    let normalized;
+    try {
+      normalized = normalizeAuctionAutoListOptions(options);
+    } catch (error) {
+      AUCTION_AUTOLIST_STATE.lastState = "등록 설정 오류";
+      AUCTION_AUTOLIST_STATE.lastError = error && error.message ? error.message : String(error);
+      renderStatusUi();
+      return getAuctionAutoListStatus();
+    }
+
+    const result = {
+      item: normalized.item.name,
+      itemType: normalized.item.type,
+      itemTier: normalized.item.tier,
+      requested: normalized.count,
+      price: normalized.price,
+      priceText: formatCoinAmount(normalized.price),
+      dryRun: normalized.dryRun,
+      splitRequested: 0,
+      split: 0,
+      postRequested: 0,
+      posted: 0,
+      skipped: 0,
+      actions: [],
+      errors: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+
+    AUCTION_AUTOLIST_STATE.running = true;
+    AUCTION_AUTOLIST_STATE.stopRequested = false;
+    AUCTION_AUTOLIST_STATE.lastState = normalized.dryRun ? "미리보기 중" : "등록 중";
+    AUCTION_AUTOLIST_STATE.lastError = "";
+    AUCTION_AUTOLIST_STATE.lastResult = result;
+    renderStatusUi();
+    showGearPresetProgressOverlay(`${normalized.item.name} 등록 준비 중`);
+
+    let fatalError = null;
+    try {
+      if (!normalized.dryRun && !getGameWebSocket()) {
+        throw new Error("게임 WebSocket을 찾지 못했습니다. 새로고침 후 다시 시도하세요.");
+      }
+
+      if (normalized.dryRun) {
+        const scan = scanAuctionAutoListItems(normalized.item);
+        result.actions.push({
+          type: "dry-run",
+          scan,
+          canPostNow: Math.min(normalized.count, scan.singles),
+          canSplitAndPost: Math.max(0, Math.min(normalized.count - scan.singles, scan.totalUnits - scan.singles)),
+        });
+        AUCTION_AUTOLIST_STATE.lastState = "미리보기 완료";
+        showGearPresetProgressOverlay(`${normalized.item.name} 미리보기 완료`, "success", 1800);
+        return getAuctionAutoListStatus();
+      }
+
+      for (let index = 0; index < normalized.count; index += 1) {
+        if (AUCTION_AUTOLIST_STATE.stopRequested) {
+          result.skipped = normalized.count - index;
+          AUCTION_AUTOLIST_STATE.lastState = "중지됨";
+          break;
+        }
+
+        showGearPresetProgressOverlay(
+          `${normalized.item.name} 등록 중 ${result.posted}/${normalized.count} / ${formatCoinAmount(normalized.price)}`
+        );
+
+        const item = await prepareAuctionSingleItem(normalized, result);
+        if (!item) {
+          throw new Error(`${normalized.item.name} 1개짜리 아이템을 만들 수 없습니다.`);
+        }
+
+        sendHordesItemAuctionPost(item.dbid, normalized.price);
+        result.postRequested += 1;
+        result.actions.push({
+          type: "post",
+          dbid: item.dbid,
+          slotIndex: item.slotIndex,
+          price: normalized.price,
+        });
+
+        const posted = await waitForRuntimeInventoryCondition(
+          (items) => isAuctionPostConfirmed(items, item.dbid),
+          normalized.verifyTimeoutMs
+        );
+        if (!posted) {
+          throw new Error(`거래소 등록 확인 실패: ${item.dbid}`);
+        }
+
+        result.posted += 1;
+        AUCTION_AUTOLIST_STATE.lastState = `${result.posted}/${normalized.count}개 등록`;
+        showGearPresetProgressOverlay(
+          `${normalized.item.name} 등록 중 ${result.posted}/${normalized.count} / ${formatCoinAmount(normalized.price)}`
+        );
+        renderStatusUi();
+        await delay(normalized.postDelayMs);
+      }
+    } catch (error) {
+      fatalError = error;
+      result.errors.push(error && error.message ? error.message : String(error));
+    } finally {
+      result.finishedAt = new Date().toISOString();
+      AUCTION_AUTOLIST_STATE.running = false;
+      AUCTION_AUTOLIST_STATE.stopRequested = false;
+      AUCTION_AUTOLIST_STATE.lastRunAt = new Date();
+      AUCTION_AUTOLIST_STATE.lastResult = result;
+      if (fatalError) {
+        AUCTION_AUTOLIST_STATE.lastState = "등록 실패";
+        AUCTION_AUTOLIST_STATE.lastError = fatalError && fatalError.message ? fatalError.message : String(fatalError);
+        showGearPresetProgressOverlay(`Lucid 등록 실패: ${AUCTION_AUTOLIST_STATE.lastError}`, "error", 3200);
+      } else if (normalized.dryRun) {
+        AUCTION_AUTOLIST_STATE.lastState = "미리보기 완료";
+        AUCTION_AUTOLIST_STATE.lastError = "";
+        showGearPresetProgressOverlay("Lucid 미리보기 완료", "success", 1800);
+      } else if (AUCTION_AUTOLIST_STATE.lastState === "중지됨") {
+        AUCTION_AUTOLIST_STATE.lastError = "";
+        showGearPresetProgressOverlay(`Lucid 등록 중지: ${result.posted}/${result.requested}`, "warn", 2400);
+      } else {
+        AUCTION_AUTOLIST_STATE.lastState = `등록 완료 ${result.posted}/${result.requested}`;
+        AUCTION_AUTOLIST_STATE.lastError = "";
+        showGearPresetProgressOverlay(`Lucid 등록 완료 ${result.posted}/${result.requested}`, "success", 2200);
+      }
+      renderStatusUi();
+    }
+
+    return getAuctionAutoListStatus();
+  }
+
+  function stopAuctionAutoList() {
+    if (AUCTION_AUTOLIST_STATE.running) {
+      AUCTION_AUTOLIST_STATE.stopRequested = true;
+      AUCTION_AUTOLIST_STATE.lastState = "중지 요청";
+      renderStatusUi();
+    }
+    return getAuctionAutoListStatus();
+  }
+
+  async function prepareAuctionSingleItem(options, result) {
+    const existingSingle = findAuctionSingleItem(options.item);
+    if (existingSingle) return existingSingle;
+
+    const source = findAuctionSplitSourceItem(options.item);
+    if (!source) return null;
+
+    const beforeDbids = new Set(scanRuntimeInventoryItems().map((item) => item.dbid));
+    sendHordesItemSplitOne(source.slotIndex);
+    result.splitRequested += 1;
+    result.actions.push({
+      type: "split-one",
+      dbid: source.dbid,
+      slotIndex: source.slotIndex,
+      stacks: source.stacks,
+    });
+
+    const created = await waitForRuntimeInventoryCondition((items) => {
+      const freshSingle = items.find((item) => (
+        isAuctionAutoListItem(item, options.item) &&
+        item.stacks === 1 &&
+        item.tradable !== false &&
+        !beforeDbids.has(item.dbid)
+      ));
+      return freshSingle || null;
+    }, options.verifyTimeoutMs);
+
+    if (!created) return null;
+
+    result.split += 1;
+    await delay(options.splitDelayMs);
+    return created;
+  }
+
+  function findAuctionSingleItem(itemSpec) {
+    return scanRuntimeInventoryItems().find((item) => (
+      isAuctionAutoListItem(item, itemSpec) &&
+      item.stacks === 1 &&
+      item.tradable !== false
+    )) || null;
+  }
+
+  function findAuctionSplitSourceItem(itemSpec) {
+    return scanRuntimeInventoryItems()
+      .filter((item) => (
+        isAuctionAutoListItem(item, itemSpec) &&
+        Number(item.stacks) > 1 &&
+        item.tradable !== false
+      ))
+      .sort((left, right) => Number(right.stacks) - Number(left.stacks))[0] || null;
+  }
+
+  function isAuctionAutoListItem(item, itemSpec) {
+    if (!item || !isRuntimeBagSlot(item.slotIndex)) return false;
+    if (String(item.itemType || "").toLowerCase() !== String(itemSpec.type || "").toLowerCase()) return false;
+    return Number(item.tier) === Number(itemSpec.tier);
+  }
+
+  function isRuntimeBagSlot(slotIndex) {
+    return Number.isInteger(Number(slotIndex)) && Number(slotIndex) >= 0 && Number(slotIndex) < 100;
+  }
+
+  function isAuctionPostConfirmed(items, dbid) {
+    const current = items.find((item) => item.dbid === String(dbid));
+    return !current || Boolean(current.auction);
+  }
+
+  async function waitForRuntimeInventoryCondition(predicate, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= timeoutMs) {
+      const items = scanRuntimeInventoryItems();
+      const result = predicate(items);
+      if (result) return result;
+      await delay(AUCTION_AUTOLIST_POLL_MS);
+    }
+    return null;
+  }
+
+  function normalizeAuctionAutoListOptions(options) {
+    const raw = typeof options === "number" ? { count: options } : (options || {});
+    const item = {
+      ...AUCTION_AUTOLIST_DEFAULT_ITEM,
+      ...(isObject(raw.item) ? raw.item : {}),
+    };
+    const count = Math.floor(Number(raw.count === undefined ? 1 : raw.count));
+    const price = normalizeAuctionPrice(raw);
+
+    if (!Number.isInteger(count) || count < 1) throw new Error(`잘못된 등록 개수입니다: ${raw.count}`);
+    if (!Number.isInteger(price) || price < 1) throw new Error(`잘못된 등록 가격입니다: ${raw.price}`);
+
+    return {
+      item,
+      count: Math.min(count, AUCTION_AUTOLIST_MAX_COUNT),
+      price,
+      dryRun: raw.dryRun === true,
+      splitDelayMs: clampNumber(raw.splitDelayMs, 0, 2000, AUCTION_AUTOLIST_DEFAULT_SPLIT_DELAY_MS),
+      postDelayMs: clampNumber(raw.postDelayMs, 0, 3000, AUCTION_AUTOLIST_DEFAULT_POST_DELAY_MS),
+      verifyTimeoutMs: clampNumber(raw.verifyTimeoutMs, 500, 10000, AUCTION_AUTOLIST_VERIFY_TIMEOUT_MS),
+    };
+  }
+
+  function normalizeAuctionPrice(options) {
+    if (options.price !== undefined) return Math.floor(Number(options.price));
+    const gold = Math.floor(Number(options.gold || 0));
+    const silver = Math.floor(Number(options.silver || 0));
+    const copper = Math.floor(Number(options.copper || 0));
+    return gold * 10000 + silver * 100 + copper;
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.min(max, Math.max(min, numeric));
+  }
+
+  function formatCoinAmount(amount) {
+    const value = Math.max(0, Math.floor(Number(amount) || 0));
+    const copper = value % 100;
+    const silver = Math.floor(value / 100) % 100;
+    const gold = Math.floor(value / 10000);
+    const parts = [];
+    if (gold) parts.push(`${gold}금`);
+    if (silver) parts.push(`${silver}은`);
+    if (copper || parts.length === 0) parts.push(`${copper}동`);
+    return parts.join(" ");
+  }
+
+  function initAuctionWatchManager() {
+    syncAuctionWatchActiveFlag();
+    if (AUCTION_WATCH_CONFIG.enabled) {
+      AUCTION_WATCH_STATE.lastState = "대기";
+      scheduleAuctionWatchTimer(1200);
+    }
+  }
+
+  function syncAuctionWatchActiveFlag() {
+    try {
+      pageWindow.__HORDES_KR_AUCTION_WATCH_ACTIVE__ = AUCTION_WATCH_CONFIG.enabled === true || AUCTION_WATCH_STATE.running === true;
+    } catch {
+      // Page runtime hook reads this flag only when available.
+    }
+  }
+
+  function setAuctionWatchEnabled(enabled) {
+    AUCTION_WATCH_CONFIG.enabled = Boolean(enabled);
+    saveAuctionWatchConfig();
+    syncAuctionWatchActiveFlag();
+
+    if (AUCTION_WATCH_CONFIG.enabled) {
+      AUCTION_WATCH_STATE.lastState = "대기";
+      scheduleAuctionWatchTimer(300);
+    } else {
+      clearAuctionWatchTimer();
+      AUCTION_WATCH_STATE.lastState = "꺼짐";
+    }
+
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+    return getAuctionWatchStatus();
+  }
+
+  function clearAuctionWatchTimer() {
+    if (!AUCTION_WATCH_STATE.timer) return;
+    pageWindow.clearTimeout(AUCTION_WATCH_STATE.timer);
+    AUCTION_WATCH_STATE.timer = null;
+  }
+
+  function scheduleAuctionWatchTimer(delayMs) {
+    clearAuctionWatchTimer();
+    if (!AUCTION_WATCH_CONFIG.enabled) return;
+
+    AUCTION_WATCH_STATE.timer = pageWindow.setTimeout(() => {
+      AUCTION_WATCH_STATE.timer = null;
+      refreshAuctionWatchNow({ automatic: true }).finally(() => {
+        if (AUCTION_WATCH_CONFIG.enabled) {
+          scheduleAuctionWatchTimer(AUCTION_WATCH_CONFIG.refreshMs || AUCTION_WATCH_REFRESH_MS);
+        }
+      });
+    }, Math.max(250, Number(delayMs) || AUCTION_WATCH_REFRESH_MS));
+  }
+
+  function setAuctionWatchRules(rules) {
+    const nextRules = Array.isArray(rules) ? rules.map(normalizeAuctionWatchRule).filter(Boolean) : [];
+    AUCTION_WATCH_CONFIG.rules = nextRules.length > 0 ? nextRules : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
+    saveAuctionWatchConfig();
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+    return getAuctionWatchStatus();
+  }
+
+  async function refreshAuctionWatchNow(options = {}) {
+    if (AUCTION_WATCH_STATE.running) return getAuctionWatchStatus();
+
+    const socket = getGearSocketStatus();
+    if (!socket.available) {
+      AUCTION_WATCH_STATE.lastState = "서버대기";
+      AUCTION_WATCH_STATE.lastError = "게임 서버 WebSocket 감지 후 조회할 수 있습니다.";
+      renderStatusUi();
+      HIGHLIGHT_STATE.presetBarRenderKey = "";
+      updatePresetQuickBar();
+      return getAuctionWatchStatus();
+    }
+
+    const rules = getAuctionWatchRules();
+    const result = {
+      automatic: options.automatic === true,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      rules: rules.map((rule) => ({
+        id: rule.id,
+        label: rule.label,
+        type: rule.type,
+        tier: rule.tier,
+        requiredStatIds: rule.requiredStatIds.slice(),
+        pages: rule.pages,
+      })),
+      matches: [],
+      selfItems: [],
+      pages: [],
+      errors: [],
+    };
+
+    AUCTION_WATCH_STATE.running = true;
+    AUCTION_WATCH_STATE.lastState = "조회 중";
+    AUCTION_WATCH_STATE.lastError = "";
+    AUCTION_WATCH_STATE.lastResult = result;
+    syncAuctionWatchActiveFlag();
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+
+    try {
+      for (const rule of rules) {
+        const pages = clampInteger(rule.pages, 1, AUCTION_WATCH_MAX_PAGES, 1);
+        for (let page = 0; page < pages; page += 1) {
+          const pageResult = await queryAuctionWatchPage(rule, page);
+          result.pages.push(pageResult.summary);
+          for (const item of pageResult.items) {
+            if (item.group === "self") result.selfItems.push(item);
+            if (matchesAuctionWatchRule(item, rule)) {
+              result.matches.push({
+                ...item,
+                ruleId: rule.id,
+                ruleLabel: rule.label,
+              });
+            }
+          }
+          await delay(AUCTION_WATCH_PAGE_DELAY_MS);
+        }
+      }
+
+      dedupeAuctionWatchItems(result.matches);
+      dedupeAuctionWatchItems(result.selfItems);
+      AUCTION_WATCH_STATE.lastMatches = result.matches.slice(0, 50);
+      AUCTION_WATCH_STATE.lastSelfItems = result.selfItems.slice(0, 50);
+      AUCTION_WATCH_STATE.lastState = result.matches.length > 0
+        ? `발견 ${result.matches.length}개`
+        : "조건 없음";
+      AUCTION_WATCH_STATE.lastError = "";
+      maybeShowAuctionWatchAlert(result.matches);
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      result.errors.push(message);
+      AUCTION_WATCH_STATE.lastState = "조회 실패";
+      AUCTION_WATCH_STATE.lastError = message;
+    } finally {
+      result.finishedAt = new Date().toISOString();
+      AUCTION_WATCH_STATE.running = false;
+      AUCTION_WATCH_STATE.lastRunAt = new Date();
+      AUCTION_WATCH_STATE.lastResult = result;
+      syncAuctionWatchActiveFlag();
+      HIGHLIGHT_STATE.presetBarRenderKey = "";
+      updatePresetQuickBar();
+      renderStatusUi();
+    }
+
+    return getAuctionWatchStatus();
+  }
+
+  async function queryAuctionWatchPage(rule, page) {
+    const startedAt = Date.now();
+    const typeIndex = normalizeAuctionTypeIndex(rule.type);
+    const tier = normalizeAuctionTier(rule.tier);
+    const sortMode = clampInteger(rule.sortMode, 0, 2, 1);
+    const sortDirection = clampInteger(rule.sortDirection, 0, 1, 1);
+    const previousAt = getLastAuctionHydrationAt();
+
+    AUCTION_WATCH_STATE.querySeq += 1;
+    syncAuctionWatchActiveFlag();
+    sendHordesItemAuctionFind(typeIndex, tier, sortMode, sortDirection, page);
+
+    const hydrated = await waitForAuctionHydration(previousAt, startedAt, AUCTION_WATCH_TIMEOUT_MS);
+    if (!hydrated) {
+      throw new Error(`거래소 응답 대기 실패: ${rule.label} p${page + 1}`);
+    }
+
+    const items = Array.isArray(hydrated.items) ? hydrated.items.map(normalizeAuctionRuntimeItem).filter(Boolean) : [];
+    return {
+      items,
+      summary: {
+        ruleId: rule.id,
+        page,
+        count: items.length,
+        at: hydrated.at || Date.now(),
+      },
+    };
+  }
+
+  function getLastAuctionHydrationAt() {
+    const runtime = getExposedRuntime();
+    const hydrated = runtime && safeReadValue(runtime, "lastAuctionItems");
+    return Number(hydrated && safeReadValue(hydrated, "at")) || 0;
+  }
+
+  async function waitForAuctionHydration(previousAt, startedAt, timeoutMs) {
+    const started = Date.now();
+    while (Date.now() - started <= timeoutMs) {
+      const runtime = getExposedRuntime();
+      const hydrated = runtime && safeReadValue(runtime, "lastAuctionItems");
+      const at = Number(hydrated && safeReadValue(hydrated, "at")) || 0;
+      const requestAt = Number(hydrated && safeReadValue(hydrated, "requestAt")) || 0;
+      if (hydrated && at > previousAt && requestAt >= startedAt - 250) return hydrated;
+
+      const error = runtime && safeReadValue(runtime, "lastAuctionError");
+      const errorAt = Number(error && safeReadValue(error, "at")) || 0;
+      if (error && errorAt >= startedAt - 250) {
+        throw new Error(String(safeReadValue(error, "message") || "거래소 상세 조회 실패"));
+      }
+
+      await delay(AUCTION_AUTOLIST_POLL_MS);
+    }
+    return null;
+  }
+
+  function normalizeAuctionRuntimeItem(item) {
+    if (!item) return null;
+    const type = String(safeReadValue(item, "type") || "").toLowerCase();
+    const dbid = String(safeReadValue(item, "dbid") || safeReadValue(item, "id") || "").trim();
+    if (!type || !dbid) return null;
+
+    const stats = Array.isArray(item.stats)
+      ? item.stats.map((stat) => ({
+          id: Number(stat && stat.id),
+          type: String(stat && stat.type || ""),
+          value: Number(stat && stat.value),
+          qual: Number(stat && stat.qual),
+        })).filter((stat) => Number.isInteger(stat.id))
+      : [];
+
+    return {
+      dbid,
+      id: String(safeReadValue(item, "id") || dbid),
+      type,
+      tier: Number(safeReadValue(item, "tier")),
+      upgrade: Number(safeReadValue(item, "upgrade")) || 0,
+      quality: Number(safeReadValue(item, "quality")) || 0,
+      gearScore: Number(safeReadValue(item, "gearScore")) || 0,
+      stacks: Number(safeReadValue(item, "stacks")) || 0,
+      bound: Number(safeReadValue(item, "bound")) || 0,
+      owner: String(safeReadValue(item, "owner") || ""),
+      auction: String(safeReadValue(item, "auction") || ""),
+      auctionprice: Number(safeReadValue(item, "auctionprice")) || 0,
+      group: String(safeReadValue(item, "group") || "unknown"),
+      stats,
+    };
+  }
+
+  function matchesAuctionWatchRule(item, rule) {
+    if (!item || !rule) return false;
+    if (String(item.type || "").toLowerCase() !== String(rule.type || "").toLowerCase()) return false;
+    if (rule.tier !== "all" && Number(item.tier) !== Number(rule.tier)) return false;
+
+    const statIds = new Set((item.stats || []).map((stat) => Number(stat.id)));
+    return (rule.requiredStatIds || []).every((id) => statIds.has(Number(id)));
+  }
+
+  function dedupeAuctionWatchItems(items) {
+    const seen = new Set();
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const key = String(items[index] && items[index].dbid || "");
+      if (!key || seen.has(key)) {
+        items.splice(index, 1);
+      } else {
+        seen.add(key);
+      }
+    }
+    return items;
+  }
+
+  function maybeShowAuctionWatchAlert(matches) {
+    const now = Date.now();
+    for (const [key, at] of AUCTION_WATCH_STATE.alertHistory.entries()) {
+      if (now - Number(at) > AUCTION_WATCH_ALERT_TTL_MS) AUCTION_WATCH_STATE.alertHistory.delete(key);
+    }
+
+    const fresh = (matches || []).filter((item) => {
+      const key = item && item.dbid;
+      if (!key || AUCTION_WATCH_STATE.alertHistory.has(key)) return false;
+      AUCTION_WATCH_STATE.alertHistory.set(key, now);
+      return true;
+    });
+    if (fresh.length === 0) return;
+
+    const first = fresh[0];
+    showGearPresetProgressOverlay(
+      `거래소 발견 ${fresh.length}개\n${formatAuctionWatchItemLine(first)}`,
+      "success",
+      4600
+    );
+  }
+
+  function getAuctionWatchStatus() {
+    return {
+      enabled: AUCTION_WATCH_CONFIG.enabled,
+      running: AUCTION_WATCH_STATE.running,
+      lastState: AUCTION_WATCH_STATE.lastState,
+      lastError: AUCTION_WATCH_STATE.lastError,
+      lastRunAt: AUCTION_WATCH_STATE.lastRunAt,
+      rules: getAuctionWatchRules(),
+      matches: AUCTION_WATCH_STATE.lastMatches.slice(),
+      selfItems: AUCTION_WATCH_STATE.lastSelfItems.slice(),
+      lastResult: AUCTION_WATCH_STATE.lastResult,
+      socket: getGearSocketStatus(),
+      runtime: getAuctionWatchRuntimeStatus(),
+    };
+  }
+
+  function getAuctionWatchRuntimeStatus() {
+    const runtime = getExposedRuntime();
+    const find = runtime && safeReadValue(runtime, "lastAuctionFind");
+    const items = runtime && safeReadValue(runtime, "lastAuctionItems");
+    return {
+      activeFlag: pageWindow.__HORDES_KR_AUCTION_WATCH_ACTIVE__ === true,
+      lastFindAt: Number(find && safeReadValue(find, "at")) || null,
+      lastFindCount: Array.isArray(find && find.all) ? find.all.length : null,
+      lastHydrateAt: Number(items && safeReadValue(items, "at")) || null,
+      lastHydrateCount: Array.isArray(items && items.items) ? items.items.length : null,
+    };
+  }
+
+  function getAuctionWatchRules() {
+    const rules = Array.isArray(AUCTION_WATCH_CONFIG.rules) ? AUCTION_WATCH_CONFIG.rules : [];
+    const normalized = rules.map(normalizeAuctionWatchRule).filter(Boolean);
+    return normalized.length > 0 ? normalized : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
+  }
+
+  function normalizeAuctionWatchRule(rule) {
+    const source = isObject(rule) ? rule : AUCTION_WATCH_DEFAULT_RULE;
+    const type = String(source.type || AUCTION_WATCH_DEFAULT_RULE.type).toLowerCase();
+    const typeIndex = normalizeAuctionTypeIndex(type);
+    const requiredStatIds = Array.isArray(source.requiredStatIds)
+      ? source.requiredStatIds.map((id) => Number(id)).filter(Number.isInteger)
+      : AUCTION_WATCH_DEFAULT_RULE.requiredStatIds.slice();
+
+    return {
+      id: String(source.id || `${type}-${requiredStatIds.join("-")}` || AUCTION_WATCH_DEFAULT_RULE_ID),
+      label: String(source.label || formatAuctionWatchRuleLabel(type, requiredStatIds)),
+      type: AUCTION_ITEM_TYPES[typeIndex] || type,
+      tier: normalizeAuctionTier(source.tier === undefined ? "all" : source.tier),
+      requiredStatIds,
+      pages: clampInteger(source.pages, 1, AUCTION_WATCH_MAX_PAGES, AUCTION_WATCH_DEFAULT_RULE.pages),
+      sortMode: clampInteger(source.sortMode, 0, 2, AUCTION_WATCH_DEFAULT_RULE.sortMode),
+      sortDirection: clampInteger(source.sortDirection, 0, 1, AUCTION_WATCH_DEFAULT_RULE.sortDirection),
+    };
+  }
+
+  function formatAuctionWatchRuleLabel(type, statIds) {
+    const stats = (statIds || []).map((id) => AUCTION_STAT_LABELS[id] || `Stat ${id}`).join(" + ");
+    return `${type || "item"}: ${stats || "조건 없음"}`;
+  }
+
+  function normalizeAuctionTypeIndex(type) {
+    if (Number.isInteger(Number(type))) {
+      const index = Number(type);
+      if (index >= 0 && index < AUCTION_ITEM_TYPES.length && AUCTION_ITEM_TYPES[index]) return index;
+    }
+
+    const normalized = String(type || "").toLowerCase();
+    const index = AUCTION_ITEM_TYPES.findIndex((itemType) => itemType === normalized);
+    if (index >= 0) return index;
+    throw new Error(`지원하지 않는 거래소 카테고리입니다: ${type}`);
+  }
+
+  function normalizeAuctionTier(tier) {
+    if (tier === undefined || tier === null || String(tier).trim() === "" || String(tier).toLowerCase() === "all") {
+      return "all";
+    }
+
+    const numeric = Number(tier);
+    if (!Number.isInteger(numeric) || numeric < 0) throw new Error(`잘못된 티어입니다: ${tier}`);
+    return numeric;
+  }
+
+  function clampInteger(value, min, max, fallback) {
+    const numeric = Math.floor(Number(value));
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.min(max, Math.max(min, numeric));
+  }
+
+  function formatAuctionWatchItemLine(item) {
+    if (!item) return "-";
+    const stats = formatAuctionWatchStats(item.stats);
+    const name = formatAuctionWatchItemName(item);
+    const price = item.auctionprice ? formatCoinAmount(item.auctionprice) : "가격 ?";
+    const owner = item.owner ? ` / ${item.owner}` : "";
+    const self = item.group === "self" ? "내판매 / " : "";
+    return `${self}${name} / ${price}${owner}${stats ? ` / ${stats}` : ""}`;
+  }
+
+  function formatAuctionWatchItemName(item) {
+    const type = String(item && item.type || "item");
+    const tier = Number(item && item.tier);
+    const upgrade = Number(item && item.upgrade) > 0 ? ` +${Number(item.upgrade)}` : "";
+    return `${type}${Number.isFinite(tier) ? ` T${tier}` : ""}${upgrade}`;
+  }
+
+  function formatAuctionWatchStats(stats) {
+    return (stats || [])
+      .filter((stat) => AUCTION_STAT_LABELS[Number(stat.id)])
+      .map((stat) => `${AUCTION_STAT_LABELS[Number(stat.id)]} ${formatRuntimeCompactNumber(stat.value)}`)
+      .join(", ");
   }
 
   function saveGearPresetFromVisibleBag(name) {
@@ -15170,6 +17283,9 @@
           .actions.three {
             grid-template-columns: repeat(3, 1fr);
           }
+          .input-row.three-fields {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
           .feature-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -15214,6 +17330,66 @@
           }
           .text-input:focus {
             border-color: rgba(245, 194, 71, 0.8);
+          }
+          select.text-input {
+            appearance: auto;
+          }
+          details.section {
+            border-top: 1px solid rgba(166, 220, 213, 0.16);
+            padding-top: 8px;
+            margin-top: 2px;
+          }
+          details.section > summary {
+            color: #dff8f5;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 900;
+            list-style-position: inside;
+            user-select: none;
+          }
+          details.section[open] > summary {
+            margin-bottom: 8px;
+          }
+          .summary-status {
+            float: right;
+            max-width: 145px;
+            color: #a6dcd5;
+            font-size: 11px;
+            font-weight: 800;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .rule-list {
+            display: grid;
+            gap: 5px;
+            margin-top: 7px;
+          }
+          .rule-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid rgba(245, 194, 71, 0.2);
+            background: rgba(84, 72, 30, 0.28);
+            border-radius: 5px;
+            padding: 5px 6px;
+          }
+          .rule-main {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #fff3b0;
+            font-weight: 800;
+          }
+          .rule-sub {
+            color: #a6dcd5;
+            font-size: 11px;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
           }
           .highlight-list {
             display: grid;
@@ -15287,39 +17463,40 @@
             <div class="section">
               <div class="row"><span class="label">타겟 거리</span><span id="targetDistance" class="value"></span></div>
             </div>
-            <div class="actions">
+            <div class="section feature-grid">
               <button id="toggle" class="action" type="button"></button>
               <button id="toggleHighlight" class="action" type="button"></button>
-            </div>
-            <div class="section feature-grid">
+              <button id="toggleAuctionWatch" class="action" type="button"></button>
+              <button id="toggleChatTranslation" class="action" type="button"></button>
               <button id="toggleMinimapLabels" class="action" type="button"></button>
               <button id="toggleIncomingSkill" class="action" type="button"></button>
-              <button id="toggleIncomingSkillList" class="action" type="button"></button>
-              <button id="toggleIncomingTargetWatch" class="action" type="button"></button>
               <button id="toggleTargetDistance" class="action" type="button"></button>
-              <button id="toggleChatTranslation" class="action" type="button"></button>
-              <button id="toggleTargetOrder" class="action" type="button"></button>
-              <button id="toggleTargetOrderAlert" class="action" type="button"></button>
               <button id="toggleHighlightList" class="action" type="button"></button>
-              <button id="togglePartyUi" class="action" type="button"></button>
-              <button id="partyPreset5x2" class="action" type="button">파티5x2</button>
             </div>
-            <div class="section">
-              <div class="row"><span class="label">타겟오더</span><span id="targetOrderStatus" class="value"></span></div>
+            <details class="section">
+              <summary>거래소감시 <span id="auctionWatchStatus" class="summary-status"></span></summary>
               <div class="input-row">
-                <input id="targetOrderServerInput" class="text-input" type="text" placeholder="ws://localhost:8787" autocomplete="off" spellcheck="false" />
-                <button id="saveTargetOrderConfig" class="action" type="button">저장</button>
+                <select id="auctionWatchTypeSelect" class="text-input"></select>
+                <input id="auctionWatchTierInput" class="text-input" type="text" placeholder="티어 all" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="input-row three-fields">
+                <select id="auctionWatchStat1Select" class="text-input"></select>
+                <select id="auctionWatchStat2Select" class="text-input"></select>
+                <select id="auctionWatchStat3Select" class="text-input"></select>
               </div>
               <div class="input-row">
-                <input id="targetOrderRoomInput" class="text-input" type="text" maxlength="48" placeholder="방 코드" autocomplete="off" spellcheck="false" />
-                <input id="targetOrderNameInput" class="text-input" type="text" maxlength="32" placeholder="닉네임" autocomplete="off" spellcheck="false" />
+                <input id="auctionWatchPagesInput" class="text-input" type="number" min="1" max="10" step="1" placeholder="조회 페이지" autocomplete="off" spellcheck="false" />
+                <button id="addAuctionWatchRule" class="action" type="button">조건 추가</button>
               </div>
-              <div class="input-row">
-                <input id="targetOrderTokenInput" class="text-input" type="password" placeholder="유저 토큰" autocomplete="off" spellcheck="false" />
-                <input id="targetOrderHotkeyInput" class="text-input" type="text" readonly placeholder="단축키" autocomplete="off" spellcheck="false" />
+              <div class="actions">
+                <button id="refreshAuctionWatch" class="action" type="button">지금 조회</button>
+                <button id="resetAuctionWatchRule" class="action" type="button">기본 조건</button>
               </div>
-            </div>
-            <div class="section">
+              <div id="auctionWatchRuleList" class="rule-list"></div>
+              <div id="auctionWatchNote" class="note"></div>
+            </details>
+            <details class="section">
+              <summary>프리셋</summary>
               <div class="row"><span class="label">장비프리셋</span><span id="gearPresetStatus" class="value"></span></div>
               <div class="actions three">
                 <button id="saveGearPreset1" class="action" type="button">1 저장</button>
@@ -15332,8 +17509,7 @@
                 <button id="equipGearPreset3" class="action" type="button">3 장착</button>
               </div>
               <div id="gearPresetNote" class="note"></div>
-            </div>
-            <div class="section">
+              <div class="section">
               <div class="row"><span class="label">스킬프리셋</span><span id="skillPresetStatus" class="value"></span></div>
               <div class="actions three">
                 <button id="saveSkillPreset1" class="action" type="button">1 저장</button>
@@ -15346,23 +17522,67 @@
                 <button id="applySkillPreset3" class="action" type="button">3 적용</button>
               </div>
               <div id="skillPresetNote" class="note"></div>
-            </div>
-            <div class="section">
+              </div>
+            </details>
+            <details class="section">
+              <summary>자동 등록</summary>
+              <div class="row"><span class="label">Lucid 등록</span><span id="auctionAutoListStatus" class="value"></span></div>
+              <div class="input-row">
+                <input id="auctionAutoListCountInput" class="text-input" type="number" min="1" max="150" step="1" placeholder="개수" autocomplete="off" spellcheck="false" />
+                <input id="auctionAutoListSilverInput" class="text-input" type="number" min="0" step="1" placeholder="은" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="actions three">
+                <button id="previewAuctionAutoList" class="action" type="button">확인</button>
+                <button id="startAuctionAutoList" class="action" type="button">등록</button>
+                <button id="stopAuctionAutoList" class="action" type="button">중지</button>
+              </div>
+              <div id="auctionAutoListNote" class="note"></div>
+            </details>
+            <details class="section">
+              <summary>채팅 번역 키</summary>
               <div class="row"><span class="label">채팅 키</span><span id="chatApiKeyStatus" class="value"></span></div>
               <div class="input-row api-key">
                 <input id="chatApiKeyInput" class="text-input" type="password" placeholder="OpenAI API 키" autocomplete="off" spellcheck="false" />
                 <button id="saveChatApiKey" class="action" type="button">저장</button>
                 <button id="clearChatApiKey" class="action" type="button">삭제</button>
               </div>
-            </div>
-            <div class="section">
+            </details>
+            <details class="section">
+              <summary>타겟 오더</summary>
+              <div class="row"><span class="label">타겟오더</span><span id="targetOrderStatus" class="value"></span></div>
+              <div class="feature-grid">
+                <button id="toggleTargetOrder" class="action" type="button"></button>
+                <button id="toggleTargetOrderAlert" class="action" type="button"></button>
+              </div>
+              <div class="input-row">
+                <input id="targetOrderServerInput" class="text-input" type="text" placeholder="ws://localhost:8787" autocomplete="off" spellcheck="false" />
+                <button id="saveTargetOrderConfig" class="action" type="button">저장</button>
+              </div>
+              <div class="input-row">
+                <input id="targetOrderRoomInput" class="text-input" type="text" maxlength="48" placeholder="방 코드" autocomplete="off" spellcheck="false" />
+                <input id="targetOrderNameInput" class="text-input" type="text" maxlength="32" placeholder="닉네임" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="input-row">
+                <input id="targetOrderTokenInput" class="text-input" type="password" placeholder="유저 토큰" autocomplete="off" spellcheck="false" />
+                <input id="targetOrderHotkeyInput" class="text-input" type="text" readonly placeholder="단축키" autocomplete="off" spellcheck="false" />
+              </div>
+            </details>
+            <details class="section">
+              <summary>강조 ID</summary>
               <div class="row"><span class="label">강조 ID</span><span id="highlightCount" class="value"></span></div>
               <div id="highlightList" class="highlight-list"></div>
               <div class="input-row">
                 <input id="highlightInput" class="text-input" type="text" maxlength="32" placeholder="닉네임 입력" autocomplete="off" />
                 <button id="addHighlight" class="action" type="button">추가</button>
               </div>
-            </div>
+            </details>
+            <details class="section">
+              <summary>기타 UI</summary>
+              <div class="feature-grid">
+                <button id="togglePartyUi" class="action" type="button"></button>
+                <button id="partyPreset5x2" class="action" type="button">파티5x2</button>
+              </div>
+            </details>
           </div>
         </div>
         <button id="badge" class="badge" type="button">
@@ -15395,6 +17615,8 @@
       installTargetOrderConfigHandlers(shadow);
       installGearPresetHandlers(shadow);
       installSkillPresetHandlers(shadow);
+      installAuctionAutoListHandlers(shadow);
+      installAuctionWatchHandlers(shadow);
 
       shadow.getElementById("addHighlight").addEventListener("click", () => {
         addHighlightNameFromUi();
@@ -15410,6 +17632,8 @@
       installHighlightInputGuards(shadow);
       installChatApiKeyInputGuards(shadow);
       installTargetOrderInputGuards(shadow);
+      installAuctionAutoListInputGuards(shadow);
+      installAuctionWatchInputGuards(shadow);
       installUiDragging(shadow);
       installUiResizeObserver(shadow);
       renderStatusUi();
@@ -15465,6 +17689,14 @@
       "targetOrderNameInput",
       "targetOrderTokenInput",
       "targetOrderHotkeyInput",
+      "auctionAutoListCountInput",
+      "auctionAutoListSilverInput",
+      "auctionWatchTypeSelect",
+      "auctionWatchTierInput",
+      "auctionWatchStat1Select",
+      "auctionWatchStat2Select",
+      "auctionWatchStat3Select",
+      "auctionWatchPagesInput",
     ]
       .map((id) => shadow.getElementById(id))
       .filter(Boolean);
@@ -15487,6 +17719,10 @@
         addHighlightNameFromUi();
       } else if (active.id === "chatApiKeyInput") {
         saveChatApiKeyFromUi();
+      } else if (active.id === "auctionAutoListCountInput" || active.id === "auctionAutoListSilverInput") {
+        startAuctionAutoListFromUi(false);
+      } else if (active.id && active.id.startsWith("auctionWatch")) {
+        addAuctionWatchRuleFromUi();
       } else if (active.id && active.id.startsWith("targetOrder")) {
         saveTargetOrderConfigFromUi();
       }
@@ -15528,6 +17764,27 @@
       "targetOrderNameInput",
       "targetOrderTokenInput",
       "targetOrderHotkeyInput",
+    ].forEach((id) => {
+      const input = shadow.getElementById(id);
+      if (input) installInputEventGuards(input);
+    });
+  }
+
+  function installAuctionAutoListInputGuards(shadow) {
+    ["auctionAutoListCountInput", "auctionAutoListSilverInput"].forEach((id) => {
+      const input = shadow.getElementById(id);
+      if (input) installInputEventGuards(input);
+    });
+  }
+
+  function installAuctionWatchInputGuards(shadow) {
+    [
+      "auctionWatchTypeSelect",
+      "auctionWatchTierInput",
+      "auctionWatchStat1Select",
+      "auctionWatchStat2Select",
+      "auctionWatchStat3Select",
+      "auctionWatchPagesInput",
     ].forEach((id) => {
       const input = shadow.getElementById(id);
       if (input) installInputEventGuards(input);
@@ -15683,6 +17940,8 @@
     renderTargetOrderUi(shadow);
     renderGearPresetUi(shadow);
     renderSkillPresetUi(shadow);
+    renderAuctionAutoListUi(shadow);
+    renderAuctionWatchUi(shadow);
     renderTargetDistanceUi(shadow);
     renderHighlightUi(shadow);
   }
@@ -15691,14 +17950,13 @@
     const actions = {
       toggleMinimapLabels: () => pageWindow.HordesKrMod.toggleMinimapNameLabels(),
       toggleIncomingSkill: () => pageWindow.HordesKrMod.toggleIncomingSkillOverlay(),
-      toggleIncomingSkillList: () => pageWindow.HordesKrMod.toggleIncomingSkillList(),
-      toggleIncomingTargetWatch: () => pageWindow.HordesKrMod.toggleIncomingTargetWatch(),
       toggleTargetDistance: () => pageWindow.HordesKrMod.toggleTargetDistanceOverlay(),
       toggleChatTranslation: () => pageWindow.HordesKrMod.toggleChatTranslation(),
       toggleTargetOrder: () => pageWindow.HordesKrMod.toggleTargetOrder(),
       toggleTargetOrderAlert: () => pageWindow.HordesKrMod.toggleTargetOrderAlert(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
+      toggleAuctionWatch: () => pageWindow.HordesKrMod.toggleAuctionWatch(),
       partyPreset5x2: () => pageWindow.HordesKrMod.partyUiPreset5x2(),
     };
 
@@ -15837,17 +18095,68 @@
     }
   }
 
+  function installAuctionAutoListHandlers(shadow) {
+    const preview = shadow.getElementById("previewAuctionAutoList");
+    const start = shadow.getElementById("startAuctionAutoList");
+    const stop = shadow.getElementById("stopAuctionAutoList");
+
+    if (preview) {
+      preview.addEventListener("click", () => {
+        startAuctionAutoListFromUi(true);
+      });
+    }
+
+    if (start) {
+      start.addEventListener("click", () => {
+        startAuctionAutoListFromUi(false);
+      });
+    }
+
+    if (stop) {
+      stop.addEventListener("click", () => {
+        pageWindow.HordesKrMod.stopAutoListLucid();
+      });
+    }
+  }
+
+  function installAuctionWatchHandlers(shadow) {
+    const refresh = shadow.getElementById("refreshAuctionWatch");
+    const reset = shadow.getElementById("resetAuctionWatchRule");
+    const add = shadow.getElementById("addAuctionWatchRule");
+
+    if (refresh) {
+      refresh.addEventListener("click", () => {
+        pageWindow.HordesKrMod.refreshAuctionWatch().finally(() => {
+          renderStatusUi();
+        });
+        renderStatusUi();
+      });
+    }
+
+    if (add) {
+      add.addEventListener("click", () => {
+        addAuctionWatchRuleFromUi();
+      });
+    }
+
+    if (reset) {
+      reset.addEventListener("click", () => {
+        pageWindow.HordesKrMod.setAuctionWatchRules([AUCTION_WATCH_DEFAULT_RULE]);
+        renderStatusUi();
+      });
+    }
+  }
+
   function renderFeatureToggles(shadow) {
     setFeatureToggleButton(shadow, "toggleMinimapLabels", "미니맵", HIGHLIGHT_CONFIG.minimapLabelsEnabled);
     setFeatureToggleButton(shadow, "toggleIncomingSkill", "시전경고", FEATURE_CONFIG.incomingSkillOverlayEnabled);
-    setFeatureToggleButton(shadow, "toggleIncomingSkillList", "경고목록", isIncomingSkillListEnabled());
-    setFeatureToggleButton(shadow, "toggleIncomingTargetWatch", "주시경고", isIncomingTargetWatchEnabled());
     setFeatureToggleButton(shadow, "toggleTargetDistance", "타겟거리", FEATURE_CONFIG.targetDistanceEnabled);
     renderChatTranslationToggle(shadow);
     setFeatureToggleButton(shadow, "toggleTargetOrder", "타겟오더", TARGET_ORDER_CONFIG.enabled);
     setFeatureToggleButton(shadow, "toggleTargetOrderAlert", "오더알림", TARGET_ORDER_CONFIG.alertEnabled);
     setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
     setFeatureToggleButton(shadow, "togglePartyUi", "파티UI", PARTY_UI_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "toggleAuctionWatch", "거래소감시", AUCTION_WATCH_CONFIG.enabled);
     const preset = shadow.getElementById("partyPreset5x2");
     if (preset) {
       preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
@@ -15871,7 +18180,7 @@
     if (!hasChatTranslationApiKey()) {
       button.textContent = "채팅번역 키없음";
       button.classList.add("off");
-      button.title = '콘솔에서 HordesKrMod.setChatTranslationApiKey("...")로 API 키를 저장한 뒤 켜세요.';
+      button.title = "패널의 채팅 번역 키에서 API 키를 저장한 뒤 켜세요.";
       return;
     }
 
@@ -16051,6 +18360,275 @@
           : "",
       ].filter(Boolean).join(" / ");
     }
+  }
+
+  function renderAuctionAutoListUi(shadow) {
+    const status = shadow.getElementById("auctionAutoListStatus");
+    const note = shadow.getElementById("auctionAutoListNote");
+    const countInput = shadow.getElementById("auctionAutoListCountInput");
+    const silverInput = shadow.getElementById("auctionAutoListSilverInput");
+    const preview = shadow.getElementById("previewAuctionAutoList");
+    const start = shadow.getElementById("startAuctionAutoList");
+    const stop = shadow.getElementById("stopAuctionAutoList");
+    if (!status) return;
+
+    const active = shadow.activeElement;
+    if (countInput && active !== countInput && !countInput.value) countInput.value = "10";
+    if (silverInput && active !== silverInput && !silverInput.value) silverInput.value = "9";
+
+    const socket = getGearSocketStatus();
+    const scan = STATUS_UI.panelOpen ? scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM) : null;
+    const state = AUCTION_AUTOLIST_STATE;
+    status.textContent = state.running
+      ? state.lastState || "등록 중"
+      : state.lastError
+        ? state.lastState || "오류"
+        : state.lastState || "대기";
+    status.title = state.lastError || "";
+
+    if (preview) {
+      preview.disabled = state.running;
+      preview.classList.toggle("off", state.running);
+    }
+    if (start) {
+      start.disabled = state.running || !socket.available;
+      start.classList.toggle("off", state.running || !socket.available);
+      start.title = socket.available ? "Lucid를 1개씩 분리해 거래소에 등록합니다." : "게임 서버 WebSocket 감지 후 실행할 수 있습니다.";
+    }
+    if (stop) {
+      stop.disabled = !state.running;
+      stop.classList.toggle("off", !state.running);
+    }
+
+    if (note) {
+      const result = state.lastResult;
+      note.textContent = [
+        scan ? `감지: ${scan.totalUnits}개 / 1개짜리 ${scan.singles}개 / 스택 ${scan.stackSlots}칸` : "",
+        socket.available ? "서버연결" : socket.wrapped ? "서버대기" : "서버미감지",
+        result ? `최근: ${result.posted}/${result.requested}개 / ${result.priceText || formatCoinAmount(result.price)}` : "기본값: 10개, 개당 9은",
+      ].filter(Boolean).join(" / ");
+    }
+  }
+
+  function renderAuctionWatchUi(shadow) {
+    const status = shadow.getElementById("auctionWatchStatus");
+    const note = shadow.getElementById("auctionWatchNote");
+    const refresh = shadow.getElementById("refreshAuctionWatch");
+    const reset = shadow.getElementById("resetAuctionWatchRule");
+    const add = shadow.getElementById("addAuctionWatchRule");
+    if (!status) return;
+
+    renderAuctionWatchForm(shadow);
+
+    const socket = getGearSocketStatus();
+    const state = AUCTION_WATCH_STATE;
+    const rules = getAuctionWatchRules();
+    const matches = state.lastMatches || [];
+    const selfItems = state.lastSelfItems || [];
+
+    status.textContent = !AUCTION_WATCH_CONFIG.enabled
+      ? "꺼짐"
+      : state.running
+        ? "조회 중"
+        : state.lastState || "대기";
+    status.title = state.lastError || rules.map((rule) => rule.label).join(" / ");
+
+    if (refresh) {
+      refresh.disabled = state.running || !socket.available;
+      refresh.classList.toggle("off", state.running || !socket.available);
+      refresh.title = socket.available ? "거래소 조건을 지금 조회합니다." : "게임 서버 WebSocket 감지 후 조회할 수 있습니다.";
+    }
+    if (reset) {
+      reset.disabled = state.running;
+      reset.classList.toggle("off", state.running);
+    }
+    if (add) {
+      add.disabled = state.running;
+      add.classList.toggle("off", state.running);
+    }
+
+    renderAuctionWatchRuleList(shadow, rules);
+
+    if (note) {
+      const ruleText = rules.map((rule) => rule.label).join(" / ");
+      note.textContent = [
+        `조건: ${ruleText}`,
+        AUCTION_WATCH_CONFIG.enabled ? "감시 켜짐" : "감시 꺼짐",
+        socket.available ? "서버연결" : socket.wrapped ? "서버대기" : "서버미감지",
+        matches.length ? `발견 ${matches.length}개` : "발견 없음",
+        selfItems.length ? `내판매 ${selfItems.length}개` : "",
+        state.lastError ? `오류: ${state.lastError}` : "",
+      ].filter(Boolean).join(" / ");
+    }
+  }
+
+  function renderAuctionWatchForm(shadow) {
+    const typeSelect = shadow.getElementById("auctionWatchTypeSelect");
+    const tierInput = shadow.getElementById("auctionWatchTierInput");
+    const pagesInput = shadow.getElementById("auctionWatchPagesInput");
+    const statSelects = [
+      shadow.getElementById("auctionWatchStat1Select"),
+      shadow.getElementById("auctionWatchStat2Select"),
+      shadow.getElementById("auctionWatchStat3Select"),
+    ];
+    const active = shadow.activeElement;
+
+    if (typeSelect && typeSelect.options.length === 0) {
+      const types = AUCTION_ITEM_TYPES
+        .filter((type) => type && type !== "all")
+        .filter((type) => AUCTION_ITEM_TYPE_LABELS[type] || ["book", "rune", "material", "misc", "mount", "pet", "box"].indexOf(type) === -1);
+      typeSelect.replaceChildren(...types.map((type) => {
+        const option = document.createElement("option");
+        option.value = type;
+        option.textContent = `${AUCTION_ITEM_TYPE_LABELS[type] || type} (${type})`;
+        return option;
+      }));
+    }
+
+    statSelects.forEach((select, index) => {
+      if (!select || select.options.length > 0) return;
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = index === 0 ? "옵션 선택" : "옵션 없음";
+      select.appendChild(none);
+      AUCTION_WATCH_STAT_OPTIONS.forEach(([id, label]) => {
+        const option = document.createElement("option");
+        option.value = String(id);
+        option.textContent = `${label} (${id})`;
+        select.appendChild(option);
+      });
+    });
+
+    if (typeSelect && active !== typeSelect && !typeSelect.value) typeSelect.value = "bag";
+    if (tierInput && active !== tierInput && !tierInput.value) tierInput.value = "all";
+    if (pagesInput && active !== pagesInput && !pagesInput.value) pagesInput.value = "1";
+    if (statSelects[0] && active !== statSelects[0] && !statSelects[0].value) statSelects[0].value = "1";
+    if (statSelects[1] && active !== statSelects[1] && !statSelects[1].value) statSelects[1].value = "2";
+    if (statSelects[2] && active !== statSelects[2] && !statSelects[2].value) statSelects[2].value = "11";
+  }
+
+  function renderAuctionWatchRuleList(shadow, rules) {
+    const list = shadow.getElementById("auctionWatchRuleList");
+    if (!list) return;
+
+    const normalizedRules = Array.isArray(rules) ? rules : getAuctionWatchRules();
+    list.replaceChildren(...normalizedRules.map((rule) => {
+      const row = document.createElement("div");
+      const text = document.createElement("div");
+      const main = document.createElement("div");
+      const sub = document.createElement("div");
+      const remove = document.createElement("button");
+
+      row.className = "rule-item";
+      main.className = "rule-main";
+      sub.className = "rule-sub";
+      remove.className = "remove";
+      remove.type = "button";
+      remove.textContent = "삭제";
+
+      main.textContent = rule.label;
+      sub.textContent = `${rule.type} / tier ${rule.tier} / ${rule.pages}p / ${formatAuctionWatchRuleStats(rule)}`;
+      remove.addEventListener("click", () => {
+        removeAuctionWatchRule(rule.id);
+      });
+
+      text.append(main, sub);
+      row.append(text, remove);
+      return row;
+    }));
+  }
+
+  function addAuctionWatchRuleFromUi() {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return getAuctionWatchStatus();
+
+    let rule;
+    try {
+      rule = readAuctionWatchRuleFromUi(shadow);
+    } catch (error) {
+      AUCTION_WATCH_STATE.lastState = "조건 오류";
+      AUCTION_WATCH_STATE.lastError = error && error.message ? error.message : String(error);
+      renderStatusUi();
+      return getAuctionWatchStatus();
+    }
+
+    const existing = getAuctionWatchRules().filter((current) => current.id !== rule.id);
+    AUCTION_WATCH_CONFIG.rules = [...existing, rule];
+    AUCTION_WATCH_STATE.lastState = "조건 저장";
+    AUCTION_WATCH_STATE.lastError = "";
+    saveAuctionWatchConfig();
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+    return getAuctionWatchStatus();
+  }
+
+  function readAuctionWatchRuleFromUi(shadow) {
+    const type = getInputValue(shadow, "auctionWatchTypeSelect") || "bag";
+    const tierRaw = getInputValue(shadow, "auctionWatchTierInput") || "all";
+    const pages = clampInteger(getInputValue(shadow, "auctionWatchPagesInput") || 1, 1, AUCTION_WATCH_MAX_PAGES, 1);
+    const requiredStatIds = [
+      getInputValue(shadow, "auctionWatchStat1Select"),
+      getInputValue(shadow, "auctionWatchStat2Select"),
+      getInputValue(shadow, "auctionWatchStat3Select"),
+    ]
+      .map((id) => Number(id))
+      .filter(Number.isInteger);
+    const uniqueStatIds = Array.from(new Set(requiredStatIds));
+    if (uniqueStatIds.length === 0) throw new Error("옵션을 하나 이상 선택하세요.");
+
+    const normalizedTypeIndex = normalizeAuctionTypeIndex(type);
+    const normalizedType = AUCTION_ITEM_TYPES[normalizedTypeIndex] || type;
+    const tier = normalizeAuctionTier(tierRaw);
+    return normalizeAuctionWatchRule({
+      id: `${normalizedType}-${tier}-${uniqueStatIds.join("-")}`,
+      label: formatAuctionWatchRuleLabel(normalizedType, uniqueStatIds),
+      type: normalizedType,
+      tier,
+      requiredStatIds: uniqueStatIds,
+      pages,
+      sortMode: 1,
+      sortDirection: 1,
+    });
+  }
+
+  function removeAuctionWatchRule(ruleId) {
+    const nextRules = getAuctionWatchRules().filter((rule) => rule.id !== ruleId);
+    AUCTION_WATCH_CONFIG.rules = nextRules.length > 0 ? nextRules : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
+    AUCTION_WATCH_STATE.lastState = nextRules.length > 0 ? "조건 삭제" : "기본 조건";
+    AUCTION_WATCH_STATE.lastError = "";
+    saveAuctionWatchConfig();
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+    return getAuctionWatchStatus();
+  }
+
+  function formatAuctionWatchRuleStats(rule) {
+    return (rule.requiredStatIds || [])
+      .map((id) => AUCTION_STAT_LABELS[id] || `Stat ${id}`)
+      .join(" + ");
+  }
+
+  function startAuctionAutoListFromUi(dryRun) {
+    const shadow = STATUS_UI.shadow;
+    if (!shadow) return;
+
+    const countInput = shadow.getElementById("auctionAutoListCountInput");
+    const silverInput = shadow.getElementById("auctionAutoListSilverInput");
+    const count = Number(countInput && countInput.value ? countInput.value : 10);
+    const silver = Number(silverInput && silverInput.value ? silverInput.value : 9);
+    pageWindow.HordesKrMod.autoListLucid({
+      count,
+      silver,
+      dryRun: dryRun === true,
+    }).catch((error) => {
+      AUCTION_AUTOLIST_STATE.lastState = "등록 오류";
+      AUCTION_AUTOLIST_STATE.lastError = error && error.message ? error.message : String(error);
+    }).finally(() => {
+      renderStatusUi();
+    });
+    renderStatusUi();
   }
 
   function summarizeGearPresetItems(items) {

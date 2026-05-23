@@ -1,0 +1,11 @@
+{
+  "name": "hordes-kr-mod",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "target-order-server": "node server/target-order-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

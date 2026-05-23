@@ -21,6 +21,20 @@ Hordes.io용 Tampermonkey 커스텀 모드입니다. 현재 범위는 게임 UI 
 2. `hordes-kr-mod.user.js` 내용을 붙여넣습니다.
 3. `https://hordes.io/` 또는 `https://hordes.io/play`를 새로고침합니다.
 
+## 타겟 오더 서버
+
+모드 사용자끼리 타겟 오더를 공유하려면 별도 Node.js relay 서버가 필요합니다.
+
+```bash
+npm install
+ADMIN_TOKEN=your-admin-token npm run target-order-server
+```
+
+- 서버 URL 기본 예: `ws://localhost:8787`
+- 어드민 예: `http://localhost:8787/admin?token=your-admin-token`
+- 어드민에서 방, 유저 토큰, 오더 허용자를 관리합니다.
+- 오더 수신자는 화면 중앙 상단 알림이 뜬 뒤 3초 안에 본인 단축키를 눌러 타겟 적용을 시도합니다.
+
 직접 설치 URL:
 
 - https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
