@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.108-local
+// @version      0.9.132-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -15,10 +15,11 @@
 // @downloadURL  https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/hordes-kr-mod.user.js
 // ==/UserScript==
 
+// 구조/리팩토링 맥락은 AI_CONTEXT.md를 먼저 참고한다.
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.108-local";
+  const BOOT_VERSION = "0.9.132-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -290,10 +291,10 @@
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
   const FEATURE_CONFIG_KEY = "hordesKrMod.features.config";
   const PARTY_UI_CONFIG_KEY = "hordesKrMod.partyUi.config";
+  const PARTY_COMMAND_CONFIG_KEY = "hordesKrMod.partyCommand.config";
   const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
   const GEAR_PRESET_CONFIG_KEY = "hordesKrMod.gearPreset.config";
   const SKILL_PRESET_CONFIG_KEY = "hordesKrMod.skillPreset.config";
-  const AUCTION_WATCH_CONFIG_KEY = "hordesKrMod.auctionWatch.config";
   const CHAT_TRANSLATION_API_KEY_KEY = "hordesKrMod.chatTranslation.apiKey";
   const CHAT_TRANSLATION_MODEL_KEY = "hordesKrMod.chatTranslation.model";
   const CHAT_TRANSLATION_MODEL_MIGRATION_KEY = "hordesKrMod.chatTranslation.modelMigration";
@@ -304,12 +305,15 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION_KEY = "hordesKrMod.highlight.minimapListScaleDefaultVersion";
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
+  const HIGHLIGHT_MATCH_CACHE_MAX = 256;
   const RUNTIME_OVERLAY_INTERVAL_MS = 100;
   const RUNTIME_NAME_OVERLAY_REFRESH_MS = 100;
   const MINIMAP_OVERLAY_REFRESH_MS = 100;
   const PRESET_QUICKBAR_REFRESH_MS = 500;
   const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
   const TARGET_DISTANCE_CACHE_MS = 100;
+  const TARGET_DISTANCE_DEEP_SEARCH_CACHE_MS = 1000;
+  const TARGET_DISTANCE_DEEP_SEARCH_CACHE_MAX = 64;
   const TARGET_DISTANCE_MAX_OBJECTS = 1800;
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
@@ -458,6 +462,28 @@
   const PARTY_UI_FRAME_WIDTH = 200;
   const PARTY_UI_FRAME_HEIGHT = 27;
   const PARTY_UI_GRID_GAP = 4;
+  const PARTY_COMMAND_PANEL_REFRESH_MS = 500;
+  const PARTY_COMMAND_PANEL_DEFAULT_WIDTH = 198;
+  const PARTY_COMMAND_PANEL_DEFAULT_HEIGHT = 154;
+  const PARTY_COMMAND_QUICK_MESSAGES = [
+    ["RAW L", "RAW LEFT IN 3"],
+    ["RAW", "RAW IN 3"],
+    ["RAW R", "RAW RIGHT IN 3"],
+    ["DEEP L", "DEEP LEFT IN 3"],
+    ["DEEP M", "DEEP MID IN 3"],
+    ["DEEP R", "DEEP RIGHT IN 3"],
+    ["TARGET", null],
+    ["ON ME", "ON ME IN 3"],
+    ["CANCLE", "CANCLE"],
+    ["GGGGG", "GGGGG"],
+  ];
+  const PARTY_COMMAND_TARGET_HOTKEY_CODE = "KeyZ";
+  const PARTY_COMMAND_GATHER_HOTKEY_CODE = "KeyX";
+  const PARTY_COMMAND_CHANNEL_OPTIONS = [
+    ["faction", "Faction"],
+    ["party", "Party"],
+    ["clan", "Clan"],
+  ];
   const TARGET_ORDER_DEFAULT_HOTKEY_CODE = "KeyG";
   const TARGET_ORDER_PENDING_MS = 3000;
   const TARGET_ORDER_RECONNECT_MS = 3000;
@@ -470,6 +496,18 @@
   const GEAR_PRESET_VERIFY_RETRY_DELAYS_MS = [200, 400, 800, 1400, 2200];
   const HORDES_CLIENT_COMMAND_HEADER = 5;
   const HORDES_WEB_SOCKET_OPEN = 1;
+  const HORDES_CHAT_CHANNELS = new Set(["party", "clan", "faction", "yell", "global"]);
+  const HORDES_CHAT_CHANNEL_ALIASES = {
+    c: "clan",
+    clan: "clan",
+    p: "party",
+    party: "party",
+    f: "faction",
+    faction: "faction",
+    y: "yell",
+    yell: "yell",
+    global: "global",
+  };
   const GEAR_EQUIP_SLOT_SET = new Set([101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111]);
   const GEAR_PRESET_EXACT_UNEQUIP_SLOTS = [101, 102, 103, 105, 106, 107, 108, 109, 110, 111];
   const GEAR_EQUIP_SLOT_BY_TYPE = {
@@ -526,6 +564,22 @@
     "touchstart",
     "touchend",
   ];
+  const UI_CONTROL_POINTER_EVENTS = [
+    ...HIGHLIGHT_INPUT_POINTER_EVENTS,
+    "pointerup",
+    "pointermove",
+    "contextmenu",
+    "wheel",
+  ];
+  const STATUS_UI_TEXT_INPUT_IDS = [
+    "highlightInput",
+    "chatApiKeyInput",
+    "targetOrderServerInput",
+    "targetOrderRoomInput",
+    "targetOrderNameInput",
+    "targetOrderTokenInput",
+    "targetOrderHotkeyInput",
+  ];
   const UI_CONFIG = loadJsonConfig(UI_CONFIG_KEY, {
     x: null,
     y: null,
@@ -537,14 +591,12 @@
     domTranslationEnabled: true,
     targetDistanceEnabled: true,
     incomingSkillOverlayEnabled: true,
-    incomingSkillListEnabled: false,
     incomingTargetWatchEnabled: false,
     chatTranslationEnabled: false,
   });
   FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
-  FEATURE_CONFIG.incomingSkillListEnabled = false;
   FEATURE_CONFIG.incomingTargetWatchEnabled = false;
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
   const PARTY_UI_CONFIG = loadJsonConfig(PARTY_UI_CONFIG_KEY, {
@@ -561,6 +613,18 @@
   PARTY_UI_CONFIG.columns = clamp(Number(PARTY_UI_CONFIG.columns) || 1, 1, 5);
   PARTY_UI_CONFIG.frameWidth = clamp(Number(PARTY_UI_CONFIG.frameWidth) || PARTY_UI_FRAME_WIDTH, 150, 240);
   PARTY_UI_CONFIG.gap = clamp(Number(PARTY_UI_CONFIG.gap) || PARTY_UI_GRID_GAP, 0, 10);
+  const PARTY_COMMAND_CONFIG = loadJsonConfig(PARTY_COMMAND_CONFIG_KEY, {
+    enabled: true,
+    channel: "clan",
+    x: null,
+    y: null,
+    lastMessage: "",
+  });
+  PARTY_COMMAND_CONFIG.enabled = PARTY_COMMAND_CONFIG.enabled !== false;
+  PARTY_COMMAND_CONFIG.channel = normalizeHordesChatChannel(PARTY_COMMAND_CONFIG.channel || "clan");
+  PARTY_COMMAND_CONFIG.x = normalizeOptionalScreenCoordinate(PARTY_COMMAND_CONFIG.x);
+  PARTY_COMMAND_CONFIG.y = normalizeOptionalScreenCoordinate(PARTY_COMMAND_CONFIG.y);
+  PARTY_COMMAND_CONFIG.lastMessage = String(PARTY_COMMAND_CONFIG.lastMessage || "").slice(0, 96);
   const TARGET_ORDER_CONFIG = loadJsonConfig(TARGET_ORDER_CONFIG_KEY, {
     enabled: false,
     alertEnabled: true,
@@ -606,7 +670,9 @@
     hideClanNames: true,
     nameplateStyle: null,
   });
-  if (!Array.isArray(HIGHLIGHT_CONFIG.names)) HIGHLIGHT_CONFIG.names = [];
+  HIGHLIGHT_CONFIG.names = Array.isArray(HIGHLIGHT_CONFIG.names)
+    ? uniqueHighlightNames(HIGHLIGHT_CONFIG.names)
+    : [];
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   HIGHLIGHT_CONFIG.domEnabled = HIGHLIGHT_CONFIG.domEnabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
@@ -695,6 +761,19 @@
     lastFrameCount: 0,
     lastError: "",
   };
+  const PARTY_COMMAND_STATE = {
+    host: null,
+    timer: null,
+    renderKey: "",
+    dragging: null,
+    hotkeysInstalled: false,
+    channelMenuOpen: false,
+    lastState: "대기",
+    lastError: "",
+    lastSentAt: null,
+    lastText: "",
+    sentCount: 0,
+  };
   const TARGET_ORDER_STATE = {
     ws: null,
     reconnectTimer: null,
@@ -729,142 +808,6 @@
     progressOverlayHost: null,
     progressOverlayTimer: null,
   };
-  const AUCTION_AUTOLIST_DEFAULT_ITEM = {
-    type: "rune",
-    tier: 0,
-    name: "Lucid",
-  };
-  const AUCTION_AUTOLIST_MAX_COUNT = 150;
-  const AUCTION_AUTOLIST_DEFAULT_SPLIT_DELAY_MS = 220;
-  const AUCTION_AUTOLIST_DEFAULT_POST_DELAY_MS = 320;
-  const AUCTION_AUTOLIST_VERIFY_TIMEOUT_MS = 3000;
-  const AUCTION_AUTOLIST_POLL_MS = 80;
-  const AUCTION_ITEM_TYPES = [
-    "all",
-    "wand",
-    "bow",
-    "dagger",
-    "hammer",
-    "staff",
-    "sword",
-    null,
-    "orb",
-    "quiver",
-    "shield",
-    "totem",
-    null,
-    "armlet",
-    "armor",
-    "boot",
-    "glove",
-    null,
-    "amulet",
-    "bag",
-    "ring",
-    null,
-    "book",
-    "rune",
-    "material",
-    "misc",
-    null,
-    "mount",
-    "pet",
-    "box",
-  ];
-  const AUCTION_WATCH_STAT_OPTIONS = [
-    [1, "스태미나"],
-    [2, "민첩"],
-    [3, "지능"],
-    [4, "지혜"],
-    [5, "행운"],
-    [10, "최소 데미지"],
-    [11, "최대 데미지"],
-    [12, "방어"],
-    [13, "막기"],
-    [14, "치명타"],
-    [15, "이동 속도"],
-    [16, "가속"],
-    [17, "공격 속도"],
-    [18, "아이템 발견"],
-    [19, "가방 칸"],
-    [30, "피해 증가"],
-    [31, "어그로 증가"],
-    [32, "이동 속도 감소"],
-    [33, "치유 감소"],
-  ];
-  const AUCTION_STAT_LABELS = AUCTION_WATCH_STAT_OPTIONS.reduce((labels, [id, label]) => {
-    labels[id] = label;
-    return labels;
-  }, {});
-  const AUCTION_ITEM_TYPE_LABELS = {
-    amulet: "목걸이",
-    armlet: "팔찌",
-    armor: "갑옷",
-    bag: "가방",
-    boot: "신발",
-    bow: "활",
-    glove: "장갑",
-    hammer: "망치",
-    orb: "오브",
-    quiver: "화살통",
-    ring: "반지",
-    shield: "방패",
-    staff: "지팡이",
-    sword: "검",
-    totem: "토템",
-  };
-  const AUCTION_WATCH_DEFAULT_RULE_ID = "bag-stamina-dex-maxdmg";
-  const AUCTION_WATCH_DEFAULT_RULE = {
-    id: AUCTION_WATCH_DEFAULT_RULE_ID,
-    label: "Bag: 스태미나 + 민첩 + 최대 데미지",
-    type: "bag",
-    tier: "all",
-    requiredStatIds: [1, 2, 11],
-    pages: 1,
-    sortMode: 1,
-    sortDirection: 1,
-  };
-  const AUCTION_WATCH_REFRESH_MS = 60000;
-  const AUCTION_WATCH_PAGE_DELAY_MS = 280;
-  const AUCTION_WATCH_TIMEOUT_MS = 5000;
-  const AUCTION_WATCH_MAX_PAGES = 10;
-  const AUCTION_WATCH_MAX_LIST_ROWS = 8;
-  const AUCTION_WATCH_ALERT_TTL_MS = 10 * 60 * 1000;
-  const AUCTION_AUTOLIST_STATE = {
-    running: false,
-    stopRequested: false,
-    lastState: "대기",
-    lastError: "",
-    lastRunAt: null,
-    lastResult: null,
-  };
-  const AUCTION_WATCH_CONFIG = loadJsonConfig(AUCTION_WATCH_CONFIG_KEY, {
-    enabled: false,
-    rules: [AUCTION_WATCH_DEFAULT_RULE],
-    refreshMs: AUCTION_WATCH_REFRESH_MS,
-  });
-  AUCTION_WATCH_CONFIG.enabled = AUCTION_WATCH_CONFIG.enabled === true;
-  if (!Array.isArray(AUCTION_WATCH_CONFIG.rules) || AUCTION_WATCH_CONFIG.rules.length === 0) {
-    AUCTION_WATCH_CONFIG.rules = [AUCTION_WATCH_DEFAULT_RULE];
-  }
-  AUCTION_WATCH_CONFIG.refreshMs = clampNumber(
-    AUCTION_WATCH_CONFIG.refreshMs,
-    15000,
-    10 * 60 * 1000,
-    AUCTION_WATCH_REFRESH_MS
-  );
-  const AUCTION_WATCH_STATE = {
-    timer: null,
-    running: false,
-    lastState: "꺼짐",
-    lastError: "",
-    lastRunAt: null,
-    lastResult: null,
-    lastMatches: [],
-    lastSelfItems: [],
-    alertHistory: new Map(),
-    querySeq: 0,
-  };
   const SKILL_PRESET_STATE = {
     running: false,
     lastState: "대기",
@@ -892,6 +835,7 @@
     lastCanvasTargetMatch: null,
     lastSelectedTarget: null,
     lockedTarget: null,
+    deepSearchCache: new Map(),
   };
   const HIGHLIGHT_STATE = {
     observer: null,
@@ -938,12 +882,6 @@
     lastIncomingTargetWatchAt: 0,
     lastIncomingTargetWatchError: "",
     lastIncomingTargetWatchMatches: [],
-    incomingSkillListHost: null,
-    incomingSkillListHits: 0,
-    lastIncomingSkillListAt: 0,
-    lastIncomingSkillListError: "",
-    lastIncomingSkillListMatches: [],
-    incomingSkillListRenderKey: "",
     minimapOverlayHost: null,
     minimapOverlayItems: new Map(),
     minimapOverlayHits: 0,
@@ -975,9 +913,11 @@
   };
   const HIGHLIGHT_NAME_CACHE = {
     key: "",
+    source: null,
     names: [],
     lowerNames: [],
     matcherSource: "",
+    matchCache: new Map(),
   };
   applyMinimapListScaleDefaultMigration();
   applyDefaultHighlightNames();
@@ -2789,8 +2729,8 @@
     initRuntimeNameOverlay();
     initTargetContextMenuHighlight();
     initPartyUiManager();
+    initPartyCommandPanel();
     initTargetOrderClient();
-    initAuctionWatchManager();
   } catch (error) {
     showBootstrapFailureBadge("KR Mod 초기화 실패", [
       "Hordes KR Mod 초기화 중 오류가 발생했습니다.",
@@ -2902,17 +2842,11 @@
     toggleIncomingSkillOverlay() {
       FEATURE_CONFIG.incomingSkillOverlayEnabled = !FEATURE_CONFIG.incomingSkillOverlayEnabled;
       saveFeatureConfig();
-      if (!isIncomingSkillListEnabled()) clearIncomingSkillList();
       updateRuntimeNameOverlay();
       renderStatusUi();
       return FEATURE_CONFIG.incomingSkillOverlayEnabled;
     },
     toggleIncomingSkillList() {
-      FEATURE_CONFIG.incomingSkillListEnabled = false;
-      saveFeatureConfig();
-      clearIncomingSkillList();
-      updateRuntimeNameOverlay();
-      renderStatusUi();
       return false;
     },
     toggleIncomingTargetWatch() {
@@ -2920,7 +2854,6 @@
       saveFeatureConfig();
       HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
       HIGHLIGHT_STATE.lastIncomingTargetWatchError = "";
-      if (!isIncomingSkillListEnabled()) clearIncomingSkillList();
       updateRuntimeNameOverlay();
       renderStatusUi();
       return false;
@@ -2997,6 +2930,30 @@
     partyUiStatus() {
       return getPartyUiStatus();
     },
+    togglePartyCommandPanel() {
+      return setPartyCommandPanelEnabled(!PARTY_COMMAND_CONFIG.enabled);
+    },
+    setPartyCommandPanelEnabled(enabled) {
+      return setPartyCommandPanelEnabled(enabled);
+    },
+    resetPartyCommandPanelPosition() {
+      return resetPartyCommandPanelPosition();
+    },
+    setPartyCommandChannel(channel) {
+      return setPartyCommandChannel(channel);
+    },
+    partyCommandPanelStatus() {
+      return getPartyCommandPanelStatus();
+    },
+    sendPartyCommand(message) {
+      return sendPartyChatCommand(message);
+    },
+    sendChatCommand(channel, message) {
+      return sendHordesChatMessage(channel, message);
+    },
+    sendClanCommand(message) {
+      return sendHordesChatMessage("clan", message);
+    },
     scanBagGearItems() {
       return scanVisibleBagGearItems().map(stripGearPresetElement);
     },
@@ -3005,33 +2962,6 @@
     },
     scanRuntimeInventoryItems() {
       return scanRuntimeInventoryItems().map(stripGearPresetElement);
-    },
-    scanLucidAuctionItems() {
-      return scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM);
-    },
-    auctionAutoListStatus() {
-      return getAuctionAutoListStatus();
-    },
-    autoListLucid(options) {
-      return runAuctionAutoList(options);
-    },
-    stopAutoListLucid() {
-      return stopAuctionAutoList();
-    },
-    toggleAuctionWatch() {
-      return setAuctionWatchEnabled(!AUCTION_WATCH_CONFIG.enabled);
-    },
-    auctionWatchStatus() {
-      return getAuctionWatchStatus();
-    },
-    refreshAuctionWatch() {
-      return refreshAuctionWatchNow();
-    },
-    setAuctionWatchRules(rules) {
-      return setAuctionWatchRules(rules);
-    },
-    sendItemAuctionFind(type, tier = "all", sortMode = 1, sortDirection = 1, page = 0) {
-      return sendHordesItemAuctionFind(type, tier, sortMode, sortDirection, page);
     },
     scanEquippedGearItems() {
       return scanRuntimeEquippedGearItems().map(stripGearPresetElement);
@@ -3062,9 +2992,6 @@
     },
     sendItemSplitOne(slotIndex) {
       return sendHordesItemSplitOne(Number(slotIndex));
-    },
-    sendItemAuctionPost(dbid, price) {
-      return sendHordesItemAuctionPost(dbid, Number(price));
     },
     scanActiveSkills() {
       return scanRuntimeActiveSkillIds();
@@ -3311,8 +3238,8 @@
     saveJsonConfig(PARTY_UI_CONFIG_KEY, PARTY_UI_CONFIG);
   }
 
-  function saveAuctionWatchConfig() {
-    saveJsonConfig(AUCTION_WATCH_CONFIG_KEY, AUCTION_WATCH_CONFIG);
+  function savePartyCommandConfig() {
+    saveJsonConfig(PARTY_COMMAND_CONFIG_KEY, PARTY_COMMAND_CONFIG);
   }
 
   function isDomTranslationEnabled() {
@@ -4968,10 +4895,6 @@
     return !!(element && element.closest && element.closest(".hordes-kr-chat-translation, .hordes-kr-chat-inline-translation"));
   }
 
-  function extractChatMessageText(element) {
-    return extractChatMessagePayload(element).text;
-  }
-
   function extractChatMessagePayload(element) {
     if (!element) {
       return {
@@ -5300,13 +5223,7 @@
     host.id = "hordes-kr-chat-translation-toggle";
     host.hidden = true;
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "toggle-button";
-    button.textContent = "채팅번역";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const button = createUiButton("toggle-button", "채팅번역", "", () => {
       setChatTranslationEnabled(!isChatTranslationEnabled());
       updateChatTranslationQuickToggle(true);
       renderStatusUi();
@@ -5333,29 +5250,11 @@
       event.stopPropagation();
     });
 
-    const send = document.createElement("button");
-    send.type = "button";
-    send.className = "outgoing-send";
-    send.textContent = "→";
-    send.title = "한국어를 영어로 번역해서 게임 채팅 입력칸에 넣기";
-    send.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const send = createUiButton("outgoing-send", "→", "한국어를 영어로 번역해서 게임 채팅 입력칸에 넣기", () => {
       translateOutgoingChatFromQuickInput(input).catch(() => {});
     });
 
-    [button, input, send].forEach((element) => {
-      [...HIGHLIGHT_INPUT_POINTER_EVENTS, "pointerup", "pointermove", "contextmenu", "wheel"].forEach((type) => {
-        element.addEventListener(type, (event) => {
-          event.stopPropagation();
-        });
-      });
-      STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
-        element.addEventListener(type, (event) => {
-          event.stopPropagation();
-        });
-      });
-    });
+    installBasicUiEventGuards([button, input, send]);
 
     input.addEventListener("focus", () => {
       input.select();
@@ -6414,6 +6313,857 @@
     };
   }
 
+  function initPartyCommandPanel() {
+    const start = () => {
+      installPartyCommandPanelStyle();
+      installPartyCommandHotkeys();
+      ensurePartyCommandPanelHost();
+      updatePartyCommandPanel();
+
+      if (!PARTY_COMMAND_STATE.timer) {
+        PARTY_COMMAND_STATE.timer = setInterval(updatePartyCommandPanel, PARTY_COMMAND_PANEL_REFRESH_MS);
+      }
+
+      pageWindow.addEventListener("resize", updatePartyCommandPanel);
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+      start();
+    }
+  }
+
+  function ensurePartyCommandPanelHost() {
+    if (PARTY_COMMAND_STATE.host && document.contains(PARTY_COMMAND_STATE.host)) {
+      return PARTY_COMMAND_STATE.host;
+    }
+
+    if (!document.body) return null;
+
+    const host = document.createElement("div");
+    host.id = "hordes-kr-party-command-panel";
+    document.body.appendChild(host);
+    PARTY_COMMAND_STATE.host = host;
+    PARTY_COMMAND_STATE.renderKey = "";
+    return host;
+  }
+
+  function updatePartyCommandPanel() {
+    const host = ensurePartyCommandPanelHost();
+    if (!host) return;
+
+    if (!PARTY_COMMAND_CONFIG.enabled) {
+      host.hidden = true;
+      PARTY_COMMAND_STATE.renderKey = "";
+      return;
+    }
+
+    host.hidden = false;
+    const rect = host.getBoundingClientRect();
+    const widthNumber = Math.max(PARTY_COMMAND_PANEL_DEFAULT_WIDTH, Math.round(rect.width || PARTY_COMMAND_PANEL_DEFAULT_WIDTH));
+    const heightNumber = Math.max(PARTY_COMMAND_PANEL_DEFAULT_HEIGHT, Math.round(rect.height || PARTY_COMMAND_PANEL_DEFAULT_HEIGHT));
+    const position = getPartyCommandPanelPosition(widthNumber, heightNumber);
+    applyPartyCommandPanelHostPosition(position.x, position.y);
+
+    const target = getPartyCommandTargetSummary();
+    const renderKey = [
+      position.x,
+      position.y,
+      PARTY_COMMAND_CONFIG.enabled ? 1 : 0,
+      PARTY_COMMAND_CONFIG.channel,
+      PARTY_COMMAND_STATE.channelMenuOpen ? 1 : 0,
+      PARTY_COMMAND_CONFIG.lastMessage,
+      PARTY_COMMAND_STATE.lastState,
+      PARTY_COMMAND_STATE.lastError,
+      PARTY_COMMAND_STATE.sentCount,
+      target.id,
+      target.name,
+    ].join("\u0002");
+
+    const active = document.activeElement;
+    if (PARTY_COMMAND_STATE.renderKey === renderKey || (active && host.contains(active) && isEditableChatInputElement(active))) return;
+    PARTY_COMMAND_STATE.renderKey = renderKey;
+
+    host.replaceChildren(createPartyCommandPanel(target));
+  }
+
+  function createPartyCommandPanel(target) {
+    const panel = document.createElement("div");
+    const header = document.createElement("div");
+    const title = document.createElement("span");
+    const controls = document.createElement("span");
+    const channel = createPartyCommandChannelControl();
+    const reset = createUiButton("hordes-kr-party-command-icon", "↺", "파티 채팅 패널 위치 리셋", () => {
+      resetPartyCommandPanelPosition();
+    });
+    const close = createUiButton("hordes-kr-party-command-icon", "×", "파티 채팅 패널 끄기", () => {
+      setPartyCommandPanelEnabled(false);
+    });
+    const quick = document.createElement("div");
+
+    panel.className = "hordes-kr-party-command-panel";
+    header.className = "hordes-kr-party-command-header";
+    title.className = "hordes-kr-party-command-title";
+    title.textContent = `${getHordesChatChannelLabel(PARTY_COMMAND_CONFIG.channel)} 오더`;
+
+    controls.className = "hordes-kr-party-command-controls";
+    controls.append(channel, reset, close);
+    header.append(title, controls);
+    installPartyCommandPanelDragHandle(header);
+
+    quick.className = "hordes-kr-party-command-quick";
+    for (const [label, message] of PARTY_COMMAND_QUICK_MESSAGES) {
+      quick.appendChild(createPartyCommandQuickButton(label, message, target));
+    }
+
+    panel.append(header, quick);
+    if (PARTY_COMMAND_STATE.lastError) {
+      const note = document.createElement("div");
+      note.className = "hordes-kr-party-command-note";
+      note.textContent = `오류: ${PARTY_COMMAND_STATE.lastError}`;
+      panel.appendChild(note);
+    }
+    installPartyCommandPanelEventGuards(panel);
+    return panel;
+  }
+
+  function createPartyCommandChannelControl() {
+    const wrap = document.createElement("span");
+    const menu = document.createElement("span");
+
+    wrap.className = "hordes-kr-party-command-channel";
+    const button = createUiButton(
+      "hordes-kr-party-command-icon hordes-kr-party-command-channel-btn",
+      "C",
+      `채팅 채널 선택: ${getHordesChatChannelLabel(PARTY_COMMAND_CONFIG.channel)}`,
+      () => {
+        PARTY_COMMAND_STATE.channelMenuOpen = !PARTY_COMMAND_STATE.channelMenuOpen;
+        PARTY_COMMAND_STATE.renderKey = "";
+        updatePartyCommandPanel();
+      }
+    );
+
+    menu.className = "hordes-kr-party-command-channel-menu";
+    menu.hidden = !PARTY_COMMAND_STATE.channelMenuOpen;
+    for (const [value, label] of PARTY_COMMAND_CHANNEL_OPTIONS) {
+      const option = createUiButton("hordes-kr-party-command-channel-option", label, "", () => {
+        setPartyCommandChannel(value);
+      });
+      option.classList.toggle("active", PARTY_COMMAND_CONFIG.channel === value);
+      menu.appendChild(option);
+    }
+
+    wrap.append(button, menu);
+    return wrap;
+  }
+
+  function createUiButton(className, text, title, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    if (className) button.className = className;
+    if (text !== undefined && text !== null) button.textContent = text;
+    if (title) button.title = title;
+    if (typeof onClick === "function") {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick(event);
+      });
+    }
+    return button;
+  }
+
+  function createUiElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = text;
+    return element;
+  }
+
+  function installWindowPointerDrag(handle, options) {
+    if (!handle || !options || typeof options.onMove !== "function") return;
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (options.getDrag && options.getDrag()) return;
+      if (event.button !== undefined && event.button !== 0) return;
+      if (typeof options.canStart === "function" && !options.canStart(event)) return;
+
+      const subject = typeof options.getSubject === "function" ? options.getSubject(event) : handle;
+      if (!subject || typeof subject.getBoundingClientRect !== "function") return;
+
+      const rect = subject.getBoundingClientRect();
+      const drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: rect.left,
+        originY: rect.top,
+        width: typeof options.getWidth === "function" ? options.getWidth(rect, subject) : rect.width,
+        height: typeof options.getHeight === "function" ? options.getHeight(rect, subject) : rect.height,
+      };
+
+      const moveHandler = (moveEvent) => {
+        const activeDrag = options.getDrag ? options.getDrag() : drag;
+        if (!activeDrag || moveEvent.pointerId !== activeDrag.pointerId) return;
+        options.onMove(moveEvent, activeDrag);
+      };
+      const endHandler = (endEvent) => {
+        const activeDrag = options.getDrag ? options.getDrag() : drag;
+        if (!activeDrag || endEvent.pointerId !== activeDrag.pointerId) return;
+
+        pageWindow.removeEventListener("pointermove", moveHandler, true);
+        pageWindow.removeEventListener("pointerup", endHandler, true);
+        pageWindow.removeEventListener("pointercancel", endHandler, true);
+        if (typeof options.setDrag === "function") options.setDrag(null);
+        if (typeof options.onEnd === "function") options.onEnd(endEvent, activeDrag);
+      };
+
+      if (typeof options.setDrag === "function") options.setDrag(drag);
+      if (typeof options.onStart === "function") options.onStart(event, drag);
+
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Window-level listeners keep dragging alive when pointer capture is unavailable.
+      }
+
+      pageWindow.addEventListener("pointermove", moveHandler, true);
+      pageWindow.addEventListener("pointerup", endHandler, true);
+      pageWindow.addEventListener("pointercancel", endHandler, true);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  function createPartyCommandQuickButton(label, message, target) {
+    const button = createUiButton("hordes-kr-party-command-btn", label, "", () => {
+      sendPartyCommandQuickMessage(message, target);
+    });
+    const hotkeyLabel = getPartyCommandQuickButtonHotkeyLabel(label, message);
+    const hotkeyTitle = hotkeyLabel ? ` / 단축키 ${hotkeyLabel}` : "";
+    if (label === "GGGGG") button.className += " wide";
+    if (message === null) {
+      button.className += " target";
+      button.disabled = !(target && target.name);
+      button.title = target && target.name
+        ? `${getHordesChatChannelLabel(PARTY_COMMAND_CONFIG.channel)}: ${target.name} IN 3 / id ${target.id || "unknown"}${hotkeyTitle}`
+        : `현재 선택된 타겟이 없습니다.${hotkeyTitle}`;
+    } else {
+      button.title = `${getHordesChatChannelLabel(PARTY_COMMAND_CONFIG.channel)}: ${message}${hotkeyTitle}`;
+    }
+    return button;
+  }
+
+  function getPartyCommandQuickButtonHotkeyLabel(label, message) {
+    if (message === null) return "Z";
+    return label === "GGGGG" ? "X" : "";
+  }
+
+  function sendPartyCommandQuickMessage(message, target) {
+    if (message === null) {
+      const selectedTarget = target || getPartyCommandTargetSummary();
+      if (!selectedTarget || !selectedTarget.name) return false;
+      sendPartyCommandFromPanel(`${selectedTarget.name} IN 3`);
+      return true;
+    }
+
+    sendPartyCommandFromPanel(message);
+    return true;
+  }
+
+  function sendPartyCommandFromPanel(message) {
+    pageWindow.HordesKrMod.sendPartyCommand(message).then(() => {
+      updatePartyCommandPanel();
+      renderStatusUi();
+    }).catch((error) => {
+      PARTY_COMMAND_STATE.lastState = "오류";
+      PARTY_COMMAND_STATE.lastError = error && error.message ? error.message : String(error);
+      updatePartyCommandPanel();
+      renderStatusUi();
+    });
+  }
+
+  function installPartyCommandHotkeys() {
+    if (PARTY_COMMAND_STATE.hotkeysInstalled) return;
+    PARTY_COMMAND_STATE.hotkeysInstalled = true;
+
+    const handler = (event) => {
+      if (shouldIgnorePartyCommandHotkey(event)) return;
+
+      let sent = false;
+      if (event.code === PARTY_COMMAND_TARGET_HOTKEY_CODE) {
+        sent = sendPartyCommandQuickMessage(null, getPartyCommandTargetSummary());
+      } else if (event.code === PARTY_COMMAND_GATHER_HOTKEY_CODE) {
+        sent = sendPartyCommandQuickMessage("GGGGG");
+      }
+
+      if (!sent) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+
+    pageWindow.addEventListener("keydown", handler, true);
+    document.addEventListener("keydown", handler, true);
+  }
+
+  function shouldIgnorePartyCommandHotkey(event) {
+    if (!PARTY_COMMAND_CONFIG.enabled) return true;
+    if (!event || event.defaultPrevented || event.repeat) return true;
+    if (TARGET_ORDER_STATE.hotkeyCaptureActive) return true;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return true;
+    if (event.code !== PARTY_COMMAND_TARGET_HOTKEY_CODE && event.code !== PARTY_COMMAND_GATHER_HOTKEY_CODE) return true;
+    return isPartyCommandEditableEvent(event) || isStatusUiKeyboardEvent(event);
+  }
+
+  function isPartyCommandEditableEvent(event) {
+    const active = document.activeElement;
+    if (isEditableTargetOrderElement(active)) return true;
+
+    if (typeof event.composedPath === "function") {
+      return event.composedPath().some((element) => isEditableTargetOrderElement(element));
+    }
+
+    return isEditableTargetOrderElement(event.target);
+  }
+
+  function setPartyCommandPanelEnabled(enabled) {
+    PARTY_COMMAND_CONFIG.enabled = Boolean(enabled);
+    savePartyCommandConfig();
+    PARTY_COMMAND_STATE.renderKey = "";
+    updatePartyCommandPanel();
+    renderStatusUi();
+    return getPartyCommandPanelStatus();
+  }
+
+  function resetPartyCommandPanelPosition() {
+    PARTY_COMMAND_CONFIG.x = null;
+    PARTY_COMMAND_CONFIG.y = null;
+    PARTY_COMMAND_STATE.channelMenuOpen = false;
+    savePartyCommandConfig();
+    PARTY_COMMAND_STATE.renderKey = "";
+    updatePartyCommandPanel();
+    return getPartyCommandPanelStatus();
+  }
+
+  function setPartyCommandChannel(channel) {
+    PARTY_COMMAND_CONFIG.channel = normalizeHordesChatChannel(channel || "clan");
+    PARTY_COMMAND_STATE.channelMenuOpen = false;
+    PARTY_COMMAND_STATE.renderKey = "";
+    savePartyCommandConfig();
+    updatePartyCommandPanel();
+    renderStatusUi();
+    return getPartyCommandPanelStatus();
+  }
+
+  async function sendPartyChatCommand(message) {
+    const normalized = normalizePartyChatCommand(message, PARTY_COMMAND_CONFIG.channel);
+    if (!normalized.ok) {
+      PARTY_COMMAND_STATE.lastState = "전송 실패";
+      PARTY_COMMAND_STATE.lastError = normalized.reason;
+      return normalized;
+    }
+
+    PARTY_COMMAND_CONFIG.lastMessage = normalized.body;
+    PARTY_COMMAND_CONFIG.channel = normalized.channel;
+    savePartyCommandConfig();
+    let result;
+    try {
+      sendHordesChatMessage(normalized.channel, normalized.body);
+      result = {
+        ok: true,
+        method: "websocket",
+        reason: "",
+      };
+    } catch (error) {
+      result = await sendGameChatText(normalized.commandText, { submit: true });
+      result.method = result.method || "chat-input";
+      if (!result.ok && error) {
+        result.reason = result.reason || (error && error.message ? error.message : String(error));
+      }
+    }
+    PARTY_COMMAND_STATE.lastText = normalized.body;
+    PARTY_COMMAND_STATE.lastSentAt = result.ok ? new Date() : PARTY_COMMAND_STATE.lastSentAt;
+    PARTY_COMMAND_STATE.sentCount += result.ok ? 1 : 0;
+    PARTY_COMMAND_STATE.lastState = result.ok ? "전송됨" : "전송 실패";
+    PARTY_COMMAND_STATE.lastError = result.ok ? "" : result.reason || "게임 채팅 전송 실패";
+    return {
+      ...result,
+      body: normalized.body,
+      channel: normalized.channel,
+      commandText: normalized.commandText,
+      state: PARTY_COMMAND_STATE.lastState,
+    };
+  }
+
+  function normalizePartyChatCommand(message, channel) {
+    const normalizedChannel = normalizeHordesChatChannel(channel || "clan");
+    let body = String(message || "").replace(/\s+/g, " ").trim();
+    body = body.replace(/^\/(?:party|p|clan|c|faction|f|yell|y|global)\s+/i, "").trim();
+    if (!body) return { ok: false, reason: `${getHordesChatChannelLabel(normalizedChannel)} 메시지가 비어 있습니다.` };
+    if (body.length > 120) body = body.slice(0, 120).trim();
+    return {
+      ok: true,
+      channel: normalizedChannel,
+      body,
+      commandText: `/${normalizedChannel} ${body}`,
+    };
+  }
+
+  function normalizeHordesChatChannel(channel) {
+    const normalized = String(channel || "").replace(/^\//, "").trim().toLowerCase();
+    const mapped = HORDES_CHAT_CHANNEL_ALIASES[normalized] || normalized;
+    return HORDES_CHAT_CHANNELS.has(mapped) ? mapped : "clan";
+  }
+
+  function getHordesChatChannelLabel(channel) {
+    const normalized = normalizeHordesChatChannel(channel);
+    if (normalized === "clan") return "클랜";
+    if (normalized === "party") return "파티";
+    if (normalized === "faction") return "진영";
+    if (normalized === "yell") return "외침";
+    if (normalized === "global") return "전체";
+    return normalized;
+  }
+
+  async function sendGameChatText(text, options = {}) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return { ok: false, reason: "전송할 채팅이 비어 있습니다." };
+
+    const input = await findOrOpenGameChatInputElement();
+    if (!input) {
+      return {
+        ok: false,
+        reason: "게임 채팅 입력칸을 찾지 못했습니다. 채팅창을 한 번 열고 다시 시도하세요.",
+      };
+    }
+
+    setEditableElementValue(input, normalized);
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      try {
+        input.focus();
+      } catch {}
+    }
+
+    const submitted = options.submit !== false ? dispatchGameChatSubmit(input) : false;
+    return {
+      ok: true,
+      submitted,
+      element: describeChatInputElement(input),
+      text: normalized,
+    };
+  }
+
+  async function findOrOpenGameChatInputElement() {
+    let input = findGameChatInputElement();
+    if (input) return input;
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      dispatchGameChatOpenKey();
+      await delay(60);
+      input = findGameChatInputElement();
+      if (input) return input;
+    }
+
+    return null;
+  }
+
+  function dispatchGameChatOpenKey() {
+    const target = getRuntimeInputCanvas(getExposedRuntime()) || document.body || document.documentElement || document;
+    dispatchKeyboardSequence(target, "Enter");
+  }
+
+  function dispatchGameChatSubmit(input) {
+    let dispatched = 0;
+    const targets = [input, document, pageWindow].filter(Boolean);
+    for (const target of targets) {
+      dispatched += dispatchKeyboardSequence(target, "Enter");
+    }
+
+    const form = input && (input.form || input.closest && input.closest("form"));
+    if (form) {
+      try {
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        dispatched += 1;
+      } catch {
+        // Form submit is best-effort; Hordes normally handles Enter.
+      }
+    }
+
+    return dispatched > 0;
+  }
+
+  function dispatchKeyboardSequence(target, key) {
+    if (!target || typeof target.dispatchEvent !== "function") return 0;
+
+    let count = 0;
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      const event = createKeyboardEvent(type, key);
+      target.dispatchEvent(event);
+      count++;
+    }
+    return count;
+  }
+
+  function createKeyboardEvent(type, key) {
+    const code = key === "Enter" ? "Enter" : key;
+    const event = new KeyboardEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      key,
+      code,
+      which: key === "Enter" ? 13 : 0,
+      keyCode: key === "Enter" ? 13 : 0,
+      charCode: type === "keypress" && key === "Enter" ? 13 : 0,
+    });
+
+    for (const [property, value] of Object.entries({
+      keyCode: key === "Enter" ? 13 : 0,
+      which: key === "Enter" ? 13 : 0,
+      charCode: type === "keypress" && key === "Enter" ? 13 : 0,
+    })) {
+      try {
+        Object.defineProperty(event, property, {
+          configurable: true,
+          get() {
+            return value;
+          },
+        });
+      } catch {
+        // Browser-native KeyboardEvent fields may be non-configurable.
+      }
+    }
+
+    return event;
+  }
+
+  function getPartyCommandTargetSummary() {
+    const selected = getSelectedTargetIdStatus();
+    if (selected && selected.id) {
+      return {
+        id: selected.id,
+        name: selected.name || selected.id,
+        source: selected.source || "",
+      };
+    }
+
+    const distance = getTargetDistance(false);
+    if (distance && distance.available && distance.target) {
+      return {
+        id: distance.target.id || "",
+        name: distance.target.name || "",
+        source: distance.target.referenceSource || "",
+      };
+    }
+
+    return { id: "", name: "", source: "" };
+  }
+
+  function getPartyCommandPanelStatus() {
+    const host = PARTY_COMMAND_STATE.host;
+    const rect = host && document.contains(host) ? host.getBoundingClientRect() : null;
+    return {
+      enabled: PARTY_COMMAND_CONFIG.enabled,
+      channel: PARTY_COMMAND_CONFIG.channel,
+      position: Number.isFinite(PARTY_COMMAND_CONFIG.x) && Number.isFinite(PARTY_COMMAND_CONFIG.y)
+        ? { mode: "custom", x: PARTY_COMMAND_CONFIG.x, y: PARTY_COMMAND_CONFIG.y }
+        : { mode: "default" },
+      host: Boolean(host && document.contains(host)),
+      rect: rect
+        ? {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          }
+        : null,
+      lastState: PARTY_COMMAND_STATE.lastState,
+      lastError: PARTY_COMMAND_STATE.lastError,
+      lastText: PARTY_COMMAND_STATE.lastText,
+      hotkeys: {
+        target: "Z",
+        gather: "X",
+        installed: PARTY_COMMAND_STATE.hotkeysInstalled,
+      },
+      sentCount: PARTY_COMMAND_STATE.sentCount,
+      lastSentAt: PARTY_COMMAND_STATE.lastSentAt,
+    };
+  }
+
+  function getPartyCommandPanelPosition(widthNumber, heightNumber) {
+    if (Number.isFinite(PARTY_COMMAND_CONFIG.x) && Number.isFinite(PARTY_COMMAND_CONFIG.y)) {
+      return clampPartyCommandPanelPosition(PARTY_COMMAND_CONFIG.x, PARTY_COMMAND_CONFIG.y, widthNumber, heightNumber);
+    }
+
+    return getDefaultPartyCommandPanelPosition(widthNumber, heightNumber);
+  }
+
+  function getDefaultPartyCommandPanelPosition(widthNumber, heightNumber) {
+    const targetFrame = getPartyCommandTargetFrameRect();
+    if (targetFrame) {
+      return clampPartyCommandPanelPosition(targetFrame.right + 8, targetFrame.top, widthNumber, heightNumber);
+    }
+
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    return clampPartyCommandPanelPosition(
+      Math.round(viewportWidth * 0.5 + 300),
+      Math.max(70, viewportHeight - heightNumber - 126),
+      widthNumber,
+      heightNumber
+    );
+  }
+
+  function getPartyCommandTargetFrameRect() {
+    return getVisibleElementRect(document.getElementById("uftarget"))
+      || getVisibleElementRect(document.querySelector(".targetframes #uftarget"))
+      || getVisibleElementRect(document.querySelector(".targetframes .grid.right"))
+      || getVisibleElementRect(document.querySelector(".targetframes"));
+  }
+
+  function clampPartyCommandPanelPosition(x, y, widthNumber, heightNumber) {
+    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    const maxX = Math.max(4, viewportWidth - Math.max(120, Number(widthNumber) || PARTY_COMMAND_PANEL_DEFAULT_WIDTH) - 4);
+    const maxY = Math.max(4, viewportHeight - Math.max(80, Number(heightNumber) || PARTY_COMMAND_PANEL_DEFAULT_HEIGHT) - 4);
+    return {
+      x: Math.round(clamp(Number(x) || 4, 4, maxX)),
+      y: Math.round(clamp(Number(y) || 4, 4, maxY)),
+    };
+  }
+
+  function applyPartyCommandPanelHostPosition(x, y) {
+    const host = PARTY_COMMAND_STATE.host;
+    if (!host) return;
+
+    const left = `${Math.round(x)}px`;
+    const top = `${Math.round(y)}px`;
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
+  }
+
+  function installPartyCommandPanelDragHandle(handle) {
+    installWindowPointerDrag(handle, {
+      getDrag: () => PARTY_COMMAND_STATE.dragging,
+      setDrag: (drag) => {
+        PARTY_COMMAND_STATE.dragging = drag;
+      },
+      getSubject: () => PARTY_COMMAND_STATE.host,
+      canStart: (event) => !(event.target && event.target.closest && event.target.closest("button, input, textarea, select, a")),
+      getWidth: (rect) => Math.max(PARTY_COMMAND_PANEL_DEFAULT_WIDTH, Math.round(rect.width || PARTY_COMMAND_PANEL_DEFAULT_WIDTH)),
+      getHeight: (rect) => Math.max(PARTY_COMMAND_PANEL_DEFAULT_HEIGHT, Math.round(rect.height || PARTY_COMMAND_PANEL_DEFAULT_HEIGHT)),
+      onStart: () => {
+        const host = PARTY_COMMAND_STATE.host;
+        if (host) host.dataset.hordesKrDragging = "true";
+      },
+      onMove: handlePartyCommandPanelDragMove,
+      onEnd: handlePartyCommandPanelDragEnd,
+    });
+  }
+
+  function handlePartyCommandPanelDragMove(event) {
+    const drag = PARTY_COMMAND_STATE.dragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    const position = clampPartyCommandPanelPosition(
+      drag.originX + event.clientX - drag.startX,
+      drag.originY + event.clientY - drag.startY,
+      drag.width,
+      drag.height
+    );
+    PARTY_COMMAND_CONFIG.x = position.x;
+    PARTY_COMMAND_CONFIG.y = position.y;
+    PARTY_COMMAND_STATE.renderKey = "";
+    applyPartyCommandPanelHostPosition(position.x, position.y);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handlePartyCommandPanelDragEnd(event, endedDrag) {
+    const drag = endedDrag || PARTY_COMMAND_STATE.dragging;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!endedDrag) PARTY_COMMAND_STATE.dragging = null;
+
+    const host = PARTY_COMMAND_STATE.host;
+    if (host) delete host.dataset.hordesKrDragging;
+    savePartyCommandConfig();
+    PARTY_COMMAND_STATE.renderKey = "";
+    updatePartyCommandPanel();
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function installPartyCommandPanelEventGuards(panel) {
+    installBasicUiEventGuards(panel.querySelectorAll("button"));
+  }
+
+  function installBasicUiEventGuards(elements) {
+    elements.forEach((element) => {
+      UI_CONTROL_POINTER_EVENTS.forEach((type) => {
+        element.addEventListener(type, stopUiEventPropagation);
+      });
+      STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
+        element.addEventListener(type, stopUiEventPropagation);
+      });
+    });
+  }
+
+  function stopUiEventPropagation(event) {
+    event.stopPropagation();
+  }
+
+  function installPartyCommandPanelStyle() {
+    if (document.getElementById("hordes-kr-party-command-panel-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "hordes-kr-party-command-panel-style";
+    style.textContent = `
+      #hordes-kr-party-command-panel {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        width: ${PARTY_COMMAND_PANEL_DEFAULT_WIDTH}px !important;
+        pointer-events: auto !important;
+        font-family: Arial, Helvetica, sans-serif !important;
+        color: #dff8f5 !important;
+        touch-action: none !important;
+      }
+      #hordes-kr-party-command-panel[hidden] {
+        display: none !important;
+      }
+      .hordes-kr-party-command-panel {
+        display: grid !important;
+        gap: 5px !important;
+        border: 1px solid rgba(166, 220, 213, 0.34) !important;
+        border-radius: 6px !important;
+        background: rgba(16, 19, 29, 0.9) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38) !important;
+        padding: 6px !important;
+        box-sizing: border-box !important;
+        font: 900 11px/1.15 Arial, Helvetica, sans-serif !important;
+      }
+      #hordes-kr-party-command-panel[data-hordes-kr-dragging="true"] .hordes-kr-party-command-panel {
+        border-color: rgba(245, 194, 71, 0.82) !important;
+      }
+      .hordes-kr-party-command-header {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 6px !important;
+        color: #a6dcd5 !important;
+        font-weight: 1000 !important;
+        cursor: move !important;
+        user-select: none !important;
+        touch-action: none !important;
+        padding-bottom: 4px !important;
+        border-bottom: 1px solid rgba(166, 220, 213, 0.16) !important;
+      }
+      .hordes-kr-party-command-controls {
+        display: inline-flex !important;
+        gap: 3px !important;
+        cursor: default !important;
+      }
+      .hordes-kr-party-command-icon,
+      .hordes-kr-party-command-btn,
+      .hordes-kr-party-command-channel-option {
+        border: 1px solid rgba(166, 220, 213, 0.28) !important;
+        border-radius: 4px !important;
+        background: rgba(35, 41, 55, 0.88) !important;
+        color: #dff8f5 !important;
+        font: inherit !important;
+        font-weight: 1000 !important;
+        line-height: 1 !important;
+        cursor: pointer !important;
+        padding: 0 !important;
+        box-sizing: border-box !important;
+      }
+      .hordes-kr-party-command-icon {
+        width: 18px !important;
+        height: 18px !important;
+      }
+      .hordes-kr-party-command-channel {
+        position: relative !important;
+        display: inline-flex !important;
+      }
+      .hordes-kr-party-command-channel-btn {
+        color: #9ee8ff !important;
+        border-color: rgba(116, 184, 255, 0.45) !important;
+      }
+      .hordes-kr-party-command-channel-menu {
+        position: absolute !important;
+        top: 21px !important;
+        right: 0 !important;
+        z-index: 2147483647 !important;
+        display: grid !important;
+        gap: 3px !important;
+        min-width: 72px !important;
+        padding: 4px !important;
+        border: 1px solid rgba(166, 220, 213, 0.34) !important;
+        border-radius: 5px !important;
+        background: rgba(16, 19, 29, 0.96) !important;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.38) !important;
+      }
+      .hordes-kr-party-command-channel-menu[hidden] {
+        display: none !important;
+      }
+      .hordes-kr-party-command-channel-option {
+        height: 20px !important;
+        padding: 0 6px !important;
+        text-align: left !important;
+        white-space: nowrap !important;
+        color: #dff8f5 !important;
+      }
+      .hordes-kr-party-command-channel-option.active {
+        color: #10131d !important;
+        border-color: rgba(245, 194, 71, 0.85) !important;
+        background: rgba(245, 194, 71, 0.9) !important;
+      }
+      .hordes-kr-party-command-quick {
+        display: grid !important;
+        grid-template-columns: repeat(3, 1fr) !important;
+        gap: 4px !important;
+      }
+      .hordes-kr-party-command-btn {
+        min-width: 0 !important;
+        height: 24px !important;
+        color: #f5c247 !important;
+      }
+      .hordes-kr-party-command-btn.wide {
+        grid-column: 1 / -1 !important;
+        height: 30px !important;
+      }
+      .hordes-kr-party-command-btn.target {
+        color: #bfe3ff !important;
+        border-color: rgba(116, 184, 255, 0.42) !important;
+        background: rgba(28, 58, 96, 0.78) !important;
+      }
+      .hordes-kr-party-command-btn:disabled {
+        color: rgba(166, 220, 213, 0.46) !important;
+        border-color: rgba(166, 220, 213, 0.16) !important;
+        background: rgba(35, 41, 55, 0.62) !important;
+        cursor: default !important;
+      }
+      .hordes-kr-party-command-icon:hover,
+      .hordes-kr-party-command-btn:hover,
+      .hordes-kr-party-command-channel-option:hover {
+        border-color: rgba(245, 194, 71, 0.9) !important;
+        color: #fff3b0 !important;
+      }
+      .hordes-kr-party-command-note {
+        min-height: 13px !important;
+        color: #8ea6aa !important;
+        font-size: 10px !important;
+        line-height: 1.2 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
   function installPartyUiStyle() {
     if (document.getElementById("hordes-kr-party-ui-style")) return;
 
@@ -6804,7 +7554,7 @@
     const text = normalizeText(element.innerText || element.textContent || "").toLowerCase();
     if (!text) return false;
     const hasPlayerAction = /whisper|message|invite|inspect|block|report|귓속말|귓말|초대|차단|신고|살펴보기|정보/.test(text);
-    const hasTooMuchUi = /hordes kr mod|채팅번역|거래소감시|프리셋/.test(text);
+    const hasTooMuchUi = /hordes kr mod|채팅번역|프리셋/.test(text);
     return hasPlayerAction && !hasTooMuchUi;
   }
 
@@ -7105,22 +7855,30 @@
   }
 
   function getHighlightNameCache() {
-    const names = uniqueHighlightNames(HIGHLIGHT_CONFIG.names).sort((a, b) => b.length - a.length);
-    const key = names.join("\u0001");
+    if (HIGHLIGHT_NAME_CACHE.source === HIGHLIGHT_CONFIG.names && HIGHLIGHT_NAME_CACHE.key) {
+      return HIGHLIGHT_NAME_CACHE;
+    }
+
+    const key = HIGHLIGHT_CONFIG.names.join("\u0001");
     if (HIGHLIGHT_NAME_CACHE.key === key) return HIGHLIGHT_NAME_CACHE;
 
+    const names = HIGHLIGHT_CONFIG.names.slice().sort((a, b) => b.length - a.length);
     HIGHLIGHT_NAME_CACHE.key = key;
+    HIGHLIGHT_NAME_CACHE.source = HIGHLIGHT_CONFIG.names;
     HIGHLIGHT_NAME_CACHE.names = names;
     HIGHLIGHT_NAME_CACHE.lowerNames = names.map((name) => name.toLowerCase());
     HIGHLIGHT_NAME_CACHE.matcherSource = names.map(escapeRegExp).join("|");
+    HIGHLIGHT_NAME_CACHE.matchCache.clear();
     return HIGHLIGHT_NAME_CACHE;
   }
 
   function invalidateHighlightNameCache() {
     HIGHLIGHT_NAME_CACHE.key = "";
+    HIGHLIGHT_NAME_CACHE.source = null;
     HIGHLIGHT_NAME_CACHE.names = [];
     HIGHLIGHT_NAME_CACHE.lowerNames = [];
     HIGHLIGHT_NAME_CACHE.matcherSource = "";
+    HIGHLIGHT_NAME_CACHE.matchCache.clear();
   }
 
   function saveHighlightConfig() {
@@ -7371,28 +8129,6 @@
     return getCanvasHighlightDisplayText(rawText);
   }
 
-  function drawCanvasImageAt(ctx, args, originalDrawImage, dest) {
-    if (!dest) return originalDrawImage.apply(ctx, args);
-
-    const nextArgs = Array.prototype.slice.call(args);
-    if (nextArgs.length >= 9) {
-      nextArgs[5] = dest.x;
-      nextArgs[6] = dest.y;
-      nextArgs[7] = dest.width;
-      nextArgs[8] = dest.height;
-    } else if (nextArgs.length >= 5) {
-      nextArgs[1] = dest.x;
-      nextArgs[2] = dest.y;
-      nextArgs[3] = dest.width;
-      nextArgs[4] = dest.height;
-    } else {
-      nextArgs[1] = dest.x;
-      nextArgs[2] = dest.y;
-    }
-
-    return originalDrawImage.apply(ctx, nextArgs);
-  }
-
   function drawCanvasTargetDistanceOverlay(ctx, imageText, dest, originalFillText, originalStrokeText) {
     if (!dest || HIGHLIGHT_STATE.canvasInternalDraw || typeof originalFillText !== "function") return false;
     if (!isTargetDistanceEnabled()) return false;
@@ -7522,12 +8258,6 @@
       x: (x - rect.left) * (width / rect.width),
       y: (y - rect.top) * (height / rect.height),
     };
-  }
-
-  function getHighlighterTime() {
-    return pageWindow.performance && pageWindow.performance.now
-      ? pageWindow.performance.now()
-      : Date.now();
   }
 
   function getDrawImageDestination(args) {
@@ -7699,12 +8429,24 @@
     const haystack = String(text || "").toLowerCase();
     if (!haystack) return "";
 
-    const { names, lowerNames } = getHighlightNameCache();
-    for (let index = 0; index < lowerNames.length; index++) {
-      if (haystack.includes(lowerNames[index])) return names[index];
+    const { names, lowerNames, matchCache } = getHighlightNameCache();
+    if (matchCache.has(haystack)) {
+      return matchCache.get(haystack);
     }
 
-    return "";
+    let matchedName = "";
+    for (let index = 0; index < lowerNames.length; index++) {
+      if (haystack.includes(lowerNames[index])) {
+        matchedName = names[index];
+        break;
+      }
+    }
+
+    matchCache.set(haystack, matchedName);
+    if (matchCache.size > HIGHLIGHT_MATCH_CACHE_MAX) {
+      matchCache.delete(matchCache.keys().next().value);
+    }
+    return matchedName;
   }
 
   function getFeatureStatus() {
@@ -7722,7 +8464,6 @@
       targetDistance: isTargetDistanceEnabled(),
       chatTranslation: getChatTranslationStatus(),
       partyUi: getPartyUiStatus(),
-      auctionWatch: getAuctionWatchStatus(),
       advanced: {
         domTranslation: isDomTranslationEnabled(),
         domHighlight: HIGHLIGHT_CONFIG.domEnabled,
@@ -7745,7 +8486,7 @@
       targetDistanceEnabled: FEATURE_CONFIG.targetDistanceEnabled,
       incomingSkillOverlayEnabled: FEATURE_CONFIG.incomingSkillOverlayEnabled,
       incomingTargetWatchEnabled: FEATURE_CONFIG.incomingTargetWatchEnabled,
-      incomingSkillListEnabled: FEATURE_CONFIG.incomingSkillListEnabled,
+      incomingSkillListEnabled: false,
       domTranslationEnabled: FEATURE_CONFIG.domTranslationEnabled,
       hideClanNames: HIGHLIGHT_CONFIG.hideClanNames,
       names: [...HIGHLIGHT_CONFIG.names],
@@ -8374,37 +9115,6 @@
       "try{__hkrRuntime.debug.skillRuntimeStores={active:typeof Hs,learned:typeof Jc,configs:typeof Ea}}catch(__hkrError){}",
       "}catch(o){try{var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"skillRuntime:\"+((o&&o.message)||o))}catch(i){}}",
     ].join("");
-    const exposeClientAuctionRuntime = [
-      "try{",
-      "var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};",
-      "var __hkrGroupOf=function(__hkrItem){try{var __hkrId=String(__hkrItem&&__hkrItem.dbid);if(n.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"self\";if(o.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"other\";if(i.some(function(__hkrX){return String(__hkrX&&__hkrX.dbid)===__hkrId}))return\"nonOrAcc\";}catch(__hkrError){}return\"unknown\"};",
-      "var __hkrSummarize=function(__hkrItem,__hkrRaw){",
-      "var __hkrStats=[];",
-      "try{__hkrItem.stats&&__hkrItem.stats.forEach(function(__hkrStat,__hkrId){__hkrStats.push({id:Number(__hkrId),type:String(__hkrStat&&__hkrStat.type||\"\"),value:Number(__hkrStat&&__hkrStat.value),qual:Number(__hkrStat&&__hkrStat.qual)})})}catch(__hkrError){}",
-      "return {dbid:String(__hkrItem.dbid),id:String(__hkrRaw&&__hkrRaw.id||__hkrItem.dbid),type:String(__hkrItem.type||__hkrRaw&&__hkrRaw.type||\"\"),tier:Number(__hkrItem.tier),upgrade:Number(__hkrItem.upgrade||0),quality:Number(__hkrItem.quality||0),gearScore:Number(__hkrItem.gs||0),stacks:Number(__hkrItem.stacks||0),bound:Number(__hkrItem.bound||0),owner:String(__hkrItem.owner||__hkrRaw&&__hkrRaw.name||\"\"),auction:String(__hkrItem.auction||__hkrRaw&&__hkrRaw.auction||\"\"),auctionprice:Number(__hkrItem.auctionprice||__hkrRaw&&__hkrRaw.auctionprice||0),group:__hkrGroupOf(__hkrItem),stats:__hkrStats,rawRolls:__hkrRaw&&__hkrRaw.rolls?__hkrRaw.rolls.slice?__hkrRaw.rolls.slice(0):__hkrRaw.rolls:null};",
-      "};",
-      "var __hkrSelf=n.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
-      "var __hkrOther=o.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
-      "var __hkrNonOrAcc=i.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
-      "var __hkrAll=s.map(function(__hkrX){return String(__hkrX&&__hkrX.dbid)});",
-      "__hkrRuntime.lastAuctionFind={at:Date.now(),gold:t[1],self:__hkrSelf,other:__hkrOther,nonOrAcc:__hkrNonOrAcc,all:__hkrAll};",
-      "__hkrRuntime.hookHits=__hkrRuntime.hookHits||{};",
-      "__hkrRuntime.hookHits.auctionFind=(__hkrRuntime.hookHits.auctionFind||0)+1;",
-      "if(window.__HORDES_KR_AUCTION_WATCH_ACTIVE__===true&&__hkrAll.length){",
-      "var __hkrRequestAt=Date.now();",
-      "fetch(\"/api/item/getAuction\",{method:\"POST\",body:JSON.stringify({ids:__hkrAll})}).then(async function(__hkrResponse){",
-      "var __hkrJson=await __hkrResponse.json();",
-      "if(__hkrJson===\"error\"||__hkrResponse.ok===false)throw new Error(\"auction detail request failed\");",
-      "var __hkrItems=[];",
-      "__hkrAll.forEach(function(__hkrId){try{var __hkrRaw=__hkrJson.find(function(__hkrCandidate){return String(__hkrCandidate.id)===String(__hkrId)});if(!__hkrRaw)return;var __hkrItem=new Ai(__hkrId);__hkrItem.hydrate(__hkrRaw);__hkrItems.push(__hkrSummarize(__hkrItem,__hkrRaw));}catch(__hkrError){try{__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionHydrateItem:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}}});",
-      "__hkrRuntime.lastAuctionItems={at:Date.now(),requestAt:__hkrRequestAt,gold:t[1],ids:__hkrAll,items:__hkrItems};",
-      "__hkrRuntime.hookHits.auctionHydrate=(__hkrRuntime.hookHits.auctionHydrate||0)+1;",
-      "}).catch(function(__hkrError){try{__hkrRuntime.lastAuctionError={at:Date.now(),message:(__hkrError&&__hkrError.message)||String(__hkrError)};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionHydrate:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}});",
-      "}",
-      "else if(window.__HORDES_KR_AUCTION_WATCH_ACTIVE__===true){__hkrRuntime.lastAuctionItems={at:Date.now(),requestAt:Date.now(),gold:t[1],ids:__hkrAll,items:[]};}",
-      "}catch(__hkrError){try{var __hkrRuntime=window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"auctionRuntime:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrIgnored){}}",
-    ].join("");
-
     patched = replaceClientSourceOnce(
       patched,
       "(()=>{",
@@ -8525,14 +9235,6 @@
       "client-skill-runtime"
     );
 
-    patched = replaceClientSourceOnce(
-      patched,
-      "Em.set({self:n,other:o,nonOrAcc:i,all:s}),t[0]&&wt(107),Ro.set({gold:t[1]})",
-      `${exposeClientAuctionRuntime}Em.set({self:n,other:o,nonOrAcc:i,all:s}),t[0]&&wt(107),Ro.set({gold:t[1]})`,
-      patches,
-      "client-auction-runtime"
-    );
-
     if (patches.length > 0) {
       patched += `\n;try{window.__HORDES_KR_RUNTIME__=window.__HORDES_KR_RUNTIME__||{};window.__HORDES_KR_RUNTIME__.patchedBy="Hordes KR Mod";window.__HORDES_KR_RUNTIME__.patchedVersion=${JSON.stringify(MOD_VERSION)};window.__HORDES_KR_RUNTIME__.patchedSource=${JSON.stringify(shortScriptUrl(url))};}catch(o){}\n`;
     }
@@ -8597,7 +9299,6 @@
     installRuntimeNameOverlayStyle();
     ensureRuntimeNameOverlayHost();
     ensureTargetDistanceOverlayHost();
-    ensureIncomingSkillListHost();
     ensureMinimapNameOverlayHost();
     ensurePresetQuickBarHost();
 
@@ -8616,6 +9317,7 @@
     const style = document.createElement("style");
     style.id = "hordes-kr-runtime-name-style";
     style.textContent = `
+      /* Overlay roots */
       #hordes-kr-runtime-name-overlay {
         position: fixed !important;
         left: 0 !important;
@@ -8636,14 +9338,7 @@
         z-index: 2147483647 !important;
         overflow: visible !important;
       }
-      #hordes-kr-incoming-skill-list {
-        position: fixed !important;
-        z-index: 2147483647 !important;
-        pointer-events: none !important;
-        font-family: Arial, Helvetica, sans-serif !important;
-        color: #ffd2d2 !important;
-        overflow: visible !important;
-      }
+      /* Center progress toast */
       #hordes-kr-gear-preset-progress-overlay {
         position: fixed !important;
         left: 50% !important;
@@ -8692,6 +9387,7 @@
         color: #ffd2d2 !important;
         box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 0 14px rgba(244, 41, 41, 0.34) !important;
       }
+      /* Minimap and preset overlay hosts */
       #hordes-kr-minimap-name-overlay {
         position: fixed !important;
         left: 0 !important;
@@ -8742,6 +9438,7 @@
         filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) !important;
         will-change: left, top !important;
       }
+      /* Runtime name labels */
       .hordes-kr-runtime-name-label {
         position: fixed !important;
         transform: translate(-50%, -100%) !important;
@@ -8834,102 +9531,7 @@
       .hordes-kr-runtime-name-label.incoming-watch .distance {
         color: #fff3b0 !important;
       }
-      .hordes-kr-incoming-skill-list-panel {
-        width: 100% !important;
-        max-height: var(--hordes-kr-incoming-skill-list-max-height, 156px) !important;
-        overflow: hidden !important;
-        display: grid !important;
-        gap: 3px !important;
-        border: 1px solid rgba(244, 41, 41, 0.58) !important;
-        border-radius: 6px !important;
-        background: rgba(16, 19, 29, 0.88) !important;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42), 0 0 12px rgba(244, 41, 41, 0.22) !important;
-        padding: 5px !important;
-        box-sizing: border-box !important;
-      }
-      .hordes-kr-incoming-skill-list-title {
-        display: flex !important;
-        align-items: center !important;
-        justify-content: space-between !important;
-        gap: 6px !important;
-        color: #ffb0a8 !important;
-        font-size: 10px !important;
-        line-height: 1 !important;
-        font-weight: 1000 !important;
-        letter-spacing: 0 !important;
-        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.92) !important;
-        padding: 0 1px 3px !important;
-        border-bottom: 1px solid rgba(244, 41, 41, 0.22) !important;
-      }
-      .hordes-kr-incoming-skill-list-count {
-        color: #ffffff !important;
-      }
-      .hordes-kr-incoming-skill-list-row {
-        min-width: 0 !important;
-        display: grid !important;
-        grid-template-columns: 30px minmax(0, 1fr) auto !important;
-        align-items: center !important;
-        gap: 5px !important;
-        border: 1px solid rgba(244, 41, 41, 0.24) !important;
-        border-radius: 4px !important;
-        background: rgba(91, 28, 28, 0.76) !important;
-        color: #ffffff !important;
-        min-height: 25px !important;
-        padding: 3px 5px !important;
-        box-sizing: border-box !important;
-        font-size: 12px !important;
-        line-height: 1.1 !important;
-        font-weight: 1000 !important;
-        letter-spacing: 0 !important;
-        text-shadow:
-          1px 0 0 rgba(8, 0, 0, 0.98),
-          -1px 0 0 rgba(8, 0, 0, 0.98),
-          0 1px 0 rgba(8, 0, 0, 0.98),
-          0 -1px 0 rgba(8, 0, 0, 0.98),
-          0 2px 3px rgba(0, 0, 0, 0.9) !important;
-      }
-      .hordes-kr-incoming-skill-list-row.watch {
-        border-color: rgba(245, 194, 71, 0.34) !important;
-        background: rgba(84, 72, 30, 0.78) !important;
-      }
-      .hordes-kr-incoming-skill-list-row .skill-icon {
-        width: 18px !important;
-        height: 18px !important;
-        min-width: 18px !important;
-        object-fit: contain !important;
-        image-rendering: auto !important;
-        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9)) !important;
-      }
-      .hordes-kr-incoming-skill-list-row .skill-icon[hidden] {
-        display: none !important;
-      }
-      .hordes-kr-incoming-skill-list-row .watch-badge {
-        min-width: 28px !important;
-        height: 17px !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        border: 1px solid rgba(245, 194, 71, 0.66) !important;
-        border-radius: 4px !important;
-        background: rgba(35, 41, 55, 0.86) !important;
-        color: #f5c247 !important;
-        font-size: 10px !important;
-        line-height: 1 !important;
-        font-weight: 1000 !important;
-        text-shadow: none !important;
-      }
-      .hordes-kr-incoming-skill-list-row .name {
-        min-width: 0 !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        white-space: nowrap !important;
-        color: #ffffff !important;
-      }
-      .hordes-kr-incoming-skill-list-row .distance {
-        color: #ffcfca !important;
-        font-size: 11px !important;
-        white-space: nowrap !important;
-      }
+      /* Minimap labels and highlight list */
       .hordes-kr-minimap-name-label {
         position: fixed !important;
         transform: translate(-50%, -125%) !important;
@@ -9010,6 +9612,7 @@
         min-width: calc(12px * var(--hordes-kr-minimap-list-scale, 1)) !important;
         text-align: center !important;
       }
+      /* Preset quickbar */
       .hordes-kr-preset-quickbar-panel {
         display: inline-flex !important;
         align-items: center !important;
@@ -9153,84 +9756,6 @@
         cursor: move !important;
         user-select: none !important;
         touch-action: none !important;
-      }
-      .hordes-kr-auction-watch-panel {
-        width: min(360px, calc(100vw - 12px)) !important;
-        max-height: 210px !important;
-        overflow-y: auto !important;
-        display: grid !important;
-        gap: 4px !important;
-        border: 1px solid rgba(245, 194, 71, 0.34) !important;
-        border-radius: 5px !important;
-        background: rgba(16, 19, 29, 0.9) !important;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34) !important;
-        padding: 5px !important;
-        box-sizing: border-box !important;
-        font: 900 11px/1.15 Arial, Helvetica, sans-serif !important;
-      }
-      .hordes-kr-auction-watch-title {
-        display: flex !important;
-        justify-content: space-between !important;
-        align-items: center !important;
-        gap: 6px !important;
-        color: #fff3b0 !important;
-        border-bottom: 1px solid rgba(245, 194, 71, 0.18) !important;
-        padding-bottom: 4px !important;
-        white-space: nowrap !important;
-      }
-      .hordes-kr-auction-watch-title button {
-        border: 1px solid rgba(166, 220, 213, 0.24) !important;
-        border-radius: 4px !important;
-        background: rgba(35, 41, 55, 0.78) !important;
-        color: #dff8f5 !important;
-        font: 1000 10px/1 Arial, Helvetica, sans-serif !important;
-        padding: 3px 6px !important;
-        cursor: pointer !important;
-      }
-      .hordes-kr-auction-watch-title button:hover {
-        border-color: rgba(245, 194, 71, 0.82) !important;
-        color: #f5c247 !important;
-      }
-      .hordes-kr-auction-watch-row {
-        min-width: 0 !important;
-        display: grid !important;
-        grid-template-columns: minmax(0, 1fr) auto !important;
-        gap: 6px !important;
-        align-items: center !important;
-        border: 1px solid rgba(166, 220, 213, 0.16) !important;
-        border-radius: 4px !important;
-        background: rgba(35, 41, 55, 0.74) !important;
-        color: #dff8f5 !important;
-        padding: 4px 5px !important;
-        box-sizing: border-box !important;
-      }
-      .hordes-kr-auction-watch-row.match {
-        border-color: rgba(52, 203, 73, 0.56) !important;
-        background: rgba(18, 65, 35, 0.78) !important;
-      }
-      .hordes-kr-auction-watch-row.self {
-        border-color: rgba(116, 184, 255, 0.42) !important;
-      }
-      .hordes-kr-auction-watch-main {
-        min-width: 0 !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        white-space: nowrap !important;
-      }
-      .hordes-kr-auction-watch-sub {
-        color: #a6dcd5 !important;
-        font-size: 10px !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        white-space: nowrap !important;
-      }
-      .hordes-kr-auction-watch-price {
-        color: #f5c247 !important;
-        white-space: nowrap !important;
-      }
-      .hordes-kr-auction-watch-empty {
-        color: #8ea6aa !important;
-        padding: 3px 1px !important;
       }
       .hordes-kr-minimap-list-scale-btn {
         width: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
@@ -9536,21 +10061,6 @@
     return host;
   }
 
-  function ensureIncomingSkillListHost() {
-    if (HIGHLIGHT_STATE.incomingSkillListHost && document.contains(HIGHLIGHT_STATE.incomingSkillListHost)) {
-      return HIGHLIGHT_STATE.incomingSkillListHost;
-    }
-
-    if (!document.body) return null;
-
-    const host = document.createElement("div");
-    host.id = "hordes-kr-incoming-skill-list";
-    host.setAttribute("aria-live", "polite");
-    document.body.appendChild(host);
-    HIGHLIGHT_STATE.incomingSkillListHost = host;
-    return host;
-  }
-
   function ensureMinimapHighlightListHost() {
     if (HIGHLIGHT_STATE.minimapListHost && document.contains(HIGHLIGHT_STATE.minimapListHost)) {
       return HIGHLIGHT_STATE.minimapListHost;
@@ -9599,7 +10109,6 @@
     try {
       if (!shouldRunRuntimeNameOverlay()) {
         clearRuntimeNameOverlay();
-        clearIncomingSkillList();
         return;
       }
 
@@ -9609,14 +10118,12 @@
       const runtime = getExposedRuntime();
       if (!runtime) {
         clearRuntimeNameOverlay();
-        clearIncomingSkillList();
         return;
       }
 
       const incomingGroups = collectIncomingWarningOverlayEntities(runtime);
       const incomingCandidates = incomingGroups.skills;
       const incomingTargetWatchCandidates = incomingGroups.watches;
-      if (HIGHLIGHT_STATE.incomingSkillListHost) clearIncomingSkillList();
 
       const host = ensureRuntimeNameOverlayHost();
       if (!host || !getRuntimeProjectionMatrix(runtime)) {
@@ -9706,214 +10213,13 @@
       HIGHLIGHT_STATE.lastRuntimeOverlayError = error && error.message ? error.message : String(error);
       HIGHLIGHT_STATE.lastIncomingSkillOverlayError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
       HIGHLIGHT_STATE.lastIncomingTargetWatchError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
-      HIGHLIGHT_STATE.lastIncomingSkillListError = HIGHLIGHT_STATE.lastRuntimeOverlayError;
       clearRuntimeNameOverlay();
-      clearIncomingSkillList();
     }
-  }
-
-  function renderIncomingSkillList(candidates) {
-    if (!isIncomingSkillListEnabled()) {
-      clearIncomingSkillList();
-      return;
-    }
-
-    const host = ensureIncomingSkillListHost();
-    if (!host) return;
-
-    const listCandidates = normalizeIncomingSkillListCandidates(candidates);
-    if (listCandidates.length === 0) {
-      clearIncomingSkillList();
-      return;
-    }
-
-    const position = getIncomingSkillListPosition();
-    const left = `${position.x}px`;
-    const top = `${position.y}px`;
-    const width = `${position.width}px`;
-    const maxHeight = `${position.maxHeight}px`;
-    if (host.style.left !== left) host.style.left = left;
-    if (host.style.top !== top) host.style.top = top;
-    if (host.style.width !== width) host.style.width = width;
-    if (host.style.getPropertyValue("--hordes-kr-incoming-skill-list-max-height") !== maxHeight) {
-      host.style.setProperty("--hordes-kr-incoming-skill-list-max-height", maxHeight);
-    }
-
-    const renderKey = buildIncomingSkillListRenderKey({
-      left,
-      top,
-      width,
-      maxHeight,
-      candidates: listCandidates,
-    });
-    if (HIGHLIGHT_STATE.incomingSkillListRenderKey === renderKey) return;
-    HIGHLIGHT_STATE.incomingSkillListRenderKey = renderKey;
-
-    const panel = document.createElement("div");
-    panel.className = "hordes-kr-incoming-skill-list-panel";
-
-    const title = document.createElement("div");
-    title.className = "hordes-kr-incoming-skill-list-title";
-    const titleText = document.createElement("span");
-    titleText.textContent = "경고목록";
-    const count = document.createElement("span");
-    count.className = "hordes-kr-incoming-skill-list-count";
-    count.textContent = String(listCandidates.length);
-    title.append(titleText, count);
-    panel.appendChild(title);
-
-    for (const candidate of listCandidates) {
-      panel.appendChild(createIncomingSkillListRow(candidate));
-    }
-
-    host.replaceChildren(panel);
-    HIGHLIGHT_STATE.incomingSkillListHits += listCandidates.length;
-    HIGHLIGHT_STATE.lastIncomingSkillListAt = Date.now();
-    HIGHLIGHT_STATE.lastIncomingSkillListError = "";
-    HIGHLIGHT_STATE.lastIncomingSkillListMatches = listCandidates.map((candidate) => ({
-      id: candidate.id,
-      name: candidate.name,
-      skillId: candidate.skillId || "",
-      kind: candidate.incomingSkill ? "skill" : candidate.incomingTargetWatch ? "watch" : "",
-      distance: roundCoord(candidate.distance),
-      distanceText: candidate.distanceText || "",
-      relation: candidate.relation ? candidate.relation.type : "",
-      targetField: candidate.watchTargetField || candidate.skillTargetField || "",
-      path: candidate.path,
-    }));
-  }
-
-  function normalizeIncomingSkillListCandidates(candidates) {
-    if (!Array.isArray(candidates)) return [];
-
-    const seen = new Set();
-    const result = [];
-    for (const candidate of candidates) {
-      if (!candidate || !candidate.entity || !candidate.name) continue;
-
-      const id = getRuntimeEntityId(candidate.entity);
-      const key = id !== undefined ? `id:${String(id)}` : `${candidate.name}:${candidate.path}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      result.push({
-        ...candidate,
-        id: id !== undefined ? String(id) : "",
-        distance: Number(candidate.distance),
-        incomingSkill: Boolean(candidate.incomingSkill),
-        incomingTargetWatch: Boolean(candidate.incomingTargetWatch),
-        distanceText: candidate.distanceText || (
-          Number.isFinite(Number(candidate.distance))
-            ? `${formatTargetDistance(Number(candidate.distance))}m`
-            : ""
-        ),
-      });
-    }
-
-    return result
-      .sort((left, right) => {
-        const leftDistance = Number.isFinite(left.distance) ? left.distance : Number.POSITIVE_INFINITY;
-        const rightDistance = Number.isFinite(right.distance) ? right.distance : Number.POSITIVE_INFINITY;
-        return leftDistance - rightDistance || String(left.name).localeCompare(String(right.name));
-      })
-      .slice(0, INCOMING_SKILL_LIST_MAX_ROWS);
-  }
-
-  function createIncomingSkillListRow(candidate) {
-    const row = document.createElement("div");
-    row.className = "hordes-kr-incoming-skill-list-row";
-    row.classList.toggle("watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
-    row.title = [
-      `${candidate.name} -> 나`,
-      candidate.skillId ? `skill ${candidate.skillId}` : "",
-      candidate.incomingTargetWatch ? "주시" : "",
-      candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
-      candidate.relation ? `관계 ${candidate.relation.type}` : "",
-    ].filter(Boolean).join(" / ");
-
-    const marker = document.createElement(candidate.skillIconUrl ? "img" : "span");
-    marker.className = candidate.skillIconUrl ? "skill-icon" : "watch-badge";
-    if (candidate.skillIconUrl) {
-      const icon = marker;
-      icon.alt = "";
-      icon.decoding = "async";
-      icon.loading = "eager";
-      icon.src = candidate.skillIconUrl;
-      icon.addEventListener("error", () => {
-        icon.hidden = true;
-      }, { once: true });
-    } else {
-      marker.textContent = candidate.incomingTargetWatch ? "주시" : "!";
-    }
-
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = candidate.name;
-
-    const distance = document.createElement("span");
-    distance.className = "distance";
-    distance.textContent = candidate.distanceText || "";
-
-    row.append(marker, name, distance);
-    return row;
-  }
-
-  function buildIncomingSkillListRenderKey({ left, top, width, maxHeight, candidates }) {
-    return [
-      left,
-      top,
-      width,
-      maxHeight,
-      candidates.map((candidate) => [
-        candidate.id || "",
-        candidate.name,
-        candidate.incomingSkill ? "skill" : candidate.incomingTargetWatch ? "watch" : "",
-        candidate.skillId || "",
-        candidate.distanceText || "",
-        candidate.relation ? candidate.relation.type : "",
-        candidate.watchTargetField || candidate.skillTargetField || "",
-      ].join("|")).join("\u0001"),
-    ].join("\u0002");
-  }
-
-  function getIncomingSkillListPosition() {
-    const chat = getChatPanelRect();
-    const player = getPlayerFrameRect();
-    const viewportWidth = Math.max(320, Number(pageWindow.innerWidth) || 0);
-    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
-
-    if (chat && player && player.left > chat.right + 120) {
-      const x = Math.round(chat.right + 8);
-      const availableWidth = Math.max(150, Math.min(240, Math.round(player.left - chat.right - 16)));
-      const availableHeight = Math.max(72, Math.min(190, Math.round(player.top - chat.top - 8)));
-      const y = Math.round(clamp(player.top - availableHeight - 6, 44, viewportHeight - availableHeight - 26));
-      return {
-        x: Math.min(x, viewportWidth - availableWidth - 4),
-        y,
-        width: availableWidth,
-        maxHeight: availableHeight,
-      };
-    }
-
-    const fallbackWidth = 210;
-    const x = chat ? Math.round(chat.right + 8) : 462;
-    const y = player ? Math.round(player.top - 148) : (chat ? Math.round(chat.top - 152) : Math.round(viewportHeight * 0.64));
-    return {
-      x: Math.round(clamp(x, 4, viewportWidth - fallbackWidth - 4)),
-      y: Math.round(clamp(y, 44, viewportHeight - 180)),
-      width: fallbackWidth,
-      maxHeight: 156,
-    };
   }
 
   function getChatPanelRect() {
     return getVisibleElementRect(document.getElementById("chat"))
       || getVisibleElementRect(document.querySelector(".l-corner-ll"));
-  }
-
-  function getPlayerFrameRect() {
-    return getVisibleElementRect(document.getElementById("ufplayer"))
-      || getVisibleElementRect(document.querySelector(".targetframes"));
   }
 
   function getVisibleElementRect(element) {
@@ -9930,13 +10236,6 @@
       width: rect.width,
       height: rect.height,
     };
-  }
-
-  function clearIncomingSkillList() {
-    const host = HIGHLIGHT_STATE.incomingSkillListHost;
-    if (host) host.replaceChildren();
-    HIGHLIGHT_STATE.incomingSkillListRenderKey = "";
-    HIGHLIGHT_STATE.lastIncomingSkillListMatches = [];
   }
 
   function updateTargetDistanceOverlay() {
@@ -10029,6 +10328,10 @@
         targetMatch: TARGET_DISTANCE_STATE.lastCanvasTargetMatch || null,
       },
       lock: getTargetDistanceLockStatus(),
+      deepSearchCache: {
+        size: TARGET_DISTANCE_STATE.deepSearchCache.size,
+        ttlMs: TARGET_DISTANCE_DEEP_SEARCH_CACHE_MS,
+      },
       scriptHook: {
         attemptedScripts: [...HIGHLIGHT_STATE.scriptHookAttemptedScripts],
         patchedScripts: [...HIGHLIGHT_STATE.scriptHookPatchedScripts],
@@ -10215,20 +10518,13 @@
     if (HIGHLIGHT_STATE.minimapListRenderKey === renderKey) return;
     HIGHLIGHT_STATE.minimapListRenderKey = renderKey;
 
-    const panel = document.createElement("div");
-    panel.className = "hordes-kr-minimap-list-panel";
-
-    const title = document.createElement("div");
-    title.className = "hordes-kr-minimap-list-title";
-    const titleMain = document.createElement("div");
-    titleMain.className = "hordes-kr-minimap-list-title-main";
-    const count = document.createElement("span");
-    count.textContent = `${listCandidates.length}`;
-    count.className = "hordes-kr-minimap-list-count";
+    const panel = createUiElement("div", "hordes-kr-minimap-list-panel");
+    const title = createUiElement("div", "hordes-kr-minimap-list-title");
+    const titleMain = createUiElement("div", "hordes-kr-minimap-list-title-main");
+    const count = createUiElement("span", "hordes-kr-minimap-list-count", `${listCandidates.length}`);
     titleMain.append(count);
 
-    const controls = document.createElement("div");
-    controls.className = "hordes-kr-minimap-list-title-controls";
+    const controls = createUiElement("div", "hordes-kr-minimap-list-title-controls");
     controls.append(
       createMinimapListScaleButton("-", -0.1),
       createMinimapListScaleButton("+", 0.1),
@@ -10240,9 +10536,7 @@
     installMinimapHighlightListDragHandle(title, host);
 
     if (listCandidates.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "hordes-kr-minimap-list-empty";
-      empty.textContent = "감지 없음";
+      const empty = createUiElement("div", "hordes-kr-minimap-list-empty", "감지 없음");
       panel.appendChild(empty);
     } else {
       for (const candidate of listCandidates) {
@@ -10288,14 +10582,12 @@
       top,
       getQuickGearPresetRenderKey(),
       getQuickSkillPresetRenderKey(),
-      getAuctionWatchQuickbarRenderKey(),
       combatStatus.key,
     ].join("\u0002");
     if (HIGHLIGHT_STATE.presetBarRenderKey === renderKey) return;
     HIGHLIGHT_STATE.presetBarRenderKey = renderKey;
 
-    const panel = document.createElement("div");
-    panel.className = "hordes-kr-preset-quickbar-panel";
+    const panel = createUiElement("div", "hordes-kr-preset-quickbar-panel");
     panel.append(
       createPresetQuickBarGearControls(combatStatus),
       createPresetQuickBarSkillControls(combatStatus),
@@ -10303,12 +10595,8 @@
       createPresetQuickBarResetButton(),
       createPresetQuickBarDragHandle()
     );
-    const stack = document.createElement("div");
-    stack.className = "hordes-kr-preset-quickbar-stack";
+    const stack = createUiElement("div", "hordes-kr-preset-quickbar-stack");
     stack.appendChild(panel);
-
-    const auctionPanel = createAuctionWatchQuickbarPanel();
-    if (auctionPanel) stack.appendChild(auctionPanel);
 
     host.replaceChildren(stack);
   }
@@ -10420,194 +10708,185 @@
   }
 
   function createPresetQuickBarGearControls(combatStatus) {
-    const group = document.createElement("div");
-    group.className = "hordes-kr-preset-quickbar-group";
-
-    for (const presetName of GEAR_PRESET_QUICK_NAMES) {
-      const preset = getGearPreset(presetName);
-      const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
-      const match = getGearPresetMatchStatus(presetName);
-      const isRunning = GEAR_PRESET_STATE.running && GEAR_PRESET_STATE.pendingPresetName === presetName;
-      const isLastRequested = !isRunning && GEAR_PRESET_STATE.lastRequestedPresetName === presetName;
-      const isLastErrored = isLastRequested && GEAR_PRESET_STATE.lastResult && (
-        (GEAR_PRESET_STATE.lastResult.errors && GEAR_PRESET_STATE.lastResult.errors.length > 0) ||
-        (GEAR_PRESET_STATE.lastResult.verify && !GEAR_PRESET_STATE.lastResult.verify.complete)
-      );
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "hordes-kr-preset-quickbar-btn";
-      button.classList.toggle("empty", count === 0);
-      button.classList.toggle("running", isRunning);
-      button.classList.toggle("active", match.complete);
-      button.classList.toggle("partial", !match.complete && match.matched > 0);
-      button.classList.toggle("error", !match.complete && isLastErrored);
-      button.textContent = isRunning
-        ? `${presetName}…`
-        : match.complete
-          ? `${presetName}✓`
-          : isLastErrored
-            ? `${presetName}!`
-            : presetName;
-      button.title = count > 0
-        ? [
-            `프리셋 ${presetName}`,
-            `저장 ${count}개`,
-            isRunning ? "전송 중" : "",
-            match.complete ? "적용 확인됨" : `장착 확인 ${match.matched}/${match.total}`,
-            match.extraEquipped && match.extraEquipped.length > 0 ? `남은 장착 ${match.extraEquipped.length}개` : "",
-            isLastErrored ? "최근 실행 불완전/오류" : "",
-          ].filter(Boolean).join(" / ")
-        : `프리셋 ${presetName} 저장 없음`;
-      button.disabled = count === 0 || combatStatus.inCombat || (GEAR_PRESET_STATE.running && !isRunning);
-      if (combatStatus.inCombat) {
-        button.title = `${button.title} / ${combatStatus.title}`;
-      }
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (combatStatus.inCombat) return;
-        HIGHLIGHT_STATE.presetBarRenderKey = "";
-        updatePresetQuickBar();
-        pageWindow.HordesKrMod.equipGearPreset(presetName).finally(() => {
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          renderStatusUi();
-        });
-        renderStatusUi();
-      });
-      group.appendChild(button);
-    }
-
-    return group;
+    return createPresetQuickBarPresetGroup(
+      GEAR_PRESET_QUICK_NAMES,
+      (presetName) => getGearQuickPresetButtonConfig(presetName, combatStatus)
+    );
   }
 
   function createPresetQuickBarSkillControls(combatStatus) {
-    const group = document.createElement("div");
-    group.className = "hordes-kr-preset-quickbar-group";
+    return createPresetQuickBarPresetGroup(
+      SKILL_PRESET_QUICK_NAMES,
+      (presetName) => getSkillQuickPresetButtonConfig(presetName, combatStatus)
+    );
+  }
 
-    for (const presetName of SKILL_PRESET_QUICK_NAMES) {
-      const preset = getSkillPreset(presetName);
-      const skillIds = filterConfigurableSkillPresetIds(preset && preset.skillIds || []);
-      const count = skillIds.length;
-      const match = getSkillPresetMatchStatus(presetName);
-      const isRunning = SKILL_PRESET_STATE.running && SKILL_PRESET_STATE.pendingPresetName === presetName;
-      const isLastRequested = !isRunning && SKILL_PRESET_STATE.lastRequestedPresetName === presetName;
-      const isLastErrored = isLastRequested && SKILL_PRESET_STATE.lastResult && (
-        (SKILL_PRESET_STATE.lastResult.errors && SKILL_PRESET_STATE.lastResult.errors.length > 0) ||
-        (SKILL_PRESET_STATE.lastResult.verify && !SKILL_PRESET_STATE.lastResult.verify.complete)
-      );
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "hordes-kr-preset-quickbar-btn skill";
-      button.classList.toggle("empty", count === 0);
-      button.classList.toggle("running", isRunning);
-      button.classList.toggle("active", match.complete);
-      button.classList.toggle("partial", !match.complete && match.matched > 0);
-      button.classList.toggle("error", !match.complete && isLastErrored);
-      button.textContent = isRunning
-        ? `S${presetName}…`
-        : match.complete
-          ? `S${presetName}✓`
-          : isLastErrored
-            ? `S${presetName}!`
-            : `S${presetName}`;
-      button.title = count > 0
-        ? [
-            `스킬 프리셋 ${presetName}`,
-            `저장 ${count}포인트`,
-            isRunning ? "전송 중" : "",
-            match.complete ? "적용 확인됨" : `스킬 확인 ${match.matched}/${match.total}`,
-            match.missing && match.missing.length > 0 ? `미적용 ${match.missing.length}포인트` : "",
-            match.extra && match.extra.length > 0 ? `추가활성 ${match.extra.length}포인트` : "",
-            isLastErrored ? "최근 실행 불완전/오류" : "",
-          ].filter(Boolean).join(" / ")
-        : `스킬 프리셋 ${presetName} 저장 없음`;
-      button.disabled = count === 0 || combatStatus.inCombat || (SKILL_PRESET_STATE.running && !isRunning);
-      if (combatStatus.inCombat) {
-        button.title = `${button.title} / ${combatStatus.title}`;
-      }
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (combatStatus.inCombat) return;
-        HIGHLIGHT_STATE.presetBarRenderKey = "";
-        updatePresetQuickBar();
-        pageWindow.HordesKrMod.applySkillPreset(presetName).finally(() => {
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          renderStatusUi();
-        });
-        renderStatusUi();
-      });
-      group.appendChild(button);
+  function createPresetQuickBarPresetGroup(presetNames, buildConfig) {
+    const group = createUiElement("div", "hordes-kr-preset-quickbar-group");
+
+    for (const presetName of presetNames) {
+      group.appendChild(createPresetQuickBarPresetButton(buildConfig(presetName)));
     }
 
     return group;
   }
 
+  function createPresetQuickBarPresetButton(config) {
+    const button = createUiButton(config.className, "", "", config.onClick);
+    const match = config.match || {};
+
+    button.classList.toggle("empty", config.count === 0);
+    button.classList.toggle("running", config.isRunning);
+    button.classList.toggle("active", match.complete === true);
+    button.classList.toggle("partial", match.complete !== true && Number(match.matched) > 0);
+    button.classList.toggle("error", match.complete !== true && config.isLastErrored);
+    button.textContent = config.text;
+    button.title = config.title;
+    button.disabled = config.disabled;
+    return button;
+  }
+
+  function getGearQuickPresetButtonConfig(presetName, combatStatus) {
+    const preset = getGearPreset(presetName);
+    const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+    const match = getGearPresetMatchStatus(presetName);
+    const isRunning = GEAR_PRESET_STATE.running && GEAR_PRESET_STATE.pendingPresetName === presetName;
+    const isLastRequested = !isRunning && GEAR_PRESET_STATE.lastRequestedPresetName === presetName;
+    const isLastErrored = isLastRequested && GEAR_PRESET_STATE.lastResult && (
+      (GEAR_PRESET_STATE.lastResult.errors && GEAR_PRESET_STATE.lastResult.errors.length > 0) ||
+      (GEAR_PRESET_STATE.lastResult.verify && !GEAR_PRESET_STATE.lastResult.verify.complete)
+    );
+    const title = count > 0
+      ? joinStatusParts([
+          `프리셋 ${presetName}`,
+          `저장 ${count}개`,
+          isRunning ? "전송 중" : "",
+          match.complete ? "적용 확인됨" : `장착 확인 ${match.matched}/${match.total}`,
+          match.extraEquipped && match.extraEquipped.length > 0 ? `남은 장착 ${match.extraEquipped.length}개` : "",
+          isLastErrored ? "최근 실행 불완전/오류" : "",
+          combatStatus.inCombat ? combatStatus.title : "",
+        ])
+      : `프리셋 ${presetName} 저장 없음${combatStatus.inCombat ? ` / ${combatStatus.title}` : ""}`;
+
+    return {
+      className: "hordes-kr-preset-quickbar-btn",
+      count,
+      match,
+      isRunning,
+      isLastErrored,
+      disabled: count === 0 || combatStatus.inCombat || (GEAR_PRESET_STATE.running && !isRunning),
+      text: formatPresetQuickBarPresetButtonText(presetName, isRunning, match.complete, isLastErrored),
+      title,
+      onClick: () => {
+        if (combatStatus.inCombat) return;
+        runPresetQuickBarAction(() => pageWindow.HordesKrMod.equipGearPreset(presetName));
+      },
+    };
+  }
+
+  function getSkillQuickPresetButtonConfig(presetName, combatStatus) {
+    const preset = getSkillPreset(presetName);
+    const count = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+    const match = getSkillPresetMatchStatus(presetName);
+    const isRunning = SKILL_PRESET_STATE.running && SKILL_PRESET_STATE.pendingPresetName === presetName;
+    const isLastRequested = !isRunning && SKILL_PRESET_STATE.lastRequestedPresetName === presetName;
+    const isLastErrored = isLastRequested && SKILL_PRESET_STATE.lastResult && (
+      (SKILL_PRESET_STATE.lastResult.errors && SKILL_PRESET_STATE.lastResult.errors.length > 0) ||
+      (SKILL_PRESET_STATE.lastResult.verify && !SKILL_PRESET_STATE.lastResult.verify.complete)
+    );
+    const label = `S${presetName}`;
+    const title = count > 0
+      ? joinStatusParts([
+          `스킬 프리셋 ${presetName}`,
+          `저장 ${count}포인트`,
+          isRunning ? "전송 중" : "",
+          match.complete ? "적용 확인됨" : `스킬 확인 ${match.matched}/${match.total}`,
+          match.missing && match.missing.length > 0 ? `미적용 ${match.missing.length}포인트` : "",
+          match.extra && match.extra.length > 0 ? `추가활성 ${match.extra.length}포인트` : "",
+          isLastErrored ? "최근 실행 불완전/오류" : "",
+          combatStatus.inCombat ? combatStatus.title : "",
+        ])
+      : `스킬 프리셋 ${presetName} 저장 없음${combatStatus.inCombat ? ` / ${combatStatus.title}` : ""}`;
+
+    return {
+      className: "hordes-kr-preset-quickbar-btn skill",
+      count,
+      match,
+      isRunning,
+      isLastErrored,
+      disabled: count === 0 || combatStatus.inCombat || (SKILL_PRESET_STATE.running && !isRunning),
+      text: formatPresetQuickBarPresetButtonText(label, isRunning, match.complete, isLastErrored),
+      title,
+      onClick: () => {
+        if (combatStatus.inCombat) return;
+        runPresetQuickBarAction(() => pageWindow.HordesKrMod.applySkillPreset(presetName));
+      },
+    };
+  }
+
+  function formatPresetQuickBarPresetButtonText(label, isRunning, isComplete, isLastErrored) {
+    if (isRunning) return `${label}…`;
+    if (isComplete) return `${label}✓`;
+    if (isLastErrored) return `${label}!`;
+    return label;
+  }
+
+  function runPresetQuickBarAction(action) {
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    Promise.resolve()
+      .then(action)
+      .finally(refreshPresetQuickBarAndStatus);
+    renderStatusUi();
+  }
+
+  function refreshPresetQuickBarAndStatus() {
+    HIGHLIGHT_STATE.presetBarRenderKey = "";
+    updatePresetQuickBar();
+    renderStatusUi();
+  }
+
+  function runPresetPanelAction(action) {
+    refreshPresetQuickBarAndStatus();
+    Promise.resolve()
+      .then(action)
+      .finally(refreshPresetQuickBarAndStatus);
+    renderStatusUi();
+  }
+
   function createPresetQuickBarStatus(combatStatus) {
-    const status = document.createElement("span");
-    status.className = `hordes-kr-preset-quickbar-status ${combatStatus.className || ""}`;
-    status.textContent = combatStatus.text;
+    const status = createUiElement("span", `hordes-kr-preset-quickbar-status ${combatStatus.className || ""}`, combatStatus.text);
     status.title = combatStatus.title;
     return status;
   }
 
   function createPresetQuickBarResetButton() {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "hordes-kr-preset-quickbar-reset";
-    button.textContent = "↺";
-    button.title = "프리셋 바 위치 리셋";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    return createUiButton("hordes-kr-preset-quickbar-reset", "↺", "프리셋 바 위치 리셋", () => {
       resetPresetQuickBarPosition();
     });
-    return button;
   }
 
   function createPresetQuickBarDragHandle() {
-    const handle = document.createElement("span");
-    handle.className = "hordes-kr-preset-quickbar-drag";
-    handle.textContent = "⋮";
+    const handle = createUiElement("span", "hordes-kr-preset-quickbar-drag", "⋮");
     handle.title = "프리셋 바 이동";
     installPresetQuickBarDragHandle(handle);
     return handle;
   }
 
   function installPresetQuickBarDragHandle(handle) {
-    handle.addEventListener("pointerdown", (event) => {
-      if (HIGHLIGHT_STATE.presetBarDragging) return;
-      if (event.button !== undefined && event.button !== 0) return;
-
-      const host = HIGHLIGHT_STATE.presetBarHost;
-      if (!host) return;
-
-      const rect = host.getBoundingClientRect();
-      HIGHLIGHT_STATE.presetBarDragging = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: rect.left,
-        originY: rect.top,
-        width: getFiniteNumber(rect.width, 180),
-      };
-
-      const panel = handle.closest(".hordes-kr-preset-quickbar-panel");
-      if (panel) panel.dataset.dragging = "true";
-
-      try {
-        handle.setPointerCapture(event.pointerId);
-      } catch {
-        // Window-level listeners keep dragging alive when capture is unavailable.
-      }
-
-      pageWindow.addEventListener("pointermove", handlePresetQuickBarDragMove, true);
-      pageWindow.addEventListener("pointerup", handlePresetQuickBarDragEnd, true);
-      pageWindow.addEventListener("pointercancel", handlePresetQuickBarDragEnd, true);
-      event.preventDefault();
-      event.stopPropagation();
+    installWindowPointerDrag(handle, {
+      getDrag: () => HIGHLIGHT_STATE.presetBarDragging,
+      setDrag: (drag) => {
+        HIGHLIGHT_STATE.presetBarDragging = drag;
+      },
+      getSubject: () => HIGHLIGHT_STATE.presetBarHost,
+      getWidth: (rect) => getFiniteNumber(rect.width, 180),
+      onStart: () => {
+        const panel = handle.closest(".hordes-kr-preset-quickbar-panel");
+        if (panel) panel.dataset.dragging = "true";
+      },
+      onMove: handlePresetQuickBarDragMove,
+      onEnd: handlePresetQuickBarDragEnd,
     });
   }
 
@@ -10628,14 +10907,10 @@
     event.stopPropagation();
   }
 
-  function handlePresetQuickBarDragEnd(event) {
-    const drag = HIGHLIGHT_STATE.presetBarDragging;
+  function handlePresetQuickBarDragEnd(event, endedDrag) {
+    const drag = endedDrag || HIGHLIGHT_STATE.presetBarDragging;
     if (!drag || event.pointerId !== drag.pointerId) return;
-
-    pageWindow.removeEventListener("pointermove", handlePresetQuickBarDragMove, true);
-    pageWindow.removeEventListener("pointerup", handlePresetQuickBarDragEnd, true);
-    pageWindow.removeEventListener("pointercancel", handlePresetQuickBarDragEnd, true);
-    HIGHLIGHT_STATE.presetBarDragging = null;
+    if (!endedDrag) HIGHLIGHT_STATE.presetBarDragging = null;
 
     const host = HIGHLIGHT_STATE.presetBarHost;
     const panel = host && host.querySelector(".hordes-kr-preset-quickbar-panel");
@@ -10667,81 +10942,53 @@
   }
 
   function createMinimapListScaleButton(label, delta) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "hordes-kr-minimap-list-scale-btn";
-    button.textContent = label;
-    button.title = label === "+" ? "강조목록 크게" : "강조목록 작게";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      adjustMinimapHighlightListScale(delta);
-    });
-    return button;
+    return createUiButton(
+      "hordes-kr-minimap-list-scale-btn",
+      label,
+      label === "+" ? "강조목록 크게" : "강조목록 작게",
+      () => {
+        adjustMinimapHighlightListScale(delta);
+      }
+    );
   }
 
   function createMinimapListResetButton() {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "hordes-kr-minimap-list-scale-btn";
-    button.textContent = "↺";
-    button.title = "강조목록 위치 리셋";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    return createUiButton("hordes-kr-minimap-list-scale-btn", "↺", "강조목록 위치 리셋", () => {
       resetMinimapHighlightListPosition();
     });
-    return button;
   }
 
   function createMinimapListAllHostilesButton() {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "hordes-kr-minimap-list-scale-btn";
+    const button = createUiButton(
+      "hordes-kr-minimap-list-scale-btn",
+      "A",
+      HIGHLIGHT_CONFIG.minimapListAllHostiles
+        ? "주변 적대 유저 전체 표시 중"
+        : "강조 ID만 표시 중. 클릭하면 주변 적대 유저 전체 표시",
+      () => {
+        toggleMinimapHighlightListAllHostiles();
+      }
+    );
     button.classList.toggle("active", HIGHLIGHT_CONFIG.minimapListAllHostiles === true);
-    button.textContent = "A";
-    button.title = HIGHLIGHT_CONFIG.minimapListAllHostiles
-      ? "주변 적대 유저 전체 표시 중"
-      : "강조 ID만 표시 중. 클릭하면 주변 적대 유저 전체 표시";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleMinimapHighlightListAllHostiles();
-    });
     return button;
   }
 
   function installMinimapHighlightListDragHandle(handle, host) {
     if (!handle || !host) return;
 
-    handle.addEventListener("pointerdown", (event) => {
-      if (HIGHLIGHT_STATE.minimapListDragging) return;
-      if (event.button !== undefined && event.button !== 0) return;
-      if (isMinimapListControlTarget(event.target)) return;
-
-      const rect = host.getBoundingClientRect();
-      const width = getFiniteNumber(rect.width, getFiniteNumber(parseFloat(host.style.width), 170));
-      HIGHLIGHT_STATE.minimapListDragging = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: rect.left,
-        originY: rect.top,
-        width,
-      };
-
-      host.dataset.hordesKrDragging = "true";
-      try {
-        handle.setPointerCapture(event.pointerId);
-      } catch {
-        // Window-level listeners below keep dragging alive if capture is unavailable.
-      }
-
-      pageWindow.addEventListener("pointermove", handleMinimapHighlightListDragMove, true);
-      pageWindow.addEventListener("pointerup", handleMinimapHighlightListDragEnd, true);
-      pageWindow.addEventListener("pointercancel", handleMinimapHighlightListDragEnd, true);
-      event.preventDefault();
-      event.stopPropagation();
+    installWindowPointerDrag(handle, {
+      getDrag: () => HIGHLIGHT_STATE.minimapListDragging,
+      setDrag: (drag) => {
+        HIGHLIGHT_STATE.minimapListDragging = drag;
+      },
+      getSubject: () => host,
+      canStart: (event) => !isMinimapListControlTarget(event.target),
+      getWidth: (rect) => getFiniteNumber(rect.width, getFiniteNumber(parseFloat(host.style.width), 170)),
+      onStart: () => {
+        host.dataset.hordesKrDragging = "true";
+      },
+      onMove: handleMinimapHighlightListDragMove,
+      onEnd: handleMinimapHighlightListDragEnd,
     });
   }
 
@@ -10770,14 +11017,10 @@
     event.stopPropagation();
   }
 
-  function handleMinimapHighlightListDragEnd(event) {
-    const drag = HIGHLIGHT_STATE.minimapListDragging;
+  function handleMinimapHighlightListDragEnd(event, endedDrag) {
+    const drag = endedDrag || HIGHLIGHT_STATE.minimapListDragging;
     if (!drag || event.pointerId !== drag.pointerId) return;
-
-    pageWindow.removeEventListener("pointermove", handleMinimapHighlightListDragMove, true);
-    pageWindow.removeEventListener("pointerup", handleMinimapHighlightListDragEnd, true);
-    pageWindow.removeEventListener("pointercancel", handleMinimapHighlightListDragEnd, true);
-    HIGHLIGHT_STATE.minimapListDragging = null;
+    if (!endedDrag) HIGHLIGHT_STATE.minimapListDragging = null;
 
     const host = HIGHLIGHT_STATE.minimapListHost;
     if (host) delete host.dataset.hordesKrDragging;
@@ -10796,110 +11039,6 @@
     const top = `${Math.round(y)}px`;
     if (host.style.left !== left) host.style.left = left;
     if (host.style.top !== top) host.style.top = top;
-  }
-
-  function createAuctionWatchQuickbarPanel() {
-    if (!AUCTION_WATCH_CONFIG.enabled) return null;
-
-    const panel = document.createElement("div");
-    panel.className = "hordes-kr-auction-watch-panel";
-
-    const title = document.createElement("div");
-    const titleText = document.createElement("span");
-    const refresh = document.createElement("button");
-    title.className = "hordes-kr-auction-watch-title";
-    titleText.textContent = AUCTION_WATCH_STATE.running
-      ? "거래소 조회 중"
-      : AUCTION_WATCH_STATE.lastMatches.length > 0
-        ? `거래소 발견 ${AUCTION_WATCH_STATE.lastMatches.length}`
-        : "거래소 감시";
-    refresh.type = "button";
-    refresh.textContent = "조회";
-    refresh.disabled = AUCTION_WATCH_STATE.running || !getGearSocketStatus().available;
-    refresh.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      refreshAuctionWatchNow().catch(() => {}).finally(() => {
-        HIGHLIGHT_STATE.presetBarRenderKey = "";
-        updatePresetQuickBar();
-        renderStatusUi();
-      });
-      HIGHLIGHT_STATE.presetBarRenderKey = "";
-      updatePresetQuickBar();
-    });
-    title.append(titleText, refresh);
-    panel.appendChild(title);
-
-    const rows = [
-      ...AUCTION_WATCH_STATE.lastMatches.map((item) => ({ item, kind: "match" })),
-      ...AUCTION_WATCH_STATE.lastSelfItems.map((item) => ({ item, kind: "self" })),
-    ];
-    dedupeAuctionWatchPanelRows(rows);
-
-    if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "hordes-kr-auction-watch-empty";
-      empty.textContent = AUCTION_WATCH_STATE.lastError || "조건에 맞는 등록 없음";
-      panel.appendChild(empty);
-      return panel;
-    }
-
-    rows.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).forEach(({ item, kind }) => {
-      panel.appendChild(createAuctionWatchQuickbarRow(item, kind));
-    });
-
-    return panel;
-  }
-
-  function createAuctionWatchQuickbarRow(item, kind) {
-    const row = document.createElement("div");
-    const main = document.createElement("div");
-    const mainText = document.createElement("div");
-    const sub = document.createElement("div");
-    const price = document.createElement("div");
-
-    row.className = `hordes-kr-auction-watch-row ${kind || ""} ${item.group === "self" ? "self" : ""}`;
-    main.className = "hordes-kr-auction-watch-main";
-    sub.className = "hordes-kr-auction-watch-sub";
-    price.className = "hordes-kr-auction-watch-price";
-
-    mainText.textContent = `${item.group === "self" ? "내판매 " : ""}${formatAuctionWatchItemName(item)}`;
-    sub.textContent = formatAuctionWatchStats(item.stats) || item.owner || item.dbid;
-    price.textContent = item.auctionprice ? formatCoinAmount(item.auctionprice) : "-";
-    row.title = formatAuctionWatchItemLine(item);
-
-    main.append(mainText, sub);
-    row.append(main, price);
-    return row;
-  }
-
-  function dedupeAuctionWatchPanelRows(rows) {
-    const seen = new Set();
-    for (let index = 0; index < rows.length; index += 1) {
-      const key = rows[index] && rows[index].item && rows[index].item.dbid;
-      if (!key || seen.has(key)) {
-        rows.splice(index, 1);
-        index -= 1;
-      } else {
-        seen.add(key);
-      }
-    }
-    return rows;
-  }
-
-  function getAuctionWatchQuickbarRenderKey() {
-    return [
-      AUCTION_WATCH_CONFIG.enabled ? 1 : 0,
-      AUCTION_WATCH_STATE.running ? 1 : 0,
-      AUCTION_WATCH_STATE.lastState || "",
-      AUCTION_WATCH_STATE.lastError || "",
-      ...AUCTION_WATCH_STATE.lastMatches.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).map((item) => (
-        `${item.dbid}:${item.auctionprice}:${item.group}:${item.stats.map((stat) => `${stat.id}:${stat.value}`).join(",")}`
-      )),
-      ...AUCTION_WATCH_STATE.lastSelfItems.slice(0, AUCTION_WATCH_MAX_LIST_ROWS).map((item) => (
-        `s:${item.dbid}:${item.auctionprice}`
-      )),
-    ].join("|");
   }
 
   function getQuickGearPresetRenderKey() {
@@ -10979,18 +11118,15 @@
 
   function createMinimapHighlightListRow(candidate, state) {
     const row = document.createElement("button");
-    const identity = document.createElement("span");
-    const nameLine = document.createElement("span");
-    const icon = document.createElement("img");
-    const name = document.createElement("span");
-    const health = document.createElement("span");
-    const healthBar = document.createElement("span");
-    const healthFill = document.createElement("span");
-    const healthText = document.createElement("span");
-    const distance = document.createElement("span");
-    const status = document.createElement("span");
     const selected = Boolean(candidate.id && state.selectedId && candidate.id === state.selectedId);
     const locked = Boolean(candidate.id && state.lockedId && candidate.id === state.lockedId);
+    const identity = createUiElement("span", "identity");
+    const nameLine = createUiElement("span", "name-line");
+    const icon = createMinimapListClassIcon(candidate);
+    const name = createUiElement("span", "name", candidate.name || "unknown");
+    const health = createMinimapListHealth(candidate);
+    const distance = createUiElement("span", "distance", candidate.distanceText || "-");
+    const status = createUiElement("span", "state", selected ? "타겟 ON" : locked ? "고정" : "OFF");
 
     row.type = "button";
     row.className = "hordes-kr-minimap-list-row";
@@ -10999,55 +11135,11 @@
     row.classList.toggle("nearby", Number.isFinite(candidate.distance) && candidate.distance <= 35);
     row.dataset.hordesKrTargetId = candidate.id || "";
     row.dataset.hordesKrTargetName = candidate.name || "";
-    const hpTitle = candidate.health && candidate.health.maxText
-      ? ` / HP ${candidate.health.currentText}/${candidate.health.maxText}`
-      : "";
-    row.title = selected
-      ? `${candidate.name} / ${candidate.distanceText}${hpTitle} / 클릭하면 타겟 해제`
-      : `${candidate.name} / ${candidate.distanceText}${hpTitle} / 클릭하면 실제 타겟 지정`;
+    row.title = getMinimapListRowTitle(candidate, selected);
 
-    identity.className = "identity";
-    nameLine.className = "name-line";
-    icon.className = "class-icon";
-    icon.alt = "";
-    icon.decoding = "async";
-    icon.loading = "lazy";
-    if (candidate.classIconUrl) {
-      icon.src = candidate.classIconUrl;
-      icon.title = `직업 ${candidate.classId}`;
-      icon.addEventListener("error", () => {
-        icon.hidden = true;
-      }, { once: true });
-    } else {
-      icon.hidden = true;
-    }
-
-    name.className = "name";
-    name.textContent = candidate.name || "unknown";
     nameLine.append(icon, name);
-
-    health.className = "hp";
-    healthBar.className = "hp-bar";
-    healthFill.className = "hp-fill";
-    healthText.className = "hp-text";
-    if (candidate.health && Number.isFinite(candidate.health.ratio)) {
-      const hpPercent = Math.max(0, Math.min(100, Math.round(candidate.health.ratio * 100)));
-      healthFill.style.setProperty("width", `${hpPercent > 0 ? Math.max(2, hpPercent) : 0}%`, "important");
-      healthText.textContent = candidate.health.maxText
-        ? `${candidate.health.currentText}/${candidate.health.maxText}`
-        : candidate.health.currentText;
-      healthBar.title = `HP ${healthText.textContent}`;
-    } else {
-      health.hidden = true;
-    }
-    healthBar.appendChild(healthFill);
-    health.append(healthBar, healthText);
     identity.append(nameLine, health);
 
-    distance.className = "distance";
-    distance.textContent = candidate.distanceText || "-";
-    status.className = "state";
-    status.textContent = selected ? "타겟 ON" : locked ? "고정" : "OFF";
     row.append(identity, distance, status);
 
     row.addEventListener("click", (event) => {
@@ -11063,6 +11155,57 @@
     });
 
     return row;
+  }
+
+  function createMinimapListClassIcon(candidate) {
+    const icon = document.createElement("img");
+    icon.className = "class-icon";
+    icon.alt = "";
+    icon.decoding = "async";
+    icon.loading = "lazy";
+
+    if (!candidate.classIconUrl) {
+      icon.hidden = true;
+      return icon;
+    }
+
+    icon.src = candidate.classIconUrl;
+    icon.title = `직업 ${candidate.classId}`;
+    icon.addEventListener("error", () => {
+      icon.hidden = true;
+    }, { once: true });
+    return icon;
+  }
+
+  function createMinimapListHealth(candidate) {
+    const health = createUiElement("span", "hp");
+    const healthBar = createUiElement("span", "hp-bar");
+    const healthFill = createUiElement("span", "hp-fill");
+    const healthText = createUiElement("span", "hp-text");
+    const info = candidate.health;
+
+    if (!info || !Number.isFinite(info.ratio)) {
+      health.hidden = true;
+      return health;
+    }
+
+    const hpPercent = Math.max(0, Math.min(100, Math.round(info.ratio * 100)));
+    healthFill.style.setProperty("width", `${hpPercent > 0 ? Math.max(2, hpPercent) : 0}%`, "important");
+    healthText.textContent = info.maxText ? `${info.currentText}/${info.maxText}` : info.currentText;
+    healthBar.title = `HP ${healthText.textContent}`;
+    healthBar.appendChild(healthFill);
+    health.append(healthBar, healthText);
+    return health;
+  }
+
+  function getMinimapListRowTitle(candidate, selected) {
+    const health = candidate.health;
+    return joinStatusParts([
+      candidate.name,
+      candidate.distanceText,
+      health && health.maxText ? `HP ${health.currentText}/${health.maxText}` : "",
+      selected ? "클릭하면 타겟 해제" : "클릭하면 실제 타겟 지정",
+    ]);
   }
 
   function getLockedTargetId() {
@@ -11918,97 +12061,6 @@
     return { skills, watches };
   }
 
-  function collectIncomingSkillOverlayEntities(runtime) {
-    const self = findLocalPlayerEntity(runtime);
-    if (!self) return [];
-
-    const selfPosition = getRuntimeWorldPosition(self.entity);
-    if (!selfPosition) return [];
-
-    const entities = collectLoadedRuntimeEntities(runtime, {
-      limit: 900,
-      playersOnly: false,
-    });
-    const result = [];
-
-    for (const item of entities.items) {
-      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
-
-      const relation = getRuntimeEntityRelation(item.entity, self.entity);
-      if (relation.friendly) continue;
-
-      const skillField = getIncomingSkillField({
-        activeFields: getRuntimeSkillTargetFields(item.entity, runtime, self.entity),
-      });
-      if (!skillField) continue;
-
-      const distance = getHorizontalRuntimeDistance(selfPosition.position, item.position);
-      const skillId = normalizeSkillIconId(skillField.skill && skillField.skill.id);
-      result.push({
-        entity: item.entity,
-        path: item.path,
-        name: item.name,
-        matchedName: item.name.toLowerCase(),
-        position: item.position,
-        positionSource: item.positionSource,
-        score: 1000 + (item.type === 0 ? 120 : 0),
-        incomingSkill: true,
-        relation,
-        skillId,
-        skillIconUrl: skillId ? getSkillIconUrl(skillId) : "",
-        skillTargetField: skillField.key,
-        skillRemaining: skillField.skill && skillField.skill.remaining,
-        distance,
-        distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
-      });
-    }
-
-    return result;
-  }
-
-  function collectIncomingTargetWatchOverlayEntities(runtime) {
-    const self = findLocalPlayerEntity(runtime);
-    if (!self) return [];
-
-    const selfPosition = getRuntimeWorldPosition(self.entity);
-    if (!selfPosition) return [];
-
-    const entities = collectLoadedRuntimeEntities(runtime, {
-      limit: 900,
-      playersOnly: true,
-    });
-    const result = [];
-
-    for (const item of entities.items) {
-      if (isSameRuntimeEntity(item.entity, self.entity)) continue;
-
-      const relation = getRuntimeEntityRelation(item.entity, self.entity);
-      if (relation.friendly) continue;
-
-      const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self.entity);
-      const watchField = getIncomingTargetWatchField(targetInfo);
-      if (!watchField) continue;
-
-      const distance = getHorizontalRuntimeDistance(selfPosition.position, item.position);
-      result.push({
-        entity: item.entity,
-        path: item.path,
-        name: item.name,
-        matchedName: item.name.toLowerCase(),
-        position: item.position,
-        positionSource: item.positionSource,
-        score: 920 + (relation.hostile ? 80 : 0),
-        incomingTargetWatch: true,
-        relation,
-        watchTargetField: watchField.key,
-        distance,
-        distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
-      });
-    }
-
-    return result;
-  }
-
   function getIncomingSkillField(targetInfo) {
     if (!targetInfo || !Array.isArray(targetInfo.activeFields)) return null;
 
@@ -12243,13 +12295,13 @@
       label.appendChild(distance);
     }
 
-    label.title = [
+    label.title = joinStatusParts([
       `${candidate.name} -> 나`,
       candidate.skillId ? `skill ${candidate.skillId}` : "",
       candidate.incomingTargetWatch ? "주시" : "",
       candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
       candidate.relation ? `관계 ${candidate.relation.type}` : "",
-    ].filter(Boolean).join(" / ");
+    ]);
   }
 
   function collectRuntimeOverlayEntities(names, options = {}) {
@@ -12980,14 +13032,10 @@
     const expected = [
       "client-runtime-probe",
       "client-engine-setter",
-      "client-frame-loop",
-      "client-onload-runtime",
-      "client-set-state",
-      "client-set-player",
+      "client-render-state",
       "client-engine-tick",
-      "client-manage-chunks",
       "client-prototype-runtime",
-      "client-target-controller",
+      "client-skill-runtime",
     ];
 
     return {
@@ -13090,14 +13138,12 @@
         lastError: HIGHLIGHT_STATE.lastIncomingSkillOverlayError,
         lastMatches: [...HIGHLIGHT_STATE.lastIncomingSkillOverlayMatches],
         list: {
-          enabled: isIncomingSkillListEnabled(),
-          host: Boolean(HIGHLIGHT_STATE.incomingSkillListHost && document.contains(HIGHLIGHT_STATE.incomingSkillListHost)),
-          hits: HIGHLIGHT_STATE.incomingSkillListHits,
-          lastAt: HIGHLIGHT_STATE.lastIncomingSkillListAt
-            ? new Date(HIGHLIGHT_STATE.lastIncomingSkillListAt).toISOString()
-            : null,
-          lastError: HIGHLIGHT_STATE.lastIncomingSkillListError,
-          lastMatches: [...HIGHLIGHT_STATE.lastIncomingSkillListMatches],
+          enabled: false,
+          host: false,
+          hits: 0,
+          lastAt: null,
+          lastError: "",
+          lastMatches: [],
         },
       },
       incomingTargetWatch: {
@@ -13344,38 +13390,46 @@
 
   function getRuntimeChildren(value, path, limit) {
     const children = [];
-    if (!isRuntimeTraversable(value, path)) return children;
+    forEachRuntimeChild(value, path, limit, (childValue, childPath) => {
+      children.push({ value: childValue, path: childPath });
+      return true;
+    });
+    return children;
+  }
+
+  function forEachRuntimeChild(value, path, limit, visit) {
+    if (!isRuntimeTraversable(value, path)) return;
 
     if (Array.isArray(value)) {
       const length = Math.min(value.length, limit);
       for (let index = 0; index < length; index++) {
         const child = value[index];
-        if (isRuntimeObject(child)) children.push({ value: child, path: `${path}[${index}]` });
+        if (isRuntimeObject(child) && visit(child, `${path}[${index}]`) === false) break;
       }
-      return children;
+      return;
     }
 
     if (value instanceof Map || value instanceof Set) {
       let index = 0;
       for (const entry of value.values()) {
         if (index >= limit) break;
-        if (isRuntimeObject(entry)) children.push({ value: entry, path: `${path}.${value instanceof Map ? "map" : "set"}[${index}]` });
+        if (isRuntimeObject(entry) && visit(entry, `${path}.${value instanceof Map ? "map" : "set"}[${index}]`) === false) break;
         index++;
       }
-      return children;
+      return;
     }
 
+    let visited = 0;
     for (const key of safeOwnKeys(value)) {
-      if (children.length >= limit) break;
+      if (visited >= limit) break;
       if (shouldSkipRuntimeKey(key)) continue;
 
       const child = safeReadOwnValue(value, key);
       if (isRuntimeObject(child) && isRuntimeTraversable(child, `${path}.${key}`)) {
-        children.push({ value: child, path: `${path}.${key}` });
+        visited++;
+        if (visit(child, `${path}.${key}`) === false) break;
       }
     }
-
-    return children;
   }
 
   function shouldSkipRuntimeKey(key) {
@@ -13455,6 +13509,37 @@
     } catch {
       return undefined;
     }
+  }
+
+  function getCachedDeepRuntimeSearch(cacheKey, searchFn) {
+    const now = Date.now();
+    const cache = TARGET_DISTANCE_STATE.deepSearchCache;
+    const cached = cache.get(cacheKey);
+    if (cached && now - cached.at < TARGET_DISTANCE_DEEP_SEARCH_CACHE_MS) {
+      return cached.result;
+    }
+
+    const result = searchFn();
+    cache.set(cacheKey, { at: now, result });
+    trimDeepRuntimeSearchCache();
+    return result;
+  }
+
+  function trimDeepRuntimeSearchCache() {
+    const cache = TARGET_DISTANCE_STATE.deepSearchCache;
+    if (cache.size <= TARGET_DISTANCE_DEEP_SEARCH_CACHE_MAX) return;
+
+    const overflow = cache.size - TARGET_DISTANCE_DEEP_SEARCH_CACHE_MAX;
+    let removed = 0;
+    for (const key of cache.keys()) {
+      cache.delete(key);
+      removed++;
+      if (removed >= overflow) break;
+    }
+  }
+
+  function clearDeepRuntimeSearchCache() {
+    TARGET_DISTANCE_STATE.deepSearchCache.clear();
   }
 
   function getTargetDistance(force = false) {
@@ -13802,6 +13887,7 @@
           locked: true,
         };
         TARGET_DISTANCE_STATE.lastAt = 0;
+        clearDeepRuntimeSearchCache();
         return {
           ok: true,
           ...getTargetDistanceLockStatus(),
@@ -13834,6 +13920,7 @@
       };
       TARGET_DISTANCE_STATE.lastAt = 0;
       TARGET_DISTANCE_STATE.lastResult = null;
+      clearDeepRuntimeSearchCache();
       return {
         ok: true,
         stale: true,
@@ -13894,6 +13981,7 @@
     };
     TARGET_DISTANCE_STATE.lastAt = 0;
     TARGET_DISTANCE_STATE.lastResult = null;
+    clearDeepRuntimeSearchCache();
 
     return {
       ok: true,
@@ -13917,6 +14005,7 @@
     const live = runtime ? findRuntimeEntityById(runtime, id, self && self.entity) : null;
     const targetName = live ? getRuntimeEntityLabel(live.entity) : normalizeHighlightName(name);
     TARGET_DISTANCE_STATE.lockedTarget = null;
+    clearDeepRuntimeSearchCache();
 
     const controllerSelection = live && self
       ? applyRuntimeTargetController(runtime, self.entity, id)
@@ -14027,6 +14116,7 @@
     TARGET_DISTANCE_STATE.lockedTarget = null;
     TARGET_DISTANCE_STATE.lastAt = 0;
     TARGET_DISTANCE_STATE.lastResult = null;
+    clearDeepRuntimeSearchCache();
     clearTargetDistanceOverlay();
 
     const selected = runtime && self ? getSelectedTargetId(runtime, self.entity) : null;
@@ -14493,6 +14583,7 @@
     TARGET_DISTANCE_STATE.lockedTarget = null;
     TARGET_DISTANCE_STATE.lastAt = 0;
     TARGET_DISTANCE_STATE.lastResult = null;
+    clearDeepRuntimeSearchCache();
     return getTargetDistanceLockStatus();
   }
 
@@ -14601,7 +14692,10 @@
       }
     }
 
-    return findBestRuntimeEntity(runtime, (value, path) => scoreSelectedTargetEntity(value, path, selfEntity));
+    const selfId = getRuntimeEntityId(selfEntity);
+    return getCachedDeepRuntimeSearch(`selected:${selfId === undefined ? "unknown" : String(selfId)}`, () =>
+      findBestRuntimeEntity(runtime, (value, path) => scoreSelectedTargetEntity(value, path, selfEntity))
+    );
   }
 
   function getSelectedTargetId(runtime, selfEntity) {
@@ -14707,12 +14801,15 @@
     const direct = findRuntimeEntityByIdDirect(runtime, id, expected, selfEntity);
     if (direct) return direct;
 
-    return findBestRuntimeEntity(runtime, (value) => {
-      if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+    return getCachedDeepRuntimeSearch(`id:${expected}`, () =>
+      findBestRuntimeEntity(runtime, (value) => {
+        if (isSameRuntimeEntity(value, selfEntity)) return 0;
 
-      const actual = getRuntimeEntityId(value);
-      return actual !== undefined && String(actual) === expected ? 130 : 0;
-    });
+        const actual = getRuntimeEntityId(value);
+        if (actual === undefined || String(actual) !== expected) return 0;
+        return getRuntimeWorldPosition(value) ? 130 : 0;
+      })
+    );
   }
 
   function findRuntimeEntityByIdDirect(runtime, rawId, expected, selfEntity) {
@@ -14778,10 +14875,11 @@
   }
 
   function isResolvedRuntimeEntity(entity, selfEntity, expected) {
-    if (!isRuntimeObject(entity) || isSameRuntimeEntity(entity, selfEntity) || !getRuntimeWorldPosition(entity)) return false;
+    if (!isRuntimeObject(entity) || isSameRuntimeEntity(entity, selfEntity)) return false;
 
     const actual = getRuntimeEntityId(entity);
-    return actual !== undefined && String(actual) === expected;
+    if (actual === undefined || String(actual) !== expected) return false;
+    return Boolean(getRuntimeWorldPosition(entity));
   }
 
   function findRuntimeEntityByConfiguredHighlightNames(runtime) {
@@ -14807,18 +14905,21 @@
     const expected = normalizeHighlightName(name).toLowerCase();
     if (!expected) return null;
 
-    return findBestRuntimeEntity(runtime, (value, path) => {
-      if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+    return getCachedDeepRuntimeSearch(`name:${expected}`, () =>
+      findBestRuntimeEntity(runtime, (value, path) => {
+        if (isSameRuntimeEntity(value, selfEntity)) return 0;
 
-      const actual = getRuntimeNameValueLoose(value).toLowerCase();
-      if (actual !== expected) return 0;
+        const actual = getRuntimeNameValueLoose(value).toLowerCase();
+        if (actual !== expected) return 0;
+        if (!getRuntimeWorldPosition(value)) return 0;
 
-      let score = 120;
-      if (/target|selected|focus/i.test(path)) score += 40;
-      if (/entities|players|mobs|units|actors/i.test(path)) score += 15;
-      if (getRuntimeEntityId(value) !== undefined) score += 8;
-      return score;
-    });
+        let score = 120;
+        if (/target|selected|focus/i.test(path)) score += 40;
+        if (/entities|players|mobs|units|actors/i.test(path)) score += 15;
+        if (getRuntimeEntityId(value) !== undefined) score += 8;
+        return score;
+      })
+    );
   }
 
   function findBestRuntimeEntity(runtime, scoreEntity) {
@@ -14842,28 +14943,28 @@
 
       if (item.depth >= TARGET_DISTANCE_MAX_DEPTH) continue;
       const childLimit = item.depth === 0 ? 420 : 90;
-      for (const child of getRuntimeChildren(value, item.path, childLimit)) {
-        queue.push({ ...child, depth: item.depth + 1 });
-      }
+      forEachRuntimeChild(value, item.path, childLimit, (childValue, childPath) => {
+        queue.push({ value: childValue, path: childPath, depth: item.depth + 1 });
+        return true;
+      });
     }
 
     return best;
   }
 
   function scoreLocalPlayerEntity(value, path) {
-    if (!getRuntimeWorldPosition(value)) return 0;
-
     let score = 0;
     if (/(\.|^)player$/i.test(path)) score += 90;
     if (/local|myPlayer|self|controlled|character|hero|avatar/i.test(path)) score += 60;
     if (safeReadValue(value, "isSelf") === true || safeReadValue(value, "isLocal") === true) score += 80;
     if (getRuntimeNameValueLoose(value)) score += 10;
     if (getRuntimeEntityId(value) !== undefined) score += 8;
+    if (score <= 0 || !getRuntimeWorldPosition(value)) return 0;
     return score;
   }
 
   function scoreSelectedTargetEntity(value, path, selfEntity) {
-    if (isSameRuntimeEntity(value, selfEntity) || !getRuntimeWorldPosition(value)) return 0;
+    if (isSameRuntimeEntity(value, selfEntity)) return 0;
 
     let score = 0;
     if (/target|selected|focus/i.test(path)) score += 55;
@@ -14872,7 +14973,8 @@
     }
     if (getRuntimeNameValueLoose(value)) score += 12;
     if (getRuntimeEntityId(value) !== undefined) score += 8;
-    return score >= 80 ? score : 0;
+    if (score < 80 || !getRuntimeWorldPosition(value)) return 0;
+    return score;
   }
 
   function getRuntimeSearchRoots(runtime) {
@@ -15148,6 +15250,23 @@
     return true;
   }
 
+  function sendHordesChatMessage(channel, message) {
+    const normalizedChannel = normalizeHordesChatChannel(channel);
+    const body = String(message || "").replace(/\s+/g, " ").trim();
+    if (!body) throw new Error(`${getHordesChatChannelLabel(normalizedChannel)} 메시지가 비어 있습니다.`);
+    if (!HORDES_CHAT_CHANNELS.has(normalizedChannel)) {
+      throw new Error(`지원하지 않는 채팅 채널입니다: ${channel}`);
+    }
+
+    sendHordesClientCommand(normalizedChannel, body.slice(0, 480));
+    return {
+      ok: true,
+      method: "websocket",
+      channel: normalizedChannel,
+      body,
+    };
+  }
+
   function sendHordesItemMove(fromSlot, toSlot) {
     if (!Number.isInteger(fromSlot) || !Number.isInteger(toSlot)) {
       throw new Error(`잘못된 슬롯입니다: ${fromSlot} -> ${toSlot}`);
@@ -15163,30 +15282,6 @@
     }
 
     return sendHordesClientCommand("itemsplitone", String(slot));
-  }
-
-  function sendHordesItemAuctionPost(dbid, price) {
-    const normalizedDbid = String(dbid || "").trim();
-    const normalizedPrice = Number(price);
-    if (!normalizedDbid) throw new Error("거래소 등록 아이템 dbid가 없습니다.");
-    if (!Number.isInteger(normalizedPrice) || normalizedPrice <= 0 || normalizedPrice > 2147483646) {
-      throw new Error(`잘못된 거래소 가격입니다: ${price}`);
-    }
-
-    return sendHordesClientCommand("itemauctionpost", `${normalizedDbid} ${normalizedPrice}`);
-  }
-
-  function sendHordesItemAuctionFind(type, tier = "all", sortMode = 1, sortDirection = 1, page = 0) {
-    const typeIndex = normalizeAuctionTypeIndex(type);
-    const normalizedTier = typeIndex === 1 ? "all" : normalizeAuctionTier(tier);
-    const normalizedSortMode = clampInteger(sortMode, 0, 2, 1);
-    const normalizedDirection = clampInteger(sortDirection, 0, 1, 1);
-    const normalizedPage = clampInteger(page, 0, 999, 0);
-
-    return sendHordesClientCommand(
-      "itemauctionfind",
-      `${typeIndex} ${normalizedTier} ${normalizedSortMode} ${normalizedDirection} ${normalizedPage}`
-    );
   }
 
   function encodeHordesClientCommand(command, payload) {
@@ -15339,7 +15434,6 @@
 
     const numericTier = Number.isFinite(Number(tier)) ? Number(tier) : null;
     const bound = Number(safeReadValue(item, "bound"));
-    const auction = safeReadValue(item, "auction");
     const iconKey = getRuntimeGearIconKey(itemType, tier);
     return {
       slotId: isGearEquipSlot(slotIndex) ? `equip${slotIndex}` : `bag${slotIndex}`,
@@ -15354,7 +15448,6 @@
       gearScore: Number.isFinite(Number(safeReadValue(item, "gs"))) ? Number(safeReadValue(item, "gs")) : null,
       bound: Number.isFinite(bound) ? bound : null,
       tradable: !Number.isFinite(bound) || bound === 0,
-      auction: auction ? String(auction) : "",
       owner: String(safeReadValue(item, "owner") || ""),
       iconKey,
       iconSrc: iconKey,
@@ -15438,712 +15531,6 @@
     if (!item) return item;
     const { element, ...safeItem } = item;
     return safeItem;
-  }
-
-  function getAuctionAutoListStatus() {
-    const scan = scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM);
-    return {
-      running: AUCTION_AUTOLIST_STATE.running,
-      stopRequested: AUCTION_AUTOLIST_STATE.stopRequested,
-      lastState: AUCTION_AUTOLIST_STATE.lastState,
-      lastError: AUCTION_AUTOLIST_STATE.lastError,
-      lastRunAt: AUCTION_AUTOLIST_STATE.lastRunAt,
-      lastResult: AUCTION_AUTOLIST_STATE.lastResult,
-      socket: getGearSocketStatus(),
-      scan,
-    };
-  }
-
-  function scanAuctionAutoListItems(itemSpec = AUCTION_AUTOLIST_DEFAULT_ITEM) {
-    const items = scanRuntimeInventoryItems()
-      .filter((item) => isAuctionAutoListItem(item, itemSpec))
-      .map(stripGearPresetElement);
-    const singles = items.filter((item) => item.stacks === 1);
-    const stacks = items.filter((item) => Number(item.stacks) > 1);
-    const totalUnits = items.reduce((sum, item) => sum + Math.max(1, Number(item.stacks) || 1), 0);
-    return {
-      item: `${itemSpec.name || itemSpec.type} ${itemSpec.type}:${itemSpec.tier}`,
-      totalSlots: items.length,
-      totalUnits,
-      singles: singles.length,
-      stackSlots: stacks.length,
-      stacks: stacks.map((item) => ({
-        slotIndex: item.slotIndex,
-        dbid: item.dbid,
-        stacks: item.stacks,
-        tradable: item.tradable,
-      })),
-      singleItems: singles.slice(0, 20).map((item) => ({
-        slotIndex: item.slotIndex,
-        dbid: item.dbid,
-        tradable: item.tradable,
-      })),
-    };
-  }
-
-  async function runAuctionAutoList(options = {}) {
-    if (AUCTION_AUTOLIST_STATE.running) return getAuctionAutoListStatus();
-
-    let normalized;
-    try {
-      normalized = normalizeAuctionAutoListOptions(options);
-    } catch (error) {
-      AUCTION_AUTOLIST_STATE.lastState = "등록 설정 오류";
-      AUCTION_AUTOLIST_STATE.lastError = error && error.message ? error.message : String(error);
-      renderStatusUi();
-      return getAuctionAutoListStatus();
-    }
-
-    const result = {
-      item: normalized.item.name,
-      itemType: normalized.item.type,
-      itemTier: normalized.item.tier,
-      requested: normalized.count,
-      price: normalized.price,
-      priceText: formatCoinAmount(normalized.price),
-      dryRun: normalized.dryRun,
-      splitRequested: 0,
-      split: 0,
-      postRequested: 0,
-      posted: 0,
-      skipped: 0,
-      actions: [],
-      errors: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-    };
-
-    AUCTION_AUTOLIST_STATE.running = true;
-    AUCTION_AUTOLIST_STATE.stopRequested = false;
-    AUCTION_AUTOLIST_STATE.lastState = normalized.dryRun ? "미리보기 중" : "등록 중";
-    AUCTION_AUTOLIST_STATE.lastError = "";
-    AUCTION_AUTOLIST_STATE.lastResult = result;
-    renderStatusUi();
-    showGearPresetProgressOverlay(`${normalized.item.name} 등록 준비 중`);
-
-    let fatalError = null;
-    try {
-      if (!normalized.dryRun && !getGameWebSocket()) {
-        throw new Error("게임 WebSocket을 찾지 못했습니다. 새로고침 후 다시 시도하세요.");
-      }
-
-      if (normalized.dryRun) {
-        const scan = scanAuctionAutoListItems(normalized.item);
-        result.actions.push({
-          type: "dry-run",
-          scan,
-          canPostNow: Math.min(normalized.count, scan.singles),
-          canSplitAndPost: Math.max(0, Math.min(normalized.count - scan.singles, scan.totalUnits - scan.singles)),
-        });
-        AUCTION_AUTOLIST_STATE.lastState = "미리보기 완료";
-        showGearPresetProgressOverlay(`${normalized.item.name} 미리보기 완료`, "success", 1800);
-        return getAuctionAutoListStatus();
-      }
-
-      for (let index = 0; index < normalized.count; index += 1) {
-        if (AUCTION_AUTOLIST_STATE.stopRequested) {
-          result.skipped = normalized.count - index;
-          AUCTION_AUTOLIST_STATE.lastState = "중지됨";
-          break;
-        }
-
-        showGearPresetProgressOverlay(
-          `${normalized.item.name} 등록 중 ${result.posted}/${normalized.count} / ${formatCoinAmount(normalized.price)}`
-        );
-
-        const item = await prepareAuctionSingleItem(normalized, result);
-        if (!item) {
-          throw new Error(`${normalized.item.name} 1개짜리 아이템을 만들 수 없습니다.`);
-        }
-
-        sendHordesItemAuctionPost(item.dbid, normalized.price);
-        result.postRequested += 1;
-        result.actions.push({
-          type: "post",
-          dbid: item.dbid,
-          slotIndex: item.slotIndex,
-          price: normalized.price,
-        });
-
-        const posted = await waitForRuntimeInventoryCondition(
-          (items) => isAuctionPostConfirmed(items, item.dbid),
-          normalized.verifyTimeoutMs
-        );
-        if (!posted) {
-          throw new Error(`거래소 등록 확인 실패: ${item.dbid}`);
-        }
-
-        result.posted += 1;
-        AUCTION_AUTOLIST_STATE.lastState = `${result.posted}/${normalized.count}개 등록`;
-        showGearPresetProgressOverlay(
-          `${normalized.item.name} 등록 중 ${result.posted}/${normalized.count} / ${formatCoinAmount(normalized.price)}`
-        );
-        renderStatusUi();
-        await delay(normalized.postDelayMs);
-      }
-    } catch (error) {
-      fatalError = error;
-      result.errors.push(error && error.message ? error.message : String(error));
-    } finally {
-      result.finishedAt = new Date().toISOString();
-      AUCTION_AUTOLIST_STATE.running = false;
-      AUCTION_AUTOLIST_STATE.stopRequested = false;
-      AUCTION_AUTOLIST_STATE.lastRunAt = new Date();
-      AUCTION_AUTOLIST_STATE.lastResult = result;
-      if (fatalError) {
-        AUCTION_AUTOLIST_STATE.lastState = "등록 실패";
-        AUCTION_AUTOLIST_STATE.lastError = fatalError && fatalError.message ? fatalError.message : String(fatalError);
-        showGearPresetProgressOverlay(`Lucid 등록 실패: ${AUCTION_AUTOLIST_STATE.lastError}`, "error", 3200);
-      } else if (normalized.dryRun) {
-        AUCTION_AUTOLIST_STATE.lastState = "미리보기 완료";
-        AUCTION_AUTOLIST_STATE.lastError = "";
-        showGearPresetProgressOverlay("Lucid 미리보기 완료", "success", 1800);
-      } else if (AUCTION_AUTOLIST_STATE.lastState === "중지됨") {
-        AUCTION_AUTOLIST_STATE.lastError = "";
-        showGearPresetProgressOverlay(`Lucid 등록 중지: ${result.posted}/${result.requested}`, "warn", 2400);
-      } else {
-        AUCTION_AUTOLIST_STATE.lastState = `등록 완료 ${result.posted}/${result.requested}`;
-        AUCTION_AUTOLIST_STATE.lastError = "";
-        showGearPresetProgressOverlay(`Lucid 등록 완료 ${result.posted}/${result.requested}`, "success", 2200);
-      }
-      renderStatusUi();
-    }
-
-    return getAuctionAutoListStatus();
-  }
-
-  function stopAuctionAutoList() {
-    if (AUCTION_AUTOLIST_STATE.running) {
-      AUCTION_AUTOLIST_STATE.stopRequested = true;
-      AUCTION_AUTOLIST_STATE.lastState = "중지 요청";
-      renderStatusUi();
-    }
-    return getAuctionAutoListStatus();
-  }
-
-  async function prepareAuctionSingleItem(options, result) {
-    const existingSingle = findAuctionSingleItem(options.item);
-    if (existingSingle) return existingSingle;
-
-    const source = findAuctionSplitSourceItem(options.item);
-    if (!source) return null;
-
-    const beforeDbids = new Set(scanRuntimeInventoryItems().map((item) => item.dbid));
-    sendHordesItemSplitOne(source.slotIndex);
-    result.splitRequested += 1;
-    result.actions.push({
-      type: "split-one",
-      dbid: source.dbid,
-      slotIndex: source.slotIndex,
-      stacks: source.stacks,
-    });
-
-    const created = await waitForRuntimeInventoryCondition((items) => {
-      const freshSingle = items.find((item) => (
-        isAuctionAutoListItem(item, options.item) &&
-        item.stacks === 1 &&
-        item.tradable !== false &&
-        !beforeDbids.has(item.dbid)
-      ));
-      return freshSingle || null;
-    }, options.verifyTimeoutMs);
-
-    if (!created) return null;
-
-    result.split += 1;
-    await delay(options.splitDelayMs);
-    return created;
-  }
-
-  function findAuctionSingleItem(itemSpec) {
-    return scanRuntimeInventoryItems().find((item) => (
-      isAuctionAutoListItem(item, itemSpec) &&
-      item.stacks === 1 &&
-      item.tradable !== false
-    )) || null;
-  }
-
-  function findAuctionSplitSourceItem(itemSpec) {
-    return scanRuntimeInventoryItems()
-      .filter((item) => (
-        isAuctionAutoListItem(item, itemSpec) &&
-        Number(item.stacks) > 1 &&
-        item.tradable !== false
-      ))
-      .sort((left, right) => Number(right.stacks) - Number(left.stacks))[0] || null;
-  }
-
-  function isAuctionAutoListItem(item, itemSpec) {
-    if (!item || !isRuntimeBagSlot(item.slotIndex)) return false;
-    if (String(item.itemType || "").toLowerCase() !== String(itemSpec.type || "").toLowerCase()) return false;
-    return Number(item.tier) === Number(itemSpec.tier);
-  }
-
-  function isRuntimeBagSlot(slotIndex) {
-    return Number.isInteger(Number(slotIndex)) && Number(slotIndex) >= 0 && Number(slotIndex) < 100;
-  }
-
-  function isAuctionPostConfirmed(items, dbid) {
-    const current = items.find((item) => item.dbid === String(dbid));
-    return !current || Boolean(current.auction);
-  }
-
-  async function waitForRuntimeInventoryCondition(predicate, timeoutMs) {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt <= timeoutMs) {
-      const items = scanRuntimeInventoryItems();
-      const result = predicate(items);
-      if (result) return result;
-      await delay(AUCTION_AUTOLIST_POLL_MS);
-    }
-    return null;
-  }
-
-  function normalizeAuctionAutoListOptions(options) {
-    const raw = typeof options === "number" ? { count: options } : (options || {});
-    const item = {
-      ...AUCTION_AUTOLIST_DEFAULT_ITEM,
-      ...(isObject(raw.item) ? raw.item : {}),
-    };
-    const count = Math.floor(Number(raw.count === undefined ? 1 : raw.count));
-    const price = normalizeAuctionPrice(raw);
-
-    if (!Number.isInteger(count) || count < 1) throw new Error(`잘못된 등록 개수입니다: ${raw.count}`);
-    if (!Number.isInteger(price) || price < 1) throw new Error(`잘못된 등록 가격입니다: ${raw.price}`);
-
-    return {
-      item,
-      count: Math.min(count, AUCTION_AUTOLIST_MAX_COUNT),
-      price,
-      dryRun: raw.dryRun === true,
-      splitDelayMs: clampNumber(raw.splitDelayMs, 0, 2000, AUCTION_AUTOLIST_DEFAULT_SPLIT_DELAY_MS),
-      postDelayMs: clampNumber(raw.postDelayMs, 0, 3000, AUCTION_AUTOLIST_DEFAULT_POST_DELAY_MS),
-      verifyTimeoutMs: clampNumber(raw.verifyTimeoutMs, 500, 10000, AUCTION_AUTOLIST_VERIFY_TIMEOUT_MS),
-    };
-  }
-
-  function normalizeAuctionPrice(options) {
-    if (options.price !== undefined) return Math.floor(Number(options.price));
-    const gold = Math.floor(Number(options.gold || 0));
-    const silver = Math.floor(Number(options.silver || 0));
-    const copper = Math.floor(Number(options.copper || 0));
-    return gold * 10000 + silver * 100 + copper;
-  }
-
-  function clampNumber(value, min, max, fallback) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return fallback;
-    return Math.min(max, Math.max(min, numeric));
-  }
-
-  function formatCoinAmount(amount) {
-    const value = Math.max(0, Math.floor(Number(amount) || 0));
-    const copper = value % 100;
-    const silver = Math.floor(value / 100) % 100;
-    const gold = Math.floor(value / 10000);
-    const parts = [];
-    if (gold) parts.push(`${gold}금`);
-    if (silver) parts.push(`${silver}은`);
-    if (copper || parts.length === 0) parts.push(`${copper}동`);
-    return parts.join(" ");
-  }
-
-  function initAuctionWatchManager() {
-    syncAuctionWatchActiveFlag();
-    if (AUCTION_WATCH_CONFIG.enabled) {
-      AUCTION_WATCH_STATE.lastState = "대기";
-      scheduleAuctionWatchTimer(1200);
-    }
-  }
-
-  function syncAuctionWatchActiveFlag() {
-    try {
-      pageWindow.__HORDES_KR_AUCTION_WATCH_ACTIVE__ = AUCTION_WATCH_CONFIG.enabled === true || AUCTION_WATCH_STATE.running === true;
-    } catch {
-      // Page runtime hook reads this flag only when available.
-    }
-  }
-
-  function setAuctionWatchEnabled(enabled) {
-    AUCTION_WATCH_CONFIG.enabled = Boolean(enabled);
-    saveAuctionWatchConfig();
-    syncAuctionWatchActiveFlag();
-
-    if (AUCTION_WATCH_CONFIG.enabled) {
-      AUCTION_WATCH_STATE.lastState = "대기";
-      scheduleAuctionWatchTimer(300);
-    } else {
-      clearAuctionWatchTimer();
-      AUCTION_WATCH_STATE.lastState = "꺼짐";
-    }
-
-    HIGHLIGHT_STATE.presetBarRenderKey = "";
-    updatePresetQuickBar();
-    renderStatusUi();
-    return getAuctionWatchStatus();
-  }
-
-  function clearAuctionWatchTimer() {
-    if (!AUCTION_WATCH_STATE.timer) return;
-    pageWindow.clearTimeout(AUCTION_WATCH_STATE.timer);
-    AUCTION_WATCH_STATE.timer = null;
-  }
-
-  function scheduleAuctionWatchTimer(delayMs) {
-    clearAuctionWatchTimer();
-    if (!AUCTION_WATCH_CONFIG.enabled) return;
-
-    AUCTION_WATCH_STATE.timer = pageWindow.setTimeout(() => {
-      AUCTION_WATCH_STATE.timer = null;
-      refreshAuctionWatchNow({ automatic: true }).finally(() => {
-        if (AUCTION_WATCH_CONFIG.enabled) {
-          scheduleAuctionWatchTimer(AUCTION_WATCH_CONFIG.refreshMs || AUCTION_WATCH_REFRESH_MS);
-        }
-      });
-    }, Math.max(250, Number(delayMs) || AUCTION_WATCH_REFRESH_MS));
-  }
-
-  function setAuctionWatchRules(rules) {
-    const nextRules = Array.isArray(rules) ? rules.map(normalizeAuctionWatchRule).filter(Boolean) : [];
-    AUCTION_WATCH_CONFIG.rules = nextRules.length > 0 ? nextRules : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
-    saveAuctionWatchConfig();
-    HIGHLIGHT_STATE.presetBarRenderKey = "";
-    updatePresetQuickBar();
-    renderStatusUi();
-    return getAuctionWatchStatus();
-  }
-
-  async function refreshAuctionWatchNow(options = {}) {
-    if (AUCTION_WATCH_STATE.running) return getAuctionWatchStatus();
-
-    const socket = getGearSocketStatus();
-    if (!socket.available) {
-      AUCTION_WATCH_STATE.lastState = "서버대기";
-      AUCTION_WATCH_STATE.lastError = "게임 서버 WebSocket 감지 후 조회할 수 있습니다.";
-      renderStatusUi();
-      HIGHLIGHT_STATE.presetBarRenderKey = "";
-      updatePresetQuickBar();
-      return getAuctionWatchStatus();
-    }
-
-    const rules = getAuctionWatchRules();
-    const result = {
-      automatic: options.automatic === true,
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      rules: rules.map((rule) => ({
-        id: rule.id,
-        label: rule.label,
-        type: rule.type,
-        tier: rule.tier,
-        requiredStatIds: rule.requiredStatIds.slice(),
-        pages: rule.pages,
-      })),
-      matches: [],
-      selfItems: [],
-      pages: [],
-      errors: [],
-    };
-
-    AUCTION_WATCH_STATE.running = true;
-    AUCTION_WATCH_STATE.lastState = "조회 중";
-    AUCTION_WATCH_STATE.lastError = "";
-    AUCTION_WATCH_STATE.lastResult = result;
-    syncAuctionWatchActiveFlag();
-    HIGHLIGHT_STATE.presetBarRenderKey = "";
-    updatePresetQuickBar();
-    renderStatusUi();
-
-    try {
-      for (const rule of rules) {
-        const pages = clampInteger(rule.pages, 1, AUCTION_WATCH_MAX_PAGES, 1);
-        for (let page = 0; page < pages; page += 1) {
-          const pageResult = await queryAuctionWatchPage(rule, page);
-          result.pages.push(pageResult.summary);
-          for (const item of pageResult.items) {
-            if (item.group === "self") result.selfItems.push(item);
-            if (matchesAuctionWatchRule(item, rule)) {
-              result.matches.push({
-                ...item,
-                ruleId: rule.id,
-                ruleLabel: rule.label,
-              });
-            }
-          }
-          await delay(AUCTION_WATCH_PAGE_DELAY_MS);
-        }
-      }
-
-      dedupeAuctionWatchItems(result.matches);
-      dedupeAuctionWatchItems(result.selfItems);
-      AUCTION_WATCH_STATE.lastMatches = result.matches.slice(0, 50);
-      AUCTION_WATCH_STATE.lastSelfItems = result.selfItems.slice(0, 50);
-      AUCTION_WATCH_STATE.lastState = result.matches.length > 0
-        ? `발견 ${result.matches.length}개`
-        : "조건 없음";
-      AUCTION_WATCH_STATE.lastError = "";
-      maybeShowAuctionWatchAlert(result.matches);
-    } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      result.errors.push(message);
-      AUCTION_WATCH_STATE.lastState = "조회 실패";
-      AUCTION_WATCH_STATE.lastError = message;
-    } finally {
-      result.finishedAt = new Date().toISOString();
-      AUCTION_WATCH_STATE.running = false;
-      AUCTION_WATCH_STATE.lastRunAt = new Date();
-      AUCTION_WATCH_STATE.lastResult = result;
-      syncAuctionWatchActiveFlag();
-      HIGHLIGHT_STATE.presetBarRenderKey = "";
-      updatePresetQuickBar();
-      renderStatusUi();
-    }
-
-    return getAuctionWatchStatus();
-  }
-
-  async function queryAuctionWatchPage(rule, page) {
-    const startedAt = Date.now();
-    const typeIndex = normalizeAuctionTypeIndex(rule.type);
-    const tier = normalizeAuctionTier(rule.tier);
-    const sortMode = clampInteger(rule.sortMode, 0, 2, 1);
-    const sortDirection = clampInteger(rule.sortDirection, 0, 1, 1);
-    const previousAt = getLastAuctionHydrationAt();
-
-    AUCTION_WATCH_STATE.querySeq += 1;
-    syncAuctionWatchActiveFlag();
-    sendHordesItemAuctionFind(typeIndex, tier, sortMode, sortDirection, page);
-
-    const hydrated = await waitForAuctionHydration(previousAt, startedAt, AUCTION_WATCH_TIMEOUT_MS);
-    if (!hydrated) {
-      throw new Error(`거래소 응답 대기 실패: ${rule.label} p${page + 1}`);
-    }
-
-    const items = Array.isArray(hydrated.items) ? hydrated.items.map(normalizeAuctionRuntimeItem).filter(Boolean) : [];
-    return {
-      items,
-      summary: {
-        ruleId: rule.id,
-        page,
-        count: items.length,
-        at: hydrated.at || Date.now(),
-      },
-    };
-  }
-
-  function getLastAuctionHydrationAt() {
-    const runtime = getExposedRuntime();
-    const hydrated = runtime && safeReadValue(runtime, "lastAuctionItems");
-    return Number(hydrated && safeReadValue(hydrated, "at")) || 0;
-  }
-
-  async function waitForAuctionHydration(previousAt, startedAt, timeoutMs) {
-    const started = Date.now();
-    while (Date.now() - started <= timeoutMs) {
-      const runtime = getExposedRuntime();
-      const hydrated = runtime && safeReadValue(runtime, "lastAuctionItems");
-      const at = Number(hydrated && safeReadValue(hydrated, "at")) || 0;
-      const requestAt = Number(hydrated && safeReadValue(hydrated, "requestAt")) || 0;
-      if (hydrated && at > previousAt && requestAt >= startedAt - 250) return hydrated;
-
-      const error = runtime && safeReadValue(runtime, "lastAuctionError");
-      const errorAt = Number(error && safeReadValue(error, "at")) || 0;
-      if (error && errorAt >= startedAt - 250) {
-        throw new Error(String(safeReadValue(error, "message") || "거래소 상세 조회 실패"));
-      }
-
-      await delay(AUCTION_AUTOLIST_POLL_MS);
-    }
-    return null;
-  }
-
-  function normalizeAuctionRuntimeItem(item) {
-    if (!item) return null;
-    const type = String(safeReadValue(item, "type") || "").toLowerCase();
-    const dbid = String(safeReadValue(item, "dbid") || safeReadValue(item, "id") || "").trim();
-    if (!type || !dbid) return null;
-
-    const stats = Array.isArray(item.stats)
-      ? item.stats.map((stat) => ({
-          id: Number(stat && stat.id),
-          type: String(stat && stat.type || ""),
-          value: Number(stat && stat.value),
-          qual: Number(stat && stat.qual),
-        })).filter((stat) => Number.isInteger(stat.id))
-      : [];
-
-    return {
-      dbid,
-      id: String(safeReadValue(item, "id") || dbid),
-      type,
-      tier: Number(safeReadValue(item, "tier")),
-      upgrade: Number(safeReadValue(item, "upgrade")) || 0,
-      quality: Number(safeReadValue(item, "quality")) || 0,
-      gearScore: Number(safeReadValue(item, "gearScore")) || 0,
-      stacks: Number(safeReadValue(item, "stacks")) || 0,
-      bound: Number(safeReadValue(item, "bound")) || 0,
-      owner: String(safeReadValue(item, "owner") || ""),
-      auction: String(safeReadValue(item, "auction") || ""),
-      auctionprice: Number(safeReadValue(item, "auctionprice")) || 0,
-      group: String(safeReadValue(item, "group") || "unknown"),
-      stats,
-    };
-  }
-
-  function matchesAuctionWatchRule(item, rule) {
-    if (!item || !rule) return false;
-    if (String(item.type || "").toLowerCase() !== String(rule.type || "").toLowerCase()) return false;
-    if (rule.tier !== "all" && Number(item.tier) !== Number(rule.tier)) return false;
-
-    const statIds = new Set((item.stats || []).map((stat) => Number(stat.id)));
-    return (rule.requiredStatIds || []).every((id) => statIds.has(Number(id)));
-  }
-
-  function dedupeAuctionWatchItems(items) {
-    const seen = new Set();
-    for (let index = items.length - 1; index >= 0; index -= 1) {
-      const key = String(items[index] && items[index].dbid || "");
-      if (!key || seen.has(key)) {
-        items.splice(index, 1);
-      } else {
-        seen.add(key);
-      }
-    }
-    return items;
-  }
-
-  function maybeShowAuctionWatchAlert(matches) {
-    const now = Date.now();
-    for (const [key, at] of AUCTION_WATCH_STATE.alertHistory.entries()) {
-      if (now - Number(at) > AUCTION_WATCH_ALERT_TTL_MS) AUCTION_WATCH_STATE.alertHistory.delete(key);
-    }
-
-    const fresh = (matches || []).filter((item) => {
-      const key = item && item.dbid;
-      if (!key || AUCTION_WATCH_STATE.alertHistory.has(key)) return false;
-      AUCTION_WATCH_STATE.alertHistory.set(key, now);
-      return true;
-    });
-    if (fresh.length === 0) return;
-
-    const first = fresh[0];
-    showGearPresetProgressOverlay(
-      `거래소 발견 ${fresh.length}개\n${formatAuctionWatchItemLine(first)}`,
-      "success",
-      4600
-    );
-  }
-
-  function getAuctionWatchStatus() {
-    return {
-      enabled: AUCTION_WATCH_CONFIG.enabled,
-      running: AUCTION_WATCH_STATE.running,
-      lastState: AUCTION_WATCH_STATE.lastState,
-      lastError: AUCTION_WATCH_STATE.lastError,
-      lastRunAt: AUCTION_WATCH_STATE.lastRunAt,
-      rules: getAuctionWatchRules(),
-      matches: AUCTION_WATCH_STATE.lastMatches.slice(),
-      selfItems: AUCTION_WATCH_STATE.lastSelfItems.slice(),
-      lastResult: AUCTION_WATCH_STATE.lastResult,
-      socket: getGearSocketStatus(),
-      runtime: getAuctionWatchRuntimeStatus(),
-    };
-  }
-
-  function getAuctionWatchRuntimeStatus() {
-    const runtime = getExposedRuntime();
-    const find = runtime && safeReadValue(runtime, "lastAuctionFind");
-    const items = runtime && safeReadValue(runtime, "lastAuctionItems");
-    return {
-      activeFlag: pageWindow.__HORDES_KR_AUCTION_WATCH_ACTIVE__ === true,
-      lastFindAt: Number(find && safeReadValue(find, "at")) || null,
-      lastFindCount: Array.isArray(find && find.all) ? find.all.length : null,
-      lastHydrateAt: Number(items && safeReadValue(items, "at")) || null,
-      lastHydrateCount: Array.isArray(items && items.items) ? items.items.length : null,
-    };
-  }
-
-  function getAuctionWatchRules() {
-    const rules = Array.isArray(AUCTION_WATCH_CONFIG.rules) ? AUCTION_WATCH_CONFIG.rules : [];
-    const normalized = rules.map(normalizeAuctionWatchRule).filter(Boolean);
-    return normalized.length > 0 ? normalized : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
-  }
-
-  function normalizeAuctionWatchRule(rule) {
-    const source = isObject(rule) ? rule : AUCTION_WATCH_DEFAULT_RULE;
-    const type = String(source.type || AUCTION_WATCH_DEFAULT_RULE.type).toLowerCase();
-    const typeIndex = normalizeAuctionTypeIndex(type);
-    const requiredStatIds = Array.isArray(source.requiredStatIds)
-      ? source.requiredStatIds.map((id) => Number(id)).filter(Number.isInteger)
-      : AUCTION_WATCH_DEFAULT_RULE.requiredStatIds.slice();
-
-    return {
-      id: String(source.id || `${type}-${requiredStatIds.join("-")}` || AUCTION_WATCH_DEFAULT_RULE_ID),
-      label: String(source.label || formatAuctionWatchRuleLabel(type, requiredStatIds)),
-      type: AUCTION_ITEM_TYPES[typeIndex] || type,
-      tier: normalizeAuctionTier(source.tier === undefined ? "all" : source.tier),
-      requiredStatIds,
-      pages: clampInteger(source.pages, 1, AUCTION_WATCH_MAX_PAGES, AUCTION_WATCH_DEFAULT_RULE.pages),
-      sortMode: clampInteger(source.sortMode, 0, 2, AUCTION_WATCH_DEFAULT_RULE.sortMode),
-      sortDirection: clampInteger(source.sortDirection, 0, 1, AUCTION_WATCH_DEFAULT_RULE.sortDirection),
-    };
-  }
-
-  function formatAuctionWatchRuleLabel(type, statIds) {
-    const stats = (statIds || []).map((id) => AUCTION_STAT_LABELS[id] || `Stat ${id}`).join(" + ");
-    return `${type || "item"}: ${stats || "조건 없음"}`;
-  }
-
-  function normalizeAuctionTypeIndex(type) {
-    if (Number.isInteger(Number(type))) {
-      const index = Number(type);
-      if (index >= 0 && index < AUCTION_ITEM_TYPES.length && AUCTION_ITEM_TYPES[index]) return index;
-    }
-
-    const normalized = String(type || "").toLowerCase();
-    const index = AUCTION_ITEM_TYPES.findIndex((itemType) => itemType === normalized);
-    if (index >= 0) return index;
-    throw new Error(`지원하지 않는 거래소 카테고리입니다: ${type}`);
-  }
-
-  function normalizeAuctionTier(tier) {
-    if (tier === undefined || tier === null || String(tier).trim() === "" || String(tier).toLowerCase() === "all") {
-      return "all";
-    }
-
-    const numeric = Number(tier);
-    if (!Number.isInteger(numeric) || numeric < 0) throw new Error(`잘못된 티어입니다: ${tier}`);
-    return numeric;
-  }
-
-  function clampInteger(value, min, max, fallback) {
-    const numeric = Math.floor(Number(value));
-    if (!Number.isFinite(numeric)) return fallback;
-    return Math.min(max, Math.max(min, numeric));
-  }
-
-  function formatAuctionWatchItemLine(item) {
-    if (!item) return "-";
-    const stats = formatAuctionWatchStats(item.stats);
-    const name = formatAuctionWatchItemName(item);
-    const price = item.auctionprice ? formatCoinAmount(item.auctionprice) : "가격 ?";
-    const owner = item.owner ? ` / ${item.owner}` : "";
-    const self = item.group === "self" ? "내판매 / " : "";
-    return `${self}${name} / ${price}${owner}${stats ? ` / ${stats}` : ""}`;
-  }
-
-  function formatAuctionWatchItemName(item) {
-    const type = String(item && item.type || "item");
-    const tier = Number(item && item.tier);
-    const upgrade = Number(item && item.upgrade) > 0 ? ` +${Number(item.upgrade)}` : "";
-    return `${type}${Number.isFinite(tier) ? ` T${tier}` : ""}${upgrade}`;
-  }
-
-  function formatAuctionWatchStats(stats) {
-    return (stats || [])
-      .filter((stat) => AUCTION_STAT_LABELS[Number(stat.id)])
-      .map((stat) => `${AUCTION_STAT_LABELS[Number(stat.id)]} ${formatRuntimeCompactNumber(stat.value)}`)
-      .join(", ");
   }
 
   function saveGearPresetFromVisibleBag(name) {
@@ -17481,35 +16868,12 @@
             <div class="section feature-grid">
               <button id="toggle" class="action" type="button"></button>
               <button id="toggleHighlight" class="action" type="button"></button>
-              <button id="toggleAuctionWatch" class="action" type="button"></button>
               <button id="toggleChatTranslation" class="action" type="button"></button>
               <button id="toggleMinimapLabels" class="action" type="button"></button>
               <button id="toggleIncomingSkill" class="action" type="button"></button>
               <button id="toggleTargetDistance" class="action" type="button"></button>
               <button id="toggleHighlightList" class="action" type="button"></button>
             </div>
-            <details class="section">
-              <summary>거래소감시 <span id="auctionWatchStatus" class="summary-status"></span></summary>
-              <div class="input-row">
-                <select id="auctionWatchTypeSelect" class="text-input"></select>
-                <input id="auctionWatchTierInput" class="text-input" type="text" placeholder="티어 all" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="input-row three-fields">
-                <select id="auctionWatchStat1Select" class="text-input"></select>
-                <select id="auctionWatchStat2Select" class="text-input"></select>
-                <select id="auctionWatchStat3Select" class="text-input"></select>
-              </div>
-              <div class="input-row">
-                <input id="auctionWatchPagesInput" class="text-input" type="number" min="1" max="10" step="1" placeholder="조회 페이지" autocomplete="off" spellcheck="false" />
-                <button id="addAuctionWatchRule" class="action" type="button">조건 추가</button>
-              </div>
-              <div class="actions">
-                <button id="refreshAuctionWatch" class="action" type="button">지금 조회</button>
-                <button id="resetAuctionWatchRule" class="action" type="button">기본 조건</button>
-              </div>
-              <div id="auctionWatchRuleList" class="rule-list"></div>
-              <div id="auctionWatchNote" class="note"></div>
-            </details>
             <details class="section">
               <summary>프리셋</summary>
               <div class="row"><span class="label">장비프리셋</span><span id="gearPresetStatus" class="value"></span></div>
@@ -17540,20 +16904,6 @@
               </div>
             </details>
             <details class="section">
-              <summary>자동 등록</summary>
-              <div class="row"><span class="label">Lucid 등록</span><span id="auctionAutoListStatus" class="value"></span></div>
-              <div class="input-row">
-                <input id="auctionAutoListCountInput" class="text-input" type="number" min="1" max="150" step="1" placeholder="개수" autocomplete="off" spellcheck="false" />
-                <input id="auctionAutoListSilverInput" class="text-input" type="number" min="0" step="1" placeholder="은" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="actions three">
-                <button id="previewAuctionAutoList" class="action" type="button">확인</button>
-                <button id="startAuctionAutoList" class="action" type="button">등록</button>
-                <button id="stopAuctionAutoList" class="action" type="button">중지</button>
-              </div>
-              <div id="auctionAutoListNote" class="note"></div>
-            </details>
-            <details class="section">
               <summary>채팅 번역 키</summary>
               <div class="row"><span class="label">채팅 키</span><span id="chatApiKeyStatus" class="value"></span></div>
               <div class="input-row api-key">
@@ -17562,12 +16912,17 @@
                 <button id="clearChatApiKey" class="action" type="button">삭제</button>
               </div>
             </details>
-            <details class="section">
-              <summary>타겟 오더</summary>
+            <details class="section" open>
+              <summary>스크립트 타겟 오더</summary>
               <div class="row"><span class="label">타겟오더</span><span id="targetOrderStatus" class="value"></span></div>
               <div class="feature-grid">
                 <button id="toggleTargetOrder" class="action" type="button"></button>
                 <button id="toggleTargetOrderAlert" class="action" type="button"></button>
+              </div>
+              <div class="actions three">
+                <button id="sendTargetOrderNow" class="action" type="button">현재 타겟 보내기</button>
+                <button id="applyPendingTargetOrderNow" class="action" type="button">수신 타겟 적용</button>
+                <button id="connectTargetOrderNow" class="action" type="button">연결</button>
               </div>
               <div class="input-row">
                 <input id="targetOrderServerInput" class="text-input" type="text" placeholder="ws://localhost:8787" autocomplete="off" spellcheck="false" />
@@ -17581,6 +16936,7 @@
                 <input id="targetOrderTokenInput" class="text-input" type="password" placeholder="유저 토큰" autocomplete="off" spellcheck="false" />
                 <input id="targetOrderHotkeyInput" class="text-input" type="text" readonly placeholder="단축키" autocomplete="off" spellcheck="false" />
               </div>
+              <div id="targetOrderNote" class="note"></div>
             </details>
             <details class="section">
               <summary>강조 ID</summary>
@@ -17595,6 +16951,7 @@
               <summary>기타 UI</summary>
               <div class="feature-grid">
                 <button id="togglePartyUi" class="action" type="button"></button>
+                <button id="togglePartyCommandPanel" class="action" type="button"></button>
                 <button id="partyPreset5x2" class="action" type="button">파티5x2</button>
               </div>
             </details>
@@ -17630,8 +16987,6 @@
       installTargetOrderConfigHandlers(shadow);
       installGearPresetHandlers(shadow);
       installSkillPresetHandlers(shadow);
-      installAuctionAutoListHandlers(shadow);
-      installAuctionWatchHandlers(shadow);
 
       shadow.getElementById("addHighlight").addEventListener("click", () => {
         addHighlightNameFromUi();
@@ -17644,11 +16999,7 @@
         addHighlightNameFromUi();
       });
 
-      installHighlightInputGuards(shadow);
-      installChatApiKeyInputGuards(shadow);
-      installTargetOrderInputGuards(shadow);
-      installAuctionAutoListInputGuards(shadow);
-      installAuctionWatchInputGuards(shadow);
+      installStatusUiInputGuards(shadow);
       installUiDragging(shadow);
       installUiResizeObserver(shadow);
       renderStatusUi();
@@ -17696,23 +17047,7 @@
     const shadow = STATUS_UI.shadow;
     if (!shadow) return [];
 
-    return [
-      "highlightInput",
-      "chatApiKeyInput",
-      "targetOrderServerInput",
-      "targetOrderRoomInput",
-      "targetOrderNameInput",
-      "targetOrderTokenInput",
-      "targetOrderHotkeyInput",
-      "auctionAutoListCountInput",
-      "auctionAutoListSilverInput",
-      "auctionWatchTypeSelect",
-      "auctionWatchTierInput",
-      "auctionWatchStat1Select",
-      "auctionWatchStat2Select",
-      "auctionWatchStat3Select",
-      "auctionWatchPagesInput",
-    ]
+    return STATUS_UI_TEXT_INPUT_IDS
       .map((id) => shadow.getElementById(id))
       .filter(Boolean);
   }
@@ -17734,10 +17069,6 @@
         addHighlightNameFromUi();
       } else if (active.id === "chatApiKeyInput") {
         saveChatApiKeyFromUi();
-      } else if (active.id === "auctionAutoListCountInput" || active.id === "auctionAutoListSilverInput") {
-        startAuctionAutoListFromUi(false);
-      } else if (active.id && active.id.startsWith("auctionWatch")) {
-        addAuctionWatchRuleFromUi();
       } else if (active.id && active.id.startsWith("targetOrder")) {
         saveTargetOrderConfigFromUi();
       }
@@ -17747,60 +17078,8 @@
     }
   }
 
-  function installHighlightInputGuards(shadow) {
-    const input = shadow.getElementById("highlightInput");
-    if (!input) return;
-
-    HIGHLIGHT_INPUT_POINTER_EVENTS.forEach((type) => {
-      input.addEventListener(type, (event) => {
-        event.stopPropagation();
-        pageWindow.requestAnimationFrame(() => input.focus({ preventScroll: true }));
-      });
-    });
-
-    STATUS_UI_KEYBOARD_EVENTS.forEach((type) => {
-      input.addEventListener(type, (event) => {
-        event.stopPropagation();
-      });
-    });
-  }
-
-  function installChatApiKeyInputGuards(shadow) {
-    const input = shadow.getElementById("chatApiKeyInput");
-    if (!input) return;
-
-    installInputEventGuards(input);
-  }
-
-  function installTargetOrderInputGuards(shadow) {
-    [
-      "targetOrderServerInput",
-      "targetOrderRoomInput",
-      "targetOrderNameInput",
-      "targetOrderTokenInput",
-      "targetOrderHotkeyInput",
-    ].forEach((id) => {
-      const input = shadow.getElementById(id);
-      if (input) installInputEventGuards(input);
-    });
-  }
-
-  function installAuctionAutoListInputGuards(shadow) {
-    ["auctionAutoListCountInput", "auctionAutoListSilverInput"].forEach((id) => {
-      const input = shadow.getElementById(id);
-      if (input) installInputEventGuards(input);
-    });
-  }
-
-  function installAuctionWatchInputGuards(shadow) {
-    [
-      "auctionWatchTypeSelect",
-      "auctionWatchTierInput",
-      "auctionWatchStat1Select",
-      "auctionWatchStat2Select",
-      "auctionWatchStat3Select",
-      "auctionWatchPagesInput",
-    ].forEach((id) => {
+  function installStatusUiInputGuards(shadow) {
+    STATUS_UI_TEXT_INPUT_IDS.forEach((id) => {
       const input = shadow.getElementById(id);
       if (input) installInputEventGuards(input);
     });
@@ -17955,8 +17234,6 @@
     renderTargetOrderUi(shadow);
     renderGearPresetUi(shadow);
     renderSkillPresetUi(shadow);
-    renderAuctionAutoListUi(shadow);
-    renderAuctionWatchUi(shadow);
     renderTargetDistanceUi(shadow);
     renderHighlightUi(shadow);
   }
@@ -17969,9 +17246,12 @@
       toggleChatTranslation: () => pageWindow.HordesKrMod.toggleChatTranslation(),
       toggleTargetOrder: () => pageWindow.HordesKrMod.toggleTargetOrder(),
       toggleTargetOrderAlert: () => pageWindow.HordesKrMod.toggleTargetOrderAlert(),
+      sendTargetOrderNow: () => pageWindow.HordesKrMod.sendTargetOrder(),
+      applyPendingTargetOrderNow: () => pageWindow.HordesKrMod.applyPendingTargetOrder(),
+      connectTargetOrderNow: () => pageWindow.HordesKrMod.connectTargetOrder(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
-      toggleAuctionWatch: () => pageWindow.HordesKrMod.toggleAuctionWatch(),
+      togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
       partyPreset5x2: () => pageWindow.HordesKrMod.partyUiPreset5x2(),
     };
 
@@ -18053,112 +17333,40 @@
   }
 
   function installGearPresetHandlers(shadow) {
-    for (const presetName of GEAR_PRESET_QUICK_NAMES) {
-      const save = shadow.getElementById(`saveGearPreset${presetName}`);
-      const equip = shadow.getElementById(`equipGearPreset${presetName}`);
-
-      if (save) {
-        save.addEventListener("click", () => {
-          pageWindow.HordesKrMod.saveEquippedGearPreset(presetName);
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          renderStatusUi();
-        });
-      }
-
-      if (equip) {
-        equip.addEventListener("click", () => {
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          pageWindow.HordesKrMod.equipGearPreset(presetName).finally(() => {
-            HIGHLIGHT_STATE.presetBarRenderKey = "";
-            updatePresetQuickBar();
-            renderStatusUi();
-          });
-          renderStatusUi();
-        });
-      }
-    }
+    installPresetPanelHandlers(shadow, GEAR_PRESET_QUICK_NAMES, {
+      saveId: (presetName) => `saveGearPreset${presetName}`,
+      applyId: (presetName) => `equipGearPreset${presetName}`,
+      save: (presetName) => pageWindow.HordesKrMod.saveEquippedGearPreset(presetName),
+      apply: (presetName) => pageWindow.HordesKrMod.equipGearPreset(presetName),
+    });
   }
 
   function installSkillPresetHandlers(shadow) {
-    for (const presetName of SKILL_PRESET_QUICK_NAMES) {
-      const save = shadow.getElementById(`saveSkillPreset${presetName}`);
-      const apply = shadow.getElementById(`applySkillPreset${presetName}`);
+    installPresetPanelHandlers(shadow, SKILL_PRESET_QUICK_NAMES, {
+      saveId: (presetName) => `saveSkillPreset${presetName}`,
+      applyId: (presetName) => `applySkillPreset${presetName}`,
+      save: (presetName) => pageWindow.HordesKrMod.saveSkillPreset(presetName),
+      apply: (presetName) => pageWindow.HordesKrMod.applySkillPreset(presetName),
+    });
+  }
+
+  function installPresetPanelHandlers(shadow, presetNames, actions) {
+    for (const presetName of presetNames) {
+      const save = shadow.getElementById(actions.saveId(presetName));
+      const apply = shadow.getElementById(actions.applyId(presetName));
 
       if (save) {
         save.addEventListener("click", () => {
-          pageWindow.HordesKrMod.saveSkillPreset(presetName);
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          renderStatusUi();
+          actions.save(presetName);
+          refreshPresetQuickBarAndStatus();
         });
       }
 
       if (apply) {
         apply.addEventListener("click", () => {
-          HIGHLIGHT_STATE.presetBarRenderKey = "";
-          updatePresetQuickBar();
-          pageWindow.HordesKrMod.applySkillPreset(presetName).finally(() => {
-            HIGHLIGHT_STATE.presetBarRenderKey = "";
-            updatePresetQuickBar();
-            renderStatusUi();
-          });
-          renderStatusUi();
+          runPresetPanelAction(() => actions.apply(presetName));
         });
       }
-    }
-  }
-
-  function installAuctionAutoListHandlers(shadow) {
-    const preview = shadow.getElementById("previewAuctionAutoList");
-    const start = shadow.getElementById("startAuctionAutoList");
-    const stop = shadow.getElementById("stopAuctionAutoList");
-
-    if (preview) {
-      preview.addEventListener("click", () => {
-        startAuctionAutoListFromUi(true);
-      });
-    }
-
-    if (start) {
-      start.addEventListener("click", () => {
-        startAuctionAutoListFromUi(false);
-      });
-    }
-
-    if (stop) {
-      stop.addEventListener("click", () => {
-        pageWindow.HordesKrMod.stopAutoListLucid();
-      });
-    }
-  }
-
-  function installAuctionWatchHandlers(shadow) {
-    const refresh = shadow.getElementById("refreshAuctionWatch");
-    const reset = shadow.getElementById("resetAuctionWatchRule");
-    const add = shadow.getElementById("addAuctionWatchRule");
-
-    if (refresh) {
-      refresh.addEventListener("click", () => {
-        pageWindow.HordesKrMod.refreshAuctionWatch().finally(() => {
-          renderStatusUi();
-        });
-        renderStatusUi();
-      });
-    }
-
-    if (add) {
-      add.addEventListener("click", () => {
-        addAuctionWatchRuleFromUi();
-      });
-    }
-
-    if (reset) {
-      reset.addEventListener("click", () => {
-        pageWindow.HordesKrMod.setAuctionWatchRules([AUCTION_WATCH_DEFAULT_RULE]);
-        renderStatusUi();
-      });
     }
   }
 
@@ -18170,8 +17378,8 @@
     setFeatureToggleButton(shadow, "toggleTargetOrder", "타겟오더", TARGET_ORDER_CONFIG.enabled);
     setFeatureToggleButton(shadow, "toggleTargetOrderAlert", "오더알림", TARGET_ORDER_CONFIG.alertEnabled);
     setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
-    setFeatureToggleButton(shadow, "togglePartyUi", "파티UI", PARTY_UI_CONFIG.enabled);
-    setFeatureToggleButton(shadow, "toggleAuctionWatch", "거래소감시", AUCTION_WATCH_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "togglePartyUi", "파티창이동", PARTY_UI_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "togglePartyCommandPanel", "파티패널", PARTY_COMMAND_CONFIG.enabled);
     const preset = shadow.getElementById("partyPreset5x2");
     if (preset) {
       preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
@@ -18183,9 +17391,13 @@
     const button = shadow.getElementById(id);
     if (!button) return;
 
-    button.textContent = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
-    button.classList.toggle("off", !enabled);
-    button.title = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
+    const text = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
+    setPanelButtonState(button, {
+      disabled: false,
+      off: !enabled,
+      text,
+      title: text,
+    });
   }
 
   function renderChatTranslationToggle(shadow) {
@@ -18230,16 +17442,65 @@
     const name = shadow.getElementById("targetOrderNameInput");
     const token = shadow.getElementById("targetOrderTokenInput");
     const hotkey = shadow.getElementById("targetOrderHotkeyInput");
+    const send = shadow.getElementById("sendTargetOrderNow");
+    const apply = shadow.getElementById("applyPendingTargetOrderNow");
+    const connect = shadow.getElementById("connectTargetOrderNow");
+    const note = shadow.getElementById("targetOrderNote");
+    const targetOrderStatus = getTargetOrderStatus();
+
     if (status) {
       status.textContent = getTargetOrderStatusText();
       status.title = TARGET_ORDER_STATE.lastError || "";
     }
+
     const active = shadow.activeElement;
-    if (server && active !== server) server.value = TARGET_ORDER_CONFIG.serverUrl;
-    if (room && active !== room) room.value = TARGET_ORDER_CONFIG.roomId;
-    if (name && active !== name) name.value = TARGET_ORDER_CONFIG.userName;
-    if (token && active !== token) token.value = TARGET_ORDER_CONFIG.clientToken;
-    if (hotkey && active !== hotkey) hotkey.value = formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode);
+    setInputValueUnlessActive(server, active, TARGET_ORDER_CONFIG.serverUrl);
+    setInputValueUnlessActive(room, active, TARGET_ORDER_CONFIG.roomId);
+    setInputValueUnlessActive(name, active, TARGET_ORDER_CONFIG.userName);
+    setInputValueUnlessActive(token, active, TARGET_ORDER_CONFIG.clientToken);
+    setInputValueUnlessActive(hotkey, active, formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode));
+
+    if (send) {
+      const disabled = !targetOrderStatus.enabled || !targetOrderStatus.connected;
+      setPanelButtonState(send, {
+        disabled,
+        title: disabled
+          ? "타겟오더를 켜고 서버에 연결된 뒤 현재 선택 타겟을 보낼 수 있습니다."
+          : "현재 선택한 타겟을 같은 방 사용자에게 보냅니다.",
+      });
+    }
+
+    if (apply) {
+      const pending = Boolean(targetOrderStatus.pendingCall);
+      setPanelButtonState(apply, {
+        disabled: !pending,
+        title: pending
+          ? `${targetOrderStatus.pendingCall.targetName} 타겟 적용`
+          : "3초 안에 수신된 타겟 오더가 있을 때 사용할 수 있습니다.",
+      });
+    }
+
+    if (connect) {
+      const ready = isTargetOrderConfigReady();
+      setPanelButtonState(connect, {
+        disabled: !targetOrderStatus.enabled || !ready,
+        off: !targetOrderStatus.enabled || !ready || targetOrderStatus.connected,
+        text: targetOrderStatus.connected ? "연결됨" : "연결",
+        title: ready
+          ? "타겟 오더 서버에 연결합니다."
+          : "서버 URL, 방 코드, 닉네임, 유저 토큰을 저장하세요.",
+      });
+    }
+
+    if (note) {
+      const pending = targetOrderStatus.pendingCall;
+      note.textContent = joinStatusParts([
+        "현재 타겟 보내기: 선택한 대상을 스크립트 사용자에게 전송",
+        `단축키: ${targetOrderStatus.hotkey}`,
+        pending ? `수신: ${pending.targetName}` : "",
+        TARGET_ORDER_STATE.lastError ? `오류: ${TARGET_ORDER_STATE.lastError}` : "",
+      ]);
+    }
   }
 
   function renderGearPresetUi(shadow) {
@@ -18260,11 +17521,7 @@
     const equippedItems = STATUS_UI.panelOpen ? scanRuntimeEquippedGearItems().map(stripGearPresetElement) : [];
     const runtimeItems = STATUS_UI.panelOpen ? scanRuntimeGearItems().map(stripGearPresetElement) : [];
     const socket = getGearSocketStatus();
-    const socketText = socket.available
-      ? "서버연결"
-      : socket.wrapped
-        ? "서버대기"
-        : "서버미감지";
+    const socketText = getPresetSocketStatusText(socket);
 
     const staleScanError =
       GEAR_PRESET_STATE.lastState === "저장 실패" &&
@@ -18282,21 +17539,19 @@
 
     presets.forEach(({ name, preset, save, equip }) => {
       const presetCount = preset && Array.isArray(preset.items) ? preset.items.length : 0;
-      if (save) {
-        save.disabled = GEAR_PRESET_STATE.running;
-        save.classList.toggle("off", GEAR_PRESET_STATE.running);
-        save.title = `현재 장착 중인 아이템의 고유 ID(dbid)를 프리셋 ${name}에 저장합니다.`;
-      }
-      if (equip) {
-        equip.disabled = GEAR_PRESET_STATE.running || presetCount === 0;
-        equip.classList.toggle("off", GEAR_PRESET_STATE.running || presetCount === 0);
-        equip.title = `프리셋 ${name}의 아이템 dbid를 현재 슬롯에서 찾아 서버 장착 명령을 보냅니다. 가방을 닫아도 실행 가능합니다.`;
-      }
+      setPanelButtonState(save, {
+        disabled: GEAR_PRESET_STATE.running,
+        title: `현재 장착 중인 아이템의 고유 ID(dbid)를 프리셋 ${name}에 저장합니다.`,
+      });
+      setPanelButtonState(equip, {
+        disabled: GEAR_PRESET_STATE.running || presetCount === 0,
+        title: `프리셋 ${name}의 아이템 dbid를 현재 슬롯에서 찾아 서버 장착 명령을 보냅니다. 가방을 닫아도 실행 가능합니다.`,
+      });
     });
 
     if (note) {
       const equippedSummary = summarizeGearPresetItems(equippedItems);
-      note.textContent = [
+      note.textContent = joinStatusParts([
         equippedSummary ? `현재장착: ${equippedSummary}` : "현재 장착 정보 없음",
         runtimeItems.length ? `인벤토리감지: ${runtimeItems.length}개` : "인벤토리 감지 없음",
         socket.available ? "전송: dbid 검색 후 itemmove" : "전송: 새로고침 후 연결 감지",
@@ -18307,7 +17562,7 @@
                 : ""
             }`
           : "",
-      ].filter(Boolean).join(" / ");
+      ]);
     }
   }
 
@@ -18328,11 +17583,7 @@
     });
     const activeSkillIds = STATUS_UI.panelOpen ? scanRuntimeActiveSkillIds() : [];
     const socket = getGearSocketStatus();
-    const socketText = socket.available
-      ? "서버연결"
-      : socket.wrapped
-        ? "서버대기"
-        : "서버미감지";
+    const socketText = getPresetSocketStatusText(socket);
 
     const staleScanError =
       SKILL_PRESET_STATE.lastState === "저장 실패" &&
@@ -18350,20 +17601,18 @@
 
     presets.forEach(({ name, preset, save, apply }) => {
       const presetCount = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
-      if (save) {
-        save.disabled = SKILL_PRESET_STATE.running;
-        save.classList.toggle("off", SKILL_PRESET_STATE.running);
-        save.title = `현재 활성 스킬 구성을 프리셋 ${name}에 저장합니다.`;
-      }
-      if (apply) {
-        apply.disabled = SKILL_PRESET_STATE.running || presetCount === 0;
-        apply.classList.toggle("off", SKILL_PRESET_STATE.running || presetCount === 0);
-        apply.title = `프리셋 ${name}의 스킬 ID 목록을 skillconfig 명령으로 적용합니다.`;
-      }
+      setPanelButtonState(save, {
+        disabled: SKILL_PRESET_STATE.running,
+        title: `현재 활성 스킬 구성을 프리셋 ${name}에 저장합니다.`,
+      });
+      setPanelButtonState(apply, {
+        disabled: SKILL_PRESET_STATE.running || presetCount === 0,
+        title: `프리셋 ${name}의 스킬 ID 목록을 skillconfig 명령으로 적용합니다.`,
+      });
     });
 
     if (note) {
-      note.textContent = [
+      note.textContent = joinStatusParts([
         activeSkillIds.length ? `현재활성: ${summarizeSkillPresetIds(activeSkillIds)}` : "현재 활성 스킬 정보 없음",
         socket.available ? "전송: skillconfig" : "전송: 새로고침 후 연결 감지",
         SKILL_PRESET_STATE.lastResult
@@ -18373,277 +17622,27 @@
                 : ""
             }`
           : "",
-      ].filter(Boolean).join(" / ");
+      ]);
     }
   }
 
-  function renderAuctionAutoListUi(shadow) {
-    const status = shadow.getElementById("auctionAutoListStatus");
-    const note = shadow.getElementById("auctionAutoListNote");
-    const countInput = shadow.getElementById("auctionAutoListCountInput");
-    const silverInput = shadow.getElementById("auctionAutoListSilverInput");
-    const preview = shadow.getElementById("previewAuctionAutoList");
-    const start = shadow.getElementById("startAuctionAutoList");
-    const stop = shadow.getElementById("stopAuctionAutoList");
-    if (!status) return;
-
-    const active = shadow.activeElement;
-    if (countInput && active !== countInput && !countInput.value) countInput.value = "10";
-    if (silverInput && active !== silverInput && !silverInput.value) silverInput.value = "9";
-
-    const socket = getGearSocketStatus();
-    const scan = STATUS_UI.panelOpen ? scanAuctionAutoListItems(AUCTION_AUTOLIST_DEFAULT_ITEM) : null;
-    const state = AUCTION_AUTOLIST_STATE;
-    status.textContent = state.running
-      ? state.lastState || "등록 중"
-      : state.lastError
-        ? state.lastState || "오류"
-        : state.lastState || "대기";
-    status.title = state.lastError || "";
-
-    if (preview) {
-      preview.disabled = state.running;
-      preview.classList.toggle("off", state.running);
-    }
-    if (start) {
-      start.disabled = state.running || !socket.available;
-      start.classList.toggle("off", state.running || !socket.available);
-      start.title = socket.available ? "Lucid를 1개씩 분리해 거래소에 등록합니다." : "게임 서버 WebSocket 감지 후 실행할 수 있습니다.";
-    }
-    if (stop) {
-      stop.disabled = !state.running;
-      stop.classList.toggle("off", !state.running);
-    }
-
-    if (note) {
-      const result = state.lastResult;
-      note.textContent = [
-        scan ? `감지: ${scan.totalUnits}개 / 1개짜리 ${scan.singles}개 / 스택 ${scan.stackSlots}칸` : "",
-        socket.available ? "서버연결" : socket.wrapped ? "서버대기" : "서버미감지",
-        result ? `최근: ${result.posted}/${result.requested}개 / ${result.priceText || formatCoinAmount(result.price)}` : "기본값: 10개, 개당 9은",
-      ].filter(Boolean).join(" / ");
-    }
+  function joinStatusParts(parts) {
+    return parts.filter(Boolean).join(" / ");
   }
 
-  function renderAuctionWatchUi(shadow) {
-    const status = shadow.getElementById("auctionWatchStatus");
-    const note = shadow.getElementById("auctionWatchNote");
-    const refresh = shadow.getElementById("refreshAuctionWatch");
-    const reset = shadow.getElementById("resetAuctionWatchRule");
-    const add = shadow.getElementById("addAuctionWatchRule");
-    if (!status) return;
-
-    renderAuctionWatchForm(shadow);
-
-    const socket = getGearSocketStatus();
-    const state = AUCTION_WATCH_STATE;
-    const rules = getAuctionWatchRules();
-    const matches = state.lastMatches || [];
-    const selfItems = state.lastSelfItems || [];
-
-    status.textContent = !AUCTION_WATCH_CONFIG.enabled
-      ? "꺼짐"
-      : state.running
-        ? "조회 중"
-        : state.lastState || "대기";
-    status.title = state.lastError || rules.map((rule) => rule.label).join(" / ");
-
-    if (refresh) {
-      refresh.disabled = state.running || !socket.available;
-      refresh.classList.toggle("off", state.running || !socket.available);
-      refresh.title = socket.available ? "거래소 조건을 지금 조회합니다." : "게임 서버 WebSocket 감지 후 조회할 수 있습니다.";
-    }
-    if (reset) {
-      reset.disabled = state.running;
-      reset.classList.toggle("off", state.running);
-    }
-    if (add) {
-      add.disabled = state.running;
-      add.classList.toggle("off", state.running);
-    }
-
-    renderAuctionWatchRuleList(shadow, rules);
-
-    if (note) {
-      const ruleText = rules.map((rule) => rule.label).join(" / ");
-      note.textContent = [
-        `조건: ${ruleText}`,
-        AUCTION_WATCH_CONFIG.enabled ? "감시 켜짐" : "감시 꺼짐",
-        socket.available ? "서버연결" : socket.wrapped ? "서버대기" : "서버미감지",
-        matches.length ? `발견 ${matches.length}개` : "발견 없음",
-        selfItems.length ? `내판매 ${selfItems.length}개` : "",
-        state.lastError ? `오류: ${state.lastError}` : "",
-      ].filter(Boolean).join(" / ");
-    }
+  function getPresetSocketStatusText(socket) {
+    if (socket && socket.available) return "서버연결";
+    if (socket && socket.wrapped) return "서버대기";
+    return "서버미감지";
   }
 
-  function renderAuctionWatchForm(shadow) {
-    const typeSelect = shadow.getElementById("auctionWatchTypeSelect");
-    const tierInput = shadow.getElementById("auctionWatchTierInput");
-    const pagesInput = shadow.getElementById("auctionWatchPagesInput");
-    const statSelects = [
-      shadow.getElementById("auctionWatchStat1Select"),
-      shadow.getElementById("auctionWatchStat2Select"),
-      shadow.getElementById("auctionWatchStat3Select"),
-    ];
-    const active = shadow.activeElement;
-
-    if (typeSelect && typeSelect.options.length === 0) {
-      const types = AUCTION_ITEM_TYPES
-        .filter((type) => type && type !== "all")
-        .filter((type) => AUCTION_ITEM_TYPE_LABELS[type] || ["book", "rune", "material", "misc", "mount", "pet", "box"].indexOf(type) === -1);
-      typeSelect.replaceChildren(...types.map((type) => {
-        const option = document.createElement("option");
-        option.value = type;
-        option.textContent = `${AUCTION_ITEM_TYPE_LABELS[type] || type} (${type})`;
-        return option;
-      }));
-    }
-
-    statSelects.forEach((select, index) => {
-      if (!select || select.options.length > 0) return;
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = index === 0 ? "옵션 선택" : "옵션 없음";
-      select.appendChild(none);
-      AUCTION_WATCH_STAT_OPTIONS.forEach(([id, label]) => {
-        const option = document.createElement("option");
-        option.value = String(id);
-        option.textContent = `${label} (${id})`;
-        select.appendChild(option);
-      });
-    });
-
-    if (typeSelect && active !== typeSelect && !typeSelect.value) typeSelect.value = "bag";
-    if (tierInput && active !== tierInput && !tierInput.value) tierInput.value = "all";
-    if (pagesInput && active !== pagesInput && !pagesInput.value) pagesInput.value = "1";
-    if (statSelects[0] && active !== statSelects[0] && !statSelects[0].value) statSelects[0].value = "1";
-    if (statSelects[1] && active !== statSelects[1] && !statSelects[1].value) statSelects[1].value = "2";
-    if (statSelects[2] && active !== statSelects[2] && !statSelects[2].value) statSelects[2].value = "11";
-  }
-
-  function renderAuctionWatchRuleList(shadow, rules) {
-    const list = shadow.getElementById("auctionWatchRuleList");
-    if (!list) return;
-
-    const normalizedRules = Array.isArray(rules) ? rules : getAuctionWatchRules();
-    list.replaceChildren(...normalizedRules.map((rule) => {
-      const row = document.createElement("div");
-      const text = document.createElement("div");
-      const main = document.createElement("div");
-      const sub = document.createElement("div");
-      const remove = document.createElement("button");
-
-      row.className = "rule-item";
-      main.className = "rule-main";
-      sub.className = "rule-sub";
-      remove.className = "remove";
-      remove.type = "button";
-      remove.textContent = "삭제";
-
-      main.textContent = rule.label;
-      sub.textContent = `${rule.type} / tier ${rule.tier} / ${rule.pages}p / ${formatAuctionWatchRuleStats(rule)}`;
-      remove.addEventListener("click", () => {
-        removeAuctionWatchRule(rule.id);
-      });
-
-      text.append(main, sub);
-      row.append(text, remove);
-      return row;
-    }));
-  }
-
-  function addAuctionWatchRuleFromUi() {
-    const shadow = STATUS_UI.shadow;
-    if (!shadow) return getAuctionWatchStatus();
-
-    let rule;
-    try {
-      rule = readAuctionWatchRuleFromUi(shadow);
-    } catch (error) {
-      AUCTION_WATCH_STATE.lastState = "조건 오류";
-      AUCTION_WATCH_STATE.lastError = error && error.message ? error.message : String(error);
-      renderStatusUi();
-      return getAuctionWatchStatus();
-    }
-
-    const existing = getAuctionWatchRules().filter((current) => current.id !== rule.id);
-    AUCTION_WATCH_CONFIG.rules = [...existing, rule];
-    AUCTION_WATCH_STATE.lastState = "조건 저장";
-    AUCTION_WATCH_STATE.lastError = "";
-    saveAuctionWatchConfig();
-    HIGHLIGHT_STATE.presetBarRenderKey = "";
-    updatePresetQuickBar();
-    renderStatusUi();
-    return getAuctionWatchStatus();
-  }
-
-  function readAuctionWatchRuleFromUi(shadow) {
-    const type = getInputValue(shadow, "auctionWatchTypeSelect") || "bag";
-    const tierRaw = getInputValue(shadow, "auctionWatchTierInput") || "all";
-    const pages = clampInteger(getInputValue(shadow, "auctionWatchPagesInput") || 1, 1, AUCTION_WATCH_MAX_PAGES, 1);
-    const requiredStatIds = [
-      getInputValue(shadow, "auctionWatchStat1Select"),
-      getInputValue(shadow, "auctionWatchStat2Select"),
-      getInputValue(shadow, "auctionWatchStat3Select"),
-    ]
-      .map((id) => Number(id))
-      .filter(Number.isInteger);
-    const uniqueStatIds = Array.from(new Set(requiredStatIds));
-    if (uniqueStatIds.length === 0) throw new Error("옵션을 하나 이상 선택하세요.");
-
-    const normalizedTypeIndex = normalizeAuctionTypeIndex(type);
-    const normalizedType = AUCTION_ITEM_TYPES[normalizedTypeIndex] || type;
-    const tier = normalizeAuctionTier(tierRaw);
-    return normalizeAuctionWatchRule({
-      id: `${normalizedType}-${tier}-${uniqueStatIds.join("-")}`,
-      label: formatAuctionWatchRuleLabel(normalizedType, uniqueStatIds),
-      type: normalizedType,
-      tier,
-      requiredStatIds: uniqueStatIds,
-      pages,
-      sortMode: 1,
-      sortDirection: 1,
-    });
-  }
-
-  function removeAuctionWatchRule(ruleId) {
-    const nextRules = getAuctionWatchRules().filter((rule) => rule.id !== ruleId);
-    AUCTION_WATCH_CONFIG.rules = nextRules.length > 0 ? nextRules : [normalizeAuctionWatchRule(AUCTION_WATCH_DEFAULT_RULE)];
-    AUCTION_WATCH_STATE.lastState = nextRules.length > 0 ? "조건 삭제" : "기본 조건";
-    AUCTION_WATCH_STATE.lastError = "";
-    saveAuctionWatchConfig();
-    HIGHLIGHT_STATE.presetBarRenderKey = "";
-    updatePresetQuickBar();
-    renderStatusUi();
-    return getAuctionWatchStatus();
-  }
-
-  function formatAuctionWatchRuleStats(rule) {
-    return (rule.requiredStatIds || [])
-      .map((id) => AUCTION_STAT_LABELS[id] || `Stat ${id}`)
-      .join(" + ");
-  }
-
-  function startAuctionAutoListFromUi(dryRun) {
-    const shadow = STATUS_UI.shadow;
-    if (!shadow) return;
-
-    const countInput = shadow.getElementById("auctionAutoListCountInput");
-    const silverInput = shadow.getElementById("auctionAutoListSilverInput");
-    const count = Number(countInput && countInput.value ? countInput.value : 10);
-    const silver = Number(silverInput && silverInput.value ? silverInput.value : 9);
-    pageWindow.HordesKrMod.autoListLucid({
-      count,
-      silver,
-      dryRun: dryRun === true,
-    }).catch((error) => {
-      AUCTION_AUTOLIST_STATE.lastState = "등록 오류";
-      AUCTION_AUTOLIST_STATE.lastError = error && error.message ? error.message : String(error);
-    }).finally(() => {
-      renderStatusUi();
-    });
-    renderStatusUi();
+  function setPanelButtonState(button, options = {}) {
+    if (!button) return;
+    const disabled = Boolean(options.disabled);
+    button.disabled = disabled;
+    button.classList.toggle("off", "off" in options ? Boolean(options.off) : disabled);
+    if ("text" in options) button.textContent = options.text;
+    if ("title" in options) button.title = options.title;
   }
 
   function summarizeGearPresetItems(items) {
@@ -18682,6 +17681,10 @@
   function getInputValue(shadow, id) {
     const input = shadow && shadow.getElementById(id);
     return input ? String(input.value || "").trim() : "";
+  }
+
+  function setInputValueUnlessActive(input, active, value) {
+    if (input && active !== input) input.value = value;
   }
 
   function saveChatApiKeyFromUi() {
@@ -18738,33 +17741,27 @@
     list.replaceChildren(
       ...names.map((name) => {
         const row = document.createElement("div");
-        const value = document.createElement("button");
-        const remove = document.createElement("button");
-
         const isLocked = Boolean(lockedName && lockedName === name.toLowerCase());
-        row.className = isLocked ? "highlight-item locked" : "highlight-item";
-        value.className = "highlight-name";
-        value.type = "button";
-        value.textContent = name;
-        value.title = isLocked
-          ? "클릭하면 거리 추적을 해제합니다"
-          : "클릭하면 이 이름을 거리 추적 대상으로 고정합니다";
-        value.addEventListener("click", () => {
-          if (isLocked) {
-            pageWindow.HordesKrMod.unlockTargetDistance();
-          } else {
-            pageWindow.HordesKrMod.lockTargetDistanceByName(name);
+        const value = createUiButton(
+          "highlight-name",
+          name,
+          isLocked ? "클릭하면 거리 추적을 해제합니다" : "클릭하면 이 이름을 거리 추적 대상으로 고정합니다",
+          () => {
+            if (isLocked) {
+              pageWindow.HordesKrMod.unlockTargetDistance();
+            } else {
+              pageWindow.HordesKrMod.lockTargetDistanceByName(name);
+            }
+            renderStatusUi();
           }
-          renderStatusUi();
-        });
-        remove.className = "remove";
-        remove.type = "button";
-        remove.textContent = "삭제";
-        remove.addEventListener("click", () => {
+        );
+        const remove = createUiButton("remove", "삭제", "", () => {
           if (isLocked) pageWindow.HordesKrMod.unlockTargetDistance();
           pageWindow.HordesKrMod.removeHighlightName(name);
           renderStatusUi();
         });
+
+        row.className = isLocked ? "highlight-item locked" : "highlight-item";
         row.append(value, remove);
         return row;
       })
@@ -18798,12 +17795,12 @@
     const locked = Boolean(result.tracking && result.tracking.locked);
     const prefix = locked ? "🔒 " : "";
     targetDistance.textContent = `${prefix}${result.stale ? "~" : ""}${formatTargetDistance(result.distance)} (${targetName})`;
-    targetDistance.title = [
+    targetDistance.title = joinStatusParts([
       locked ? "이름으로 고정된 타겟" : "",
       `3D ${formatTargetDistance(result.distance3d)}`,
       result.target.referenceSource || result.target.path,
       result.stale ? "마지막 좌표 기준" : "",
-    ].filter(Boolean).join(" / ");
+    ]);
   }
 
   function formatTargetDistance(distance) {
