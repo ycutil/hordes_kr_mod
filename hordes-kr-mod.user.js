@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.132-local
+// @version      0.9.134-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.132-local";
+  const BOOT_VERSION = "0.9.134-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -306,6 +306,10 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HIGHLIGHT_MATCH_CACHE_MAX = 256;
+  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODE = "KeyR";
+  const SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS = 120;
+  const SWIFTSHOT_TURBO_MIN_INTERVAL_MS = 60;
+  const SWIFTSHOT_TURBO_MAX_INTERVAL_MS = 500;
   const RUNTIME_OVERLAY_INTERVAL_MS = 100;
   const RUNTIME_NAME_OVERLAY_REFRESH_MS = 100;
   const MINIMAP_OVERLAY_REFRESH_MS = 100;
@@ -593,12 +597,23 @@
     incomingSkillOverlayEnabled: true,
     incomingTargetWatchEnabled: false,
     chatTranslationEnabled: false,
+    swiftshotTurboEnabled: true,
+    swiftshotTurboKeyCode: SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
+    swiftshotTurboIntervalMs: SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS,
   });
   FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
   FEATURE_CONFIG.incomingTargetWatchEnabled = false;
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
+  FEATURE_CONFIG.swiftshotTurboEnabled = FEATURE_CONFIG.swiftshotTurboEnabled !== false;
+  FEATURE_CONFIG.swiftshotTurboKeyCode = normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+  FEATURE_CONFIG.swiftshotTurboIntervalMs = clampInteger(
+    FEATURE_CONFIG.swiftshotTurboIntervalMs,
+    SWIFTSHOT_TURBO_MIN_INTERVAL_MS,
+    SWIFTSHOT_TURBO_MAX_INTERVAL_MS,
+    SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS
+  );
   const PARTY_UI_CONFIG = loadJsonConfig(PARTY_UI_CONFIG_KEY, {
     enabled: true,
     preset: "default",
@@ -773,6 +788,16 @@
     lastSentAt: null,
     lastText: "",
     sentCount: 0,
+  };
+  const SWIFTSHOT_TURBO_STATE = {
+    keyboardInstalled: false,
+    held: false,
+    timer: null,
+    activeCode: "",
+    synthetic: false,
+    repeatCount: 0,
+    lastAt: null,
+    lastError: "",
   };
   const TARGET_ORDER_STATE = {
     ws: null,
@@ -2730,6 +2755,7 @@
     initTargetContextMenuHighlight();
     initPartyUiManager();
     initPartyCommandPanel();
+    initSwiftshotTurbo();
     initTargetOrderClient();
   } catch (error) {
     showBootstrapFailureBadge("KR Mod 초기화 실패", [
@@ -2860,6 +2886,15 @@
     },
     toggleChatTranslation() {
       return setChatTranslationEnabled(!isChatTranslationEnabled());
+    },
+    toggleSwiftshotTurbo() {
+      return setSwiftshotTurboEnabled(!FEATURE_CONFIG.swiftshotTurboEnabled);
+    },
+    setSwiftshotTurboEnabled(enabled) {
+      return setSwiftshotTurboEnabled(enabled);
+    },
+    swiftshotTurboStatus() {
+      return getSwiftshotTurboStatus();
     },
     setChatTranslationApiKey(apiKey) {
       return setChatTranslationApiKey(apiKey);
@@ -6893,6 +6928,220 @@
     };
   }
 
+  function initSwiftshotTurbo() {
+    installSwiftshotTurboKeyboardHandler();
+  }
+
+  function installSwiftshotTurboKeyboardHandler() {
+    if (SWIFTSHOT_TURBO_STATE.keyboardInstalled) return;
+    SWIFTSHOT_TURBO_STATE.keyboardInstalled = true;
+
+    const onKeyDown = (event) => {
+      if (SWIFTSHOT_TURBO_STATE.synthetic) return;
+      if (!isSwiftshotTurboKeyEvent(event)) return;
+
+      if (SWIFTSHOT_TURBO_STATE.held && event.repeat) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+
+      if (event.repeat || shouldIgnoreSwiftshotTurboEvent(event)) return;
+      startSwiftshotTurbo(event.code);
+    };
+
+    const onKeyUp = (event) => {
+      if (SWIFTSHOT_TURBO_STATE.synthetic) return;
+      if (!isSwiftshotTurboKeyEvent(event)) return;
+      stopSwiftshotTurbo();
+    };
+
+    pageWindow.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    pageWindow.addEventListener("keyup", onKeyUp, true);
+    document.addEventListener("keyup", onKeyUp, true);
+    pageWindow.addEventListener("blur", stopSwiftshotTurbo);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") stopSwiftshotTurbo();
+    });
+  }
+
+  function isSwiftshotTurboKeyEvent(event) {
+    const configured = normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    return Boolean(event && event.code === configured);
+  }
+
+  function shouldIgnoreSwiftshotTurboEvent(event) {
+    if (!FEATURE_CONFIG.swiftshotTurboEnabled) return true;
+    if (!event || event.defaultPrevented || event.isComposing) return true;
+    if (TARGET_ORDER_STATE.hotkeyCaptureActive) return true;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return true;
+    if (document.visibilityState && document.visibilityState !== "visible") return true;
+    return isPartyCommandEditableEvent(event) || isStatusUiKeyboardEvent(event);
+  }
+
+  function startSwiftshotTurbo(code) {
+    const normalized = normalizeKeyboardCode(code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    if (SWIFTSHOT_TURBO_STATE.held && SWIFTSHOT_TURBO_STATE.activeCode === normalized) return;
+
+    stopSwiftshotTurbo();
+    SWIFTSHOT_TURBO_STATE.held = true;
+    SWIFTSHOT_TURBO_STATE.activeCode = normalized;
+    SWIFTSHOT_TURBO_STATE.lastError = "";
+    SWIFTSHOT_TURBO_STATE.timer = setInterval(() => {
+      dispatchSwiftshotTurboPulse(normalized);
+    }, getSwiftshotTurboIntervalMs());
+  }
+
+  function stopSwiftshotTurbo() {
+    if (SWIFTSHOT_TURBO_STATE.timer) {
+      clearInterval(SWIFTSHOT_TURBO_STATE.timer);
+      SWIFTSHOT_TURBO_STATE.timer = null;
+    }
+    SWIFTSHOT_TURBO_STATE.held = false;
+    SWIFTSHOT_TURBO_STATE.activeCode = "";
+  }
+
+  function dispatchSwiftshotTurboPulse(code) {
+    if (!FEATURE_CONFIG.swiftshotTurboEnabled || isSwiftshotTurboSuspended()) {
+      stopSwiftshotTurbo();
+      return false;
+    }
+
+    const target = getRuntimeInputCanvas(getExposedRuntime()) || document.body || document.documentElement || document;
+    if (!target || typeof target.dispatchEvent !== "function") {
+      SWIFTSHOT_TURBO_STATE.lastError = "입력 대상 없음";
+      return false;
+    }
+
+    try {
+      if (typeof target.focus === "function") target.focus({ preventScroll: true });
+    } catch {
+      // Focus is best-effort.
+    }
+
+    SWIFTSHOT_TURBO_STATE.synthetic = true;
+    try {
+      dispatchKeyboardPulseForCode(target, code);
+      SWIFTSHOT_TURBO_STATE.repeatCount++;
+      SWIFTSHOT_TURBO_STATE.lastAt = Date.now();
+      SWIFTSHOT_TURBO_STATE.lastError = "";
+      return true;
+    } catch (error) {
+      SWIFTSHOT_TURBO_STATE.lastError = error && error.message ? error.message : String(error);
+      return false;
+    } finally {
+      SWIFTSHOT_TURBO_STATE.synthetic = false;
+    }
+  }
+
+  function isSwiftshotTurboSuspended() {
+    if (document.visibilityState && document.visibilityState !== "visible") return true;
+    return isEditableTargetOrderElement(document.activeElement);
+  }
+
+  function dispatchKeyboardPulseForCode(target, code) {
+    for (const type of ["keyup", "keydown", "keypress", "keyup"]) {
+      target.dispatchEvent(createKeyboardEventFromCode(type, code));
+    }
+  }
+
+  function createKeyboardEventFromCode(type, code) {
+    const descriptor = getKeyboardDescriptorFromCode(code);
+    const charCode = type === "keypress" ? descriptor.charCode : 0;
+    const event = new KeyboardEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      key: descriptor.key,
+      code: descriptor.code,
+      keyCode: descriptor.keyCode,
+      which: type === "keypress" && charCode ? charCode : descriptor.keyCode,
+      charCode,
+      repeat: false,
+    });
+
+    for (const [property, value] of Object.entries({
+      keyCode: descriptor.keyCode,
+      which: type === "keypress" && charCode ? charCode : descriptor.keyCode,
+      charCode,
+    })) {
+      try {
+        Object.defineProperty(event, property, {
+          configurable: true,
+          get() {
+            return value;
+          },
+        });
+      } catch {
+        // Browser-native KeyboardEvent fields may be non-configurable.
+      }
+    }
+
+    return event;
+  }
+
+  function getKeyboardDescriptorFromCode(code) {
+    const normalized = normalizeKeyboardCode(code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    if (/^Key[A-Z]$/.test(normalized)) {
+      const letter = normalized.slice(3);
+      return {
+        code: normalized,
+        key: letter.toLowerCase(),
+        keyCode: letter.charCodeAt(0),
+        charCode: letter.toLowerCase().charCodeAt(0),
+      };
+    }
+
+    if (/^Digit[0-9]$/.test(normalized)) {
+      const digit = normalized.slice(5);
+      return {
+        code: normalized,
+        key: digit,
+        keyCode: digit.charCodeAt(0),
+        charCode: digit.charCodeAt(0),
+      };
+    }
+
+    if (normalized === "Space") {
+      return { code: "Space", key: " ", keyCode: 32, charCode: 32 };
+    }
+
+    return { code: normalized, key: formatKeyboardCode(normalized), keyCode: 0, charCode: 0 };
+  }
+
+  function getSwiftshotTurboIntervalMs() {
+    return clampInteger(
+      FEATURE_CONFIG.swiftshotTurboIntervalMs,
+      SWIFTSHOT_TURBO_MIN_INTERVAL_MS,
+      SWIFTSHOT_TURBO_MAX_INTERVAL_MS,
+      SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS
+    );
+  }
+
+  function setSwiftshotTurboEnabled(enabled) {
+    FEATURE_CONFIG.swiftshotTurboEnabled = Boolean(enabled);
+    if (!FEATURE_CONFIG.swiftshotTurboEnabled) stopSwiftshotTurbo();
+    saveFeatureConfig();
+    renderStatusUi();
+    return getSwiftshotTurboStatus();
+  }
+
+  function getSwiftshotTurboStatus() {
+    return {
+      enabled: FEATURE_CONFIG.swiftshotTurboEnabled,
+      key: formatKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE),
+      keyCode: normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
+      intervalMs: getSwiftshotTurboIntervalMs(),
+      held: SWIFTSHOT_TURBO_STATE.held,
+      activeCode: SWIFTSHOT_TURBO_STATE.activeCode,
+      repeatCount: SWIFTSHOT_TURBO_STATE.repeatCount,
+      lastAt: SWIFTSHOT_TURBO_STATE.lastAt,
+      lastError: SWIFTSHOT_TURBO_STATE.lastError,
+      installed: SWIFTSHOT_TURBO_STATE.keyboardInstalled,
+    };
+  }
+
   function getPartyCommandPanelPosition(widthNumber, heightNumber) {
     if (Number.isFinite(PARTY_COMMAND_CONFIG.x) && Number.isFinite(PARTY_COMMAND_CONFIG.y)) {
       return clampPartyCommandPanelPosition(PARTY_COMMAND_CONFIG.x, PARTY_COMMAND_CONFIG.y, widthNumber, heightNumber);
@@ -8463,6 +8712,7 @@
       incomingWarningList: isIncomingSkillListEnabled(),
       targetDistance: isTargetDistanceEnabled(),
       chatTranslation: getChatTranslationStatus(),
+      swiftshotTurbo: getSwiftshotTurboStatus(),
       partyUi: getPartyUiStatus(),
       advanced: {
         domTranslation: isDomTranslationEnabled(),
@@ -16952,6 +17202,7 @@
               <div class="feature-grid">
                 <button id="togglePartyUi" class="action" type="button"></button>
                 <button id="togglePartyCommandPanel" class="action" type="button"></button>
+                <button id="toggleSwiftshotTurbo" class="action" type="button"></button>
                 <button id="partyPreset5x2" class="action" type="button">파티5x2</button>
               </div>
             </details>
@@ -17200,6 +17451,12 @@
     return Math.min(max, Math.max(min, value));
   }
 
+  function clampInteger(value, min, max, fallback) {
+    const number = Number(value);
+    const base = Number.isFinite(number) ? number : Number(fallback);
+    return Math.round(clamp(Number.isFinite(base) ? base : min, min, max));
+  }
+
   function setStatus(nextStatus) {
     Object.assign(MOD_STATUS, nextStatus);
     renderStatusUi();
@@ -17252,6 +17509,7 @@
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
+      toggleSwiftshotTurbo: () => pageWindow.HordesKrMod.toggleSwiftshotTurbo(),
       partyPreset5x2: () => pageWindow.HordesKrMod.partyUiPreset5x2(),
     };
 
@@ -17380,6 +17638,7 @@
     setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
     setFeatureToggleButton(shadow, "togglePartyUi", "파티창이동", PARTY_UI_CONFIG.enabled);
     setFeatureToggleButton(shadow, "togglePartyCommandPanel", "파티패널", PARTY_COMMAND_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "toggleSwiftshotTurbo", "스위프트터보", FEATURE_CONFIG.swiftshotTurboEnabled);
     const preset = shadow.getElementById("partyPreset5x2");
     if (preset) {
       preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
