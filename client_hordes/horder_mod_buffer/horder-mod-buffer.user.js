@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.6
+// @version      0.1.7
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.6";
+  const MOD_VERSION = "0.1.7";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -434,7 +434,7 @@
       "__hmbRt.exposeEngine=function(engine,hit){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.engine=engine||r.engine||null;r.player=r.engine&&r.engine.player||r.player||null;r.ready=!!(r.engine&&r.player&&typeof Mt!=='undefined'&&typeof Io==='function');r.activeWorld=typeof Gr!=='undefined'?r.readStore(Gr):r.activeWorld||'';r.updatedAt=Date.now();r.hookHits=r.hookHits||{};hit=hit||'exposeEngine';r.hookHits[hit]=(r.hookHits[hit]||0)+1;try{r.engineKeys=r.engine?Object.getOwnPropertyNames(r.engine).slice(0,60):[]}catch(_){}}catch(e){try{__hmbRt.errors.push('exposeEngine:'+((e&&e.message)||e))}catch(_){}}};",
       "__hmbRt.captureEngine=function(engine,hit){try{__hmbRt.exposeEngine(engine,hit||'captureEngine')}catch(e){try{__hmbRt.errors.push('captureEngine:'+((e&&e.message)||e))}catch(_){}}return engine};",
       "window.__HORDER_MOD_BUFFER_CAPTURE_ENGINE__=function(engine,hit){try{return __hmbRt.captureEngine(engine,hit)}catch(e){return engine}};",
-      "__hmbRt.installOnloadAutoStart=function(){try{if(__hmbRt.onloadAutoStartInstalled)return;__hmbRt.onloadAutoStartInstalled=true;__hmbRt.onloadAutoStartInstalledAt=Date.now();__hmbRt.hookHits.onloadAutoStartInstall=(__hmbRt.hookHits.onloadAutoStartInstall||0)+1;var attempts=0;var timer=setInterval(function(){try{attempts+=1;__hmbRt.onloadAutoStartAttempts=attempts;__hmbRt.onloadAutoStartReadyState=document.readyState;__hmbRt.onloadAutoStartOnloadType=typeof window.onload;if(window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){clearInterval(timer);__hmbRt.onloadAutoStartStopped='already-started';return}if(document.readyState==='loading')return;if(typeof window.onload!=='function')return;__hmbRt.hookHits.onloadAutoStartRun=(__hmbRt.hookHits.onloadAutoStartRun||0)+1;window.onload();clearInterval(timer);__hmbRt.onloadAutoStartStopped='ran'}catch(e){try{__hmbRt.errors.push('onloadAutoStart:'+((e&&e.message)||e));__hmbRt.onloadAutoStartStopped='error';clearInterval(timer)}catch(_){}}},50);setTimeout(function(){try{if(!window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){__hmbRt.onloadAutoStartStopped='timeout';clearInterval(timer)}}catch(_){}},30000)}catch(e){try{__hmbRt.errors.push('installOnloadAutoStart:'+((e&&e.message)||e))}catch(_){}}};",
+      "__hmbRt.installOnloadAutoStart=function(){try{if(__hmbRt.onloadAutoStartInstalled)return;__hmbRt.onloadAutoStartInstalled=true;__hmbRt.onloadAutoStartInstalledAt=Date.now();__hmbRt.hookHits.onloadAutoStartInstall=(__hmbRt.hookHits.onloadAutoStartInstall||0)+1;var attempts=0,currentOnload=window.onload,assignmentCount=0,timer=null;var isClientOnload=function(fn){try{if(typeof fn!=='function')return false;var text=Function.prototype.toString.call(fn);return text.indexOf('__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__')>=0||text.indexOf('game.bin')>=0||text.indexOf('new Fh')>=0}catch(e){return false}};var tryRun=function(reason){try{attempts+=1;__hmbRt.onloadAutoStartAttempts=attempts;__hmbRt.onloadAutoStartReason=reason;__hmbRt.onloadAutoStartReadyState=document.readyState;__hmbRt.onloadAutoStartOnloadType=typeof currentOnload;__hmbRt.onloadAutoStartAssignmentCount=assignmentCount;__hmbRt.onloadAutoStartIsClientOnload=isClientOnload(currentOnload);if(window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){if(timer)clearInterval(timer);__hmbRt.onloadAutoStartStopped='already-started';return}if(document.readyState==='loading')return;if(typeof currentOnload!=='function')return;if(!isClientOnload(currentOnload)){__hmbRt.onloadAutoStartStopped='waiting-client-onload';return}__hmbRt.hookHits.onloadAutoStartRun=(__hmbRt.hookHits.onloadAutoStartRun||0)+1;currentOnload.call(window);if(timer)clearInterval(timer);__hmbRt.onloadAutoStartStopped='ran'}catch(e){try{__hmbRt.errors.push('onloadAutoStart:'+((e&&e.message)||e));__hmbRt.onloadAutoStartStopped='error';if(timer)clearInterval(timer)}catch(_){}}};try{var desc=Object.getOwnPropertyDescriptor(window,'onload');if(!desc||desc.configurable){Object.defineProperty(window,'onload',{configurable:true,enumerable:true,get:function(){return currentOnload},set:function(fn){currentOnload=fn;assignmentCount+=1;__hmbRt.onloadAutoStartAssignedAt=Date.now();__hmbRt.hookHits.onloadAutoStartAssign=(__hmbRt.hookHits.onloadAutoStartAssign||0)+1;setTimeout(function(){tryRun('assignment')},0)}});__hmbRt.onloadAutoStartDescriptor='installed'}else{__hmbRt.onloadAutoStartDescriptor='not-configurable'}}catch(e){__hmbRt.onloadAutoStartDescriptor='error:'+((e&&e.message)||e)}timer=setInterval(function(){tryRun('timer')},50);setTimeout(function(){try{if(!window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){__hmbRt.onloadAutoStartStopped='timeout';if(timer)clearInterval(timer)}}catch(_){}},30000)}catch(e){try{__hmbRt.errors.push('installOnloadAutoStart:'+((e&&e.message)||e))}catch(_){}}};",
       "__hmbRt.installOnloadAutoStart();",
       "__hmbRt.update=function(){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:r.engine||null;r.engine=engine;r.player=engine&&engine.player||r.player||null;r.ready=!!(r.engine&&r.player&&typeof Mt!=='undefined'&&typeof Io==='function');r.activeWorld=typeof Gr!=='undefined'?r.readStore(Gr):r.activeWorld||'';r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.update=(r.hookHits.update||0)+1}catch(e){try{__hmbRt.errors.push('update:'+((e&&e.message)||e))}catch(_){}}};",
       "__hmbRt.listEntities=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var arr=engine&&engine.entities&&engine.entities.array||[];for(var i=0;i<arr.length;i++){var e=arr[i];if(!e)continue;var pos=e.pos||e.visualPosition||[];out.push({id:e.id,name:e.name||'',type:e.type,faction:e.faction,party:e.party,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0]})}}catch(err){try{__hmbRt.errors.push('listEntities:'+((err&&err.message)||err))}catch(_){}}return out};",
@@ -1010,8 +1010,13 @@
         onloadAutoStartInstalled: Boolean(runtime && runtime.onloadAutoStartInstalled),
         onloadAutoStartInstalledAt: runtime && runtime.onloadAutoStartInstalledAt || null,
         onloadAutoStartAttempts: runtime && runtime.onloadAutoStartAttempts || 0,
+        onloadAutoStartReason: runtime && runtime.onloadAutoStartReason || "",
         onloadAutoStartReadyState: runtime && runtime.onloadAutoStartReadyState || "",
         onloadAutoStartOnloadType: runtime && runtime.onloadAutoStartOnloadType || "",
+        onloadAutoStartAssignmentCount: runtime && runtime.onloadAutoStartAssignmentCount || 0,
+        onloadAutoStartAssignedAt: runtime && runtime.onloadAutoStartAssignedAt || null,
+        onloadAutoStartIsClientOnload: Boolean(runtime && runtime.onloadAutoStartIsClientOnload),
+        onloadAutoStartDescriptor: runtime && runtime.onloadAutoStartDescriptor || "",
         onloadAutoStartStopped: runtime && runtime.onloadAutoStartStopped || "",
         errors: runtime && Array.isArray(runtime.errors) ? runtime.errors.slice(-12) : [],
         krRuntimeSeen: Boolean(runtime && runtime.krRuntimeSeen),
