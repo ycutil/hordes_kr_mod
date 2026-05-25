@@ -69,7 +69,7 @@
 - `findBestRuntimeEntity()` hot path는 `forEachRuntimeChild()`를 직접 사용해 자식 배열 생성을 피한다. 외부 디버그용 `getRuntimeChildren()` API는 유지한다.
 - 강조 ID 목록은 로드/저장 시 unique 처리하고, `getHighlightNameCache()`는 원본 배열 참조/키가 바뀔 때만 sort/lower/matcher를 재계산한다. 캔버스 텍스트 강조 매칭은 `HIGHLIGHT_NAME_CACHE.matchCache`로 짧게 캐시된다.
 - `runtimeDebug().scriptHook.missingExpectedPatches`는 현재 클라이언트에서 실제 성공하는 핵심 패치만 기준으로 본다. 예전 `client-frame-loop`, `client-onload-runtime`, `client-set-state` 계열은 특정 client.js 빌드에서 안 잡혀도 현재 runtime 노출이 정상일 수 있다.
-- `Swiftshot Turbo`는 기본 `R, 5, Q, E, F` 꾹 누름 보조 기능이다. 입력창/채팅/관리패널에서는 동작하지 않고, 실제 첫 keydown은 통과시키며 이후 반복 keydown은 막고 synthetic pulse를 보낸다.
+- `Swiftshot Turbo`는 기본 `R, 5, Q, E, F` 꾹 누름 보조 기능이다. 입력창/채팅/관리패널에서는 동작하지 않고, 실제 첫 keydown은 통과시키며 이후 반복 keydown은 막고 synthetic pulse를 보낸다. `E` 터보 중에는 현재 눌린 이동키를 keyup으로 억제하고, `E`를 떼면 아직 물리적으로 눌린 이동키만 keydown으로 복구한다.
 - 파티 오더 패널처럼 제거된 UI의 잔여 CSS 제거.
 
 ### 2. 중간 위험
