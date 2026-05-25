@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.3
+// @version      0.1.4
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.3";
+  const MOD_VERSION = "0.1.4";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -374,7 +374,7 @@
 
   function patchClientSource(source, url) {
     let patched = String(source || "");
-    const runtimeProbe = buildRuntimeProbeSource(typeof url === "string" ? url : shortScriptUrl(url));
+    const runtimeProbe = buildRuntimeProbeSource(typeof url === "string" ? url : shortScriptUrl(url)) + buildPrototypeRuntimeSource();
     const prototypeRuntime = buildPrototypeRuntimeSource();
 
     if (patched.includes("(()=>{")) {
@@ -384,6 +384,7 @@
     }
 
     patched = patchEngineSetter(patched);
+    patched = patchEngineConstructorCall(patched);
 
     if (patched.includes("window.onload=async()=>{")) {
       patched = patched.replace("window.onload=async()=>{", `window.onload=async()=>{${prototypeRuntime}`);
@@ -407,6 +408,17 @@
     return patched;
   }
 
+  function patchEngineConstructorCall(source) {
+    const patched = source.replace(
+      /N3\(new ([A-Za-z_$][\w$]*)\(\{\}\)\)/,
+      `N3(window.__HORDER_MOD_BUFFER_CAPTURE_ENGINE__(new $1({}),'engineConstructor'))`
+    );
+    if (patched === source) {
+      markRuntimeError("patch", new Error("engine constructor marker not found"));
+    }
+    return patched;
+  }
+
   function buildRuntimeProbeSource(sourceLabel) {
     return [
       "try{",
@@ -417,6 +429,8 @@
       "__hmbRt.errors=__hmbRt.errors||[];",
       "__hmbRt.readStore=function(store){var value;try{var unsub=store&&store.subscribe&&store.subscribe(function(v){value=v});if(typeof unsub==='function')unsub()}catch(e){}return value};",
       "__hmbRt.exposeEngine=function(engine,hit){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.engine=engine||r.engine||null;r.player=r.engine&&r.engine.player||r.player||null;r.ready=!!(r.engine&&r.player&&typeof Mt!=='undefined'&&typeof Io==='function');r.activeWorld=typeof Gr!=='undefined'?r.readStore(Gr):r.activeWorld||'';r.updatedAt=Date.now();r.hookHits=r.hookHits||{};hit=hit||'exposeEngine';r.hookHits[hit]=(r.hookHits[hit]||0)+1;try{r.engineKeys=r.engine?Object.getOwnPropertyNames(r.engine).slice(0,60):[]}catch(_){}}catch(e){try{__hmbRt.errors.push('exposeEngine:'+((e&&e.message)||e))}catch(_){}}};",
+      "__hmbRt.captureEngine=function(engine,hit){try{__hmbRt.exposeEngine(engine,hit||'captureEngine')}catch(e){try{__hmbRt.errors.push('captureEngine:'+((e&&e.message)||e))}catch(_){}}return engine};",
+      "window.__HORDER_MOD_BUFFER_CAPTURE_ENGINE__=function(engine,hit){try{return __hmbRt.captureEngine(engine,hit)}catch(e){return engine}};",
       "__hmbRt.update=function(){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:r.engine||null;r.engine=engine;r.player=engine&&engine.player||r.player||null;r.ready=!!(r.engine&&r.player&&typeof Mt!=='undefined'&&typeof Io==='function');r.activeWorld=typeof Gr!=='undefined'?r.readStore(Gr):r.activeWorld||'';r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.update=(r.hookHits.update||0)+1}catch(e){try{__hmbRt.errors.push('update:'+((e&&e.message)||e))}catch(_){}}};",
       "__hmbRt.listEntities=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var arr=engine&&engine.entities&&engine.entities.array||[];for(var i=0;i<arr.length;i++){var e=arr[i];if(!e)continue;var pos=e.pos||e.visualPosition||[];out.push({id:e.id,name:e.name||'',type:e.type,faction:e.faction,party:e.party,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0]})}}catch(err){try{__hmbRt.errors.push('listEntities:'+((err&&err.message)||err))}catch(_){}}return out};",
       "__hmbRt.getPlayerInfo=function(){try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var p=engine&&engine.player||runtime.player||null;var pos=p&&(p.pos||p.visualPosition)||[];return p?{id:p.id,name:p.name||'',type:p.type,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0],target:p.target}:null}catch(e){return null}};",
@@ -436,15 +450,10 @@
       `var __hmbRt=window.${RUNTIME_KEY}=window.${RUNTIME_KEY}||{};`,
       "__hmbRt.hookHits=__hmbRt.hookHits||{};",
       "__hmbRt.errors=__hmbRt.errors||[];",
-      "__hmbRt.prototypePatchAt=Date.now();",
-      "__hmbRt.prototypePatchFhType=typeof Fh;",
-      "__hmbRt.prototypePatchFhKeys=typeof Fh!=='undefined'&&Fh&&Fh.prototype?Object.getOwnPropertyNames(Fh.prototype).slice(0,80):[];",
-      "var __hmbExpose=function(engine,hit){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};if(typeof r.exposeEngine==='function')r.exposeEngine(engine,hit);else{r.engine=engine;r.player=engine&&engine.player||null;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits[hit]=(r.hookHits[hit]||0)+1}}catch(e){try{__hmbRt.errors.push('prototypeExpose:'+hit+':'+((e&&e.message)||e))}catch(_){}}};",
-      "var __hmbWrap=function(name,hit){try{var proto=typeof Fh!=='undefined'&&Fh&&Fh.prototype;var original=proto&&proto[name];if(typeof original!=='function')return;if(original.__horderBufferWrapped)return;var wrapped=function(){__hmbExpose(this,hit);var result=original.apply(this,arguments);__hmbExpose(this,hit+'After');return result};try{Object.defineProperty(wrapped,'__horderBufferWrapped',{value:true})}catch(_){}proto[name]=wrapped;__hmbRt.hookHits['wrap_'+hit]=(__hmbRt.hookHits['wrap_'+hit]||0)+1}catch(e){try{__hmbRt.errors.push('prototypeWrap:'+name+':'+((e&&e.message)||e))}catch(_){}}};",
-      "__hmbWrap('setState','prototypeSetState');",
-      "__hmbWrap('setPlayer','prototypeSetPlayer');",
-      "__hmbWrap('tick','prototypeTick');",
-      "__hmbWrap('manageChunks','prototypeManageChunks');",
+      "__hmbRt.prototypeInstallScheduledAt=__hmbRt.prototypeInstallScheduledAt||Date.now();",
+      "var __hmbInstallPrototype=function(){try{__hmbRt.prototypeInstallAttempts=(__hmbRt.prototypeInstallAttempts||0)+1;if(typeof Fh==='undefined'||!Fh||!Fh.prototype)return false;__hmbRt.prototypePatchAt=Date.now();__hmbRt.prototypePatchFhType=typeof Fh;__hmbRt.prototypePatchFhKeys=Object.getOwnPropertyNames(Fh.prototype).slice(0,80);var __hmbExpose=function(engine,hit){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};if(typeof r.exposeEngine==='function')r.exposeEngine(engine,hit);else{r.engine=engine;r.player=engine&&engine.player||null;r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits[hit]=(r.hookHits[hit]||0)+1}}catch(e){try{__hmbRt.errors.push('prototypeExpose:'+hit+':'+((e&&e.message)||e))}catch(_){}}};var __hmbWrap=function(name,hit){try{var proto=Fh&&Fh.prototype;var original=proto&&proto[name];if(typeof original!=='function')return;if(original.__horderBufferWrapped){__hmbRt.hookHits['wrap_'+hit+'_already']=(__hmbRt.hookHits['wrap_'+hit+'_already']||0)+1;return}var wrapped=function(){__hmbExpose(this,hit);var result=original.apply(this,arguments);__hmbExpose(this,hit+'After');return result};try{Object.defineProperty(wrapped,'__horderBufferWrapped',{value:true})}catch(_){}proto[name]=wrapped;__hmbRt.hookHits['wrap_'+hit]=(__hmbRt.hookHits['wrap_'+hit]||0)+1}catch(e){try{__hmbRt.errors.push('prototypeWrap:'+name+':'+((e&&e.message)||e))}catch(_){}}};__hmbWrap('setState','prototypeSetState');__hmbWrap('setPlayer','prototypeSetPlayer');__hmbWrap('tick','prototypeTick');__hmbWrap('manageChunks','prototypeManageChunks');return true}catch(e){try{__hmbRt.errors.push('prototypeRuntime:'+((e&&e.message)||e))}catch(_){}return true}};",
+      "if(!__hmbRt.prototypeInstallTimerStarted){__hmbRt.prototypeInstallTimerStarted=true;var __hmbPrototypeTimer=setInterval(function(){try{if(__hmbInstallPrototype())clearInterval(__hmbPrototypeTimer)}catch(e){}},50)}",
+      "__hmbInstallPrototype();",
       "}catch(e){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.errors=r.errors||[];r.errors.push('prototypeRuntime:'+((e&&e.message)||e))}catch(_){}}",
     ].join("");
   }
@@ -986,6 +995,9 @@
         },
         hookHits: runtime && runtime.hookHits || null,
         engineKeys: runtime && Array.isArray(runtime.engineKeys) ? runtime.engineKeys : [],
+        prototypeInstallScheduledAt: runtime && runtime.prototypeInstallScheduledAt || null,
+        prototypeInstallAttempts: runtime && runtime.prototypeInstallAttempts || 0,
+        prototypeInstallTimerStarted: Boolean(runtime && runtime.prototypeInstallTimerStarted),
         prototypePatchAt: runtime && runtime.prototypePatchAt || null,
         prototypePatchFhType: runtime && runtime.prototypePatchFhType || "",
         prototypePatchFhKeys: runtime && Array.isArray(runtime.prototypePatchFhKeys) ? runtime.prototypePatchFhKeys : [],
@@ -1089,16 +1101,26 @@
 
   function collectClientScriptDiagnostics() {
     return Array.from(document.querySelectorAll("script"))
-      .map((script, index) => ({
-        index,
-        src: script.src || "",
-        type: script.type || "",
-        hook: script.dataset && script.dataset.horderBufferRuntimeHooked || "",
-        source: script.dataset && script.dataset.horderBufferRuntimeSource || "",
-        krHook: script.dataset && script.dataset.hordesKrRuntimeHooked || "",
-        krSource: script.dataset && script.dataset.hordesKrRuntimeSource || "",
-        textLength: script.src ? 0 : (script.textContent || "").length,
-      }))
+      .map((script, index) => {
+        const text = script.src ? "" : script.textContent || "";
+        return {
+          index,
+          src: script.src || "",
+          type: script.type || "",
+          hook: script.dataset && script.dataset.horderBufferRuntimeHooked || "",
+          source: script.dataset && script.dataset.horderBufferRuntimeSource || "",
+          krHook: script.dataset && script.dataset.hordesKrRuntimeHooked || "",
+          krSource: script.dataset && script.dataset.hordesKrRuntimeSource || "",
+          textLength: text.length,
+          markers: {
+            runtime: text.includes(RUNTIME_KEY),
+            engineSetter: text.includes("engineSetter"),
+            engineConstructor: text.includes("__HORDER_MOD_BUFFER_CAPTURE_ENGINE__"),
+            prototypePatch: text.includes("prototypePatchFhType"),
+            delayedPrototype: text.includes("prototypeInstallTimerStarted"),
+          },
+        };
+      })
       .filter((item) => item.src.includes("client") || item.hook || item.krHook)
       .slice(-30);
   }
