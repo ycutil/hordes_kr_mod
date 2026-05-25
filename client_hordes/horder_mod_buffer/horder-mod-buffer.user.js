@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.9
+// @version      0.2.0
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.9";
+  const MOD_VERSION = "0.2.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -32,6 +32,8 @@
   const BETWEEN_BUFFS_MS = 1000;
   const AFTER_BUFFS_MS = 600;
   const DEFAULT_HOTKEY_CODE = "Digit1";
+  const STORAGE_MINIMIZED_KEY = "horder_mod_buffer_minimized";
+  const STORAGE_USE_SLOT4_KEY = "horder_mod_buffer_use_slot4";
 
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -65,6 +67,8 @@
     log: [],
     debugVisible: false,
     lastDebugText: "",
+    minimized: readStoredBoolean(STORAGE_MINIMIZED_KEY, false),
+    useSlot4: readStoredBoolean(STORAGE_USE_SLOT4_KEY, true),
     panel: null,
     shadow: null,
   };
@@ -85,6 +89,10 @@
       running: state.running,
       status: state.status,
       lastError: state.lastError,
+      settings: {
+        minimized: state.minimized,
+        useSlot4: state.useSlot4,
+      },
       runtime: summarizeRuntime(),
       log: state.log.slice(-12),
     }),
@@ -510,7 +518,21 @@
           align-items: center;
           gap: 8px;
         }
+        .head-actions {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+        }
+        .minimize {
+          width: 24px;
+          height: 24px;
+          padding: 0;
+          border-radius: 5px;
+          line-height: 1;
+          background: #111827;
+        }
         .body { padding: 8px; }
+        .body.collapsed { display: none; }
         .buttons {
           display: grid;
           grid-template-columns: 1fr 1fr;
@@ -530,6 +552,27 @@
         button:disabled {
           cursor: default;
           opacity: 0.58;
+        }
+        .option {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          min-height: 30px;
+          margin-top: 6px;
+          padding: 5px 7px;
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          border-radius: 6px;
+          background: rgba(15, 23, 42, 0.58);
+          color: #e2e8f0;
+          font-size: 11px;
+          font-weight: 700;
+          cursor: pointer;
+          user-select: none;
+        }
+        .option input {
+          width: 14px;
+          height: 14px;
+          margin: 0;
         }
         .stop {
           margin-top: 6px;
@@ -589,13 +632,20 @@
       <div class="panel">
         <div class="head">
           <span>Buffer</span>
-          <span id="dot" class="dot"></span>
+          <span class="head-actions">
+            <span id="dot" class="dot"></span>
+            <button id="minimize" class="minimize" type="button">-</button>
+          </span>
         </div>
-        <div class="body">
+        <div id="body" class="body">
           <div class="buttons">
             <button id="guardstone" type="button">Guardstone</button>
             <button id="headless" type="button">Headless</button>
           </div>
+          <label class="option">
+            <input id="use-slot4" type="checkbox">
+            <span>4번도 사용</span>
+          </label>
           <button id="stop" class="stop" type="button">중지</button>
           <div class="debug-buttons">
             <button id="debug" type="button">진단</button>
@@ -612,6 +662,8 @@
     shadow.getElementById("stop").addEventListener("click", cancelRunningFlow);
     shadow.getElementById("debug").addEventListener("click", showDebugReport);
     shadow.getElementById("copy-debug").addEventListener("click", copyDebugReport);
+    shadow.getElementById("minimize").addEventListener("click", togglePanelMinimized);
+    shadow.getElementById("use-slot4").addEventListener("change", (event) => setUseSlot4(Boolean(event.target.checked)));
     updatePanel();
     setInterval(updatePanel, 600);
   }
@@ -663,8 +715,10 @@
       setStatus("Faivel 이동 후 0.3초 대기");
       await sleep(AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS, token);
 
-      await useSkillbarSlot(4, token);
-      await sleep(BETWEEN_BUFFS_MS, token);
+      if (state.useSlot4) {
+        await useSkillbarSlot(4, token);
+        await sleep(BETWEEN_BUFFS_MS, token);
+      }
       await useSkillbarSlot(5, token);
       await sleep(AFTER_BUFFS_MS, token);
 
@@ -690,6 +744,18 @@
     if (state.cancelToken) state.cancelToken.cancelled = true;
     state.running = false;
     setStatus("중지 요청");
+  }
+
+  function togglePanelMinimized() {
+    state.minimized = !state.minimized;
+    writeStoredBoolean(STORAGE_MINIMIZED_KEY, state.minimized);
+    updatePanel();
+  }
+
+  function setUseSlot4(value) {
+    state.useSlot4 = Boolean(value);
+    writeStoredBoolean(STORAGE_USE_SLOT4_KEY, state.useSlot4);
+    setStatus(state.useSlot4 ? "버프: 4번 + 5번" : "버프: 5번만");
   }
 
   async function waitForRuntime(token) {
@@ -982,6 +1048,8 @@
         running: state.running,
         status: state.status,
         lastError: state.lastError,
+        minimized: state.minimized,
+        useSlot4: state.useSlot4,
         log: state.log.slice(-12),
       },
       runtime: {
@@ -1112,6 +1180,7 @@
     const dot = state.shadow && state.shadow.getElementById("dot");
     return {
       present: Boolean(state.panel),
+      minimized: state.minimized,
       debugVisible: state.debugVisible,
       dotClass: dot && dot.className || "",
       debugOutputOpen: Boolean(output && output.classList.contains("open")),
@@ -1216,12 +1285,18 @@
     const headless = state.shadow.getElementById("headless");
     const stop = state.shadow.getElementById("stop");
     const debugOutput = state.shadow.getElementById("debug-output");
+    const body = state.shadow.getElementById("body");
+    const minimize = state.shadow.getElementById("minimize");
+    const useSlot4 = state.shadow.getElementById("use-slot4");
     const runtime = getRuntime();
 
     if (status) status.textContent = state.status || "대기";
     if (guardstone) guardstone.disabled = state.running;
     if (headless) headless.disabled = state.running;
     if (stop) stop.disabled = !state.running;
+    if (body) body.classList.toggle("collapsed", state.minimized);
+    if (minimize) minimize.textContent = state.minimized ? "+" : "-";
+    if (useSlot4) useSlot4.checked = state.useSlot4;
     if (debugOutput) {
       debugOutput.classList.toggle("open", state.debugVisible);
       if (state.debugVisible && state.lastDebugText && debugOutput.value !== state.lastDebugText) {
@@ -1242,6 +1317,25 @@
     state.log.push({ at: new Date().toISOString(), text: state.status });
     while (state.log.length > 30) state.log.shift();
     updatePanel();
+  }
+
+  function readStoredBoolean(key, fallback) {
+    try {
+      const value = pageWindow.localStorage && pageWindow.localStorage.getItem(key);
+      if (value === "1") return true;
+      if (value === "0") return false;
+    } catch {
+      // Ignore storage access errors.
+    }
+    return fallback;
+  }
+
+  function writeStoredBoolean(key, value) {
+    try {
+      if (pageWindow.localStorage) pageWindow.localStorage.setItem(key, value ? "1" : "0");
+    } catch {
+      // Ignore storage access errors.
+    }
   }
 
   function markRuntimeError(stage, error) {
