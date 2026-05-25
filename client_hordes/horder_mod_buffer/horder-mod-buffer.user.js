@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.1
+// @version      0.1.2
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.1";
+  const MOD_VERSION = "0.1.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -62,6 +62,8 @@
     status: "대기",
     lastError: "",
     log: [],
+    debugVisible: false,
+    lastDebugText: "",
     panel: null,
     shadow: null,
   };
@@ -86,6 +88,10 @@
       log: state.log.slice(-12),
     }),
     diagnose: () => buildDiagnosticStatus(),
+    debugReport: () => buildDebugReport(),
+    debugText: () => buildDebugText(),
+    showDebug: () => showDebugReport(),
+    copyDebug: () => copyDebugReport(),
   };
 
   function isPlayPage() {
@@ -481,6 +487,17 @@
           background: #2a1217;
           border-color: rgba(248, 113, 113, 0.55);
         }
+        .debug-buttons {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 6px;
+          margin-top: 6px;
+        }
+        .debug-buttons button {
+          height: 30px;
+          background: #10251f;
+          border-color: rgba(52, 211, 153, 0.48);
+        }
         .status {
           margin-top: 7px;
           min-height: 32px;
@@ -492,6 +509,22 @@
           line-height: 1.35;
           word-break: keep-all;
         }
+        .debug-output {
+          display: none;
+          width: 100%;
+          height: 164px;
+          margin-top: 7px;
+          padding: 6px;
+          border: 1px solid rgba(148, 163, 184, 0.48);
+          border-radius: 6px;
+          background: rgba(2, 6, 23, 0.88);
+          color: #dbeafe;
+          font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          line-height: 1.35;
+          resize: vertical;
+          white-space: pre;
+        }
+        .debug-output.open { display: block; }
         .dot {
           width: 8px;
           height: 8px;
@@ -514,7 +547,12 @@
             <button id="headless" type="button">Headless</button>
           </div>
           <button id="stop" class="stop" type="button">중지</button>
+          <div class="debug-buttons">
+            <button id="debug" type="button">진단</button>
+            <button id="copy-debug" type="button">복사</button>
+          </div>
           <div id="status" class="status">대기</div>
+          <textarea id="debug-output" class="debug-output" spellcheck="false" readonly></textarea>
         </div>
       </div>
     `;
@@ -522,6 +560,8 @@
     shadow.getElementById("guardstone").addEventListener("click", () => runBufferFlow("Guardstone"));
     shadow.getElementById("headless").addEventListener("click", () => runBufferFlow("Headless Landing"));
     shadow.getElementById("stop").addEventListener("click", cancelRunningFlow);
+    shadow.getElementById("debug").addEventListener("click", showDebugReport);
+    shadow.getElementById("copy-debug").addEventListener("click", copyDebugReport);
     updatePanel();
     setInterval(updatePanel, 600);
   }
@@ -849,15 +889,233 @@
       ready: Boolean(runtime && runtime.ready),
       bufferRuntime: summarizeRuntime(),
       krRuntimePresent: Boolean(pageWindow[KR_RUNTIME_KEY]),
+      debugTextCommand: "HorderModBuffer.debugText()",
+      copyCommand: "HorderModBuffer.copyDebug()",
       clientScripts: Array.from(document.querySelectorAll("script"))
         .map((script) => ({
           src: script.src || "",
           hook: script.dataset && script.dataset.horderBufferRuntimeHooked || "",
+          source: script.dataset && script.dataset.horderBufferRuntimeSource || "",
           krHook: script.dataset && script.dataset.hordesKrRuntimeHooked || "",
+          krSource: script.dataset && script.dataset.hordesKrRuntimeSource || "",
         }))
         .filter((item) => item.src.includes("client") || item.hook || item.krHook)
         .slice(-20),
     };
+  }
+
+  function buildDebugReport() {
+    const runtime = getRuntime();
+    const krRuntime = pageWindow[KR_RUNTIME_KEY] || null;
+    const scripts = collectClientScriptDiagnostics();
+    const player = runtime && typeof runtime.getPlayerInfo === "function"
+      ? safeCall(() => runtime.getPlayerInfo(), null)
+      : null;
+    const entities = runtime && typeof runtime.listEntities === "function"
+      ? safeCall(() => runtime.listEntities(), [])
+      : [];
+    const normalizedEntities = Array.isArray(entities) ? entities : [];
+    const report = {
+      generatedAt: new Date().toISOString(),
+      version: MOD_VERSION,
+      page: {
+        href: location.href,
+        pathname: location.pathname,
+        readyState: document.readyState,
+        visibilityState: document.visibilityState || "",
+        userAgent: pageWindow.navigator && pageWindow.navigator.userAgent || "",
+      },
+      panel: readPanelDiagnostics(),
+      state: {
+        running: state.running,
+        status: state.status,
+        lastError: state.lastError,
+        log: state.log.slice(-12),
+      },
+      runtime: {
+        present: Boolean(runtime),
+        ready: Boolean(runtime && runtime.ready),
+        source: runtime && runtime.source || "",
+        activeWorld: runtime && runtime.activeWorld || "",
+        updatedAt: runtime && runtime.updatedAt || null,
+        updatedAgoMs: runtime && runtime.updatedAt ? Date.now() - runtime.updatedAt : null,
+        hasEngine: Boolean(runtime && runtime.engine),
+        hasPlayer: Boolean(runtime && runtime.player),
+        functions: {
+          changeTarget: Boolean(runtime && typeof runtime.changeTarget === "function"),
+          sendInteract: Boolean(runtime && typeof runtime.sendInteract === "function"),
+          useSkillbarSlot: Boolean(runtime && typeof runtime.useSkillbarSlot === "function"),
+          listEntities: Boolean(runtime && typeof runtime.listEntities === "function"),
+          getPlayerInfo: Boolean(runtime && typeof runtime.getPlayerInfo === "function"),
+          getActiveWorld: Boolean(runtime && typeof runtime.getActiveWorld === "function"),
+        },
+        hookHits: runtime && runtime.hookHits || null,
+        errors: runtime && Array.isArray(runtime.errors) ? runtime.errors.slice(-12) : [],
+        krRuntimeSeen: Boolean(runtime && runtime.krRuntimeSeen),
+      },
+      krRuntime: {
+        present: Boolean(krRuntime),
+        hasEngine: Boolean(krRuntime && krRuntime.engine),
+        hasPlayer: Boolean(krRuntime && krRuntime.player),
+        keys: krRuntime ? Object.keys(krRuntime).sort().slice(0, 80) : [],
+        patchedVersion: krRuntime && krRuntime.patchedVersion || "",
+        hookHits: krRuntime && krRuntime.hookHits || null,
+      },
+      player,
+      entities: {
+        count: normalizedEntities.length,
+        conjurers: normalizedEntities
+          .filter((entity) => normalizeText(entity && entity.name).includes("conjuer") || normalizeText(entity && entity.name).includes("conjurer"))
+          .slice(0, 8)
+          .map(summarizeEntity),
+        sample: normalizedEntities.slice(0, 8).map(summarizeEntity),
+      },
+      scripts,
+    };
+    report.possibleCauses = buildPossibleCauses(report);
+    return report;
+  }
+
+  function buildDebugText() {
+    return JSON.stringify(buildDebugReport(), null, 2);
+  }
+
+  function showDebugReport() {
+    state.debugVisible = true;
+    state.lastDebugText = buildDebugText();
+    writeDebugOutput();
+    setStatus("진단 리포트 생성");
+    return state.lastDebugText;
+  }
+
+  async function copyDebugReport() {
+    state.debugVisible = true;
+    state.lastDebugText = buildDebugText();
+    writeDebugOutput();
+
+    let copied = false;
+    try {
+      if (pageWindow.navigator && pageWindow.navigator.clipboard && typeof pageWindow.navigator.clipboard.writeText === "function") {
+        await pageWindow.navigator.clipboard.writeText(state.lastDebugText);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) copied = fallbackCopyDebugText();
+    setStatus(copied ? "진단 복사됨" : "진단 표시됨: 텍스트를 직접 복사");
+    return { copied, text: state.lastDebugText };
+  }
+
+  function writeDebugOutput() {
+    if (!state.shadow) return;
+    const output = state.shadow.getElementById("debug-output");
+    if (!output) return;
+    output.value = state.lastDebugText || "";
+    output.classList.toggle("open", state.debugVisible);
+    if (state.debugVisible) {
+      try {
+        output.focus();
+        output.select();
+      } catch {
+        // Selection is only a convenience for manual copy.
+      }
+    }
+  }
+
+  function fallbackCopyDebugText() {
+    if (!state.shadow) return false;
+    const output = state.shadow.getElementById("debug-output");
+    if (!output) return false;
+    try {
+      output.focus();
+      output.select();
+      return Boolean(document.execCommand && document.execCommand("copy"));
+    } catch {
+      return false;
+    }
+  }
+
+  function readPanelDiagnostics() {
+    const output = state.shadow && state.shadow.getElementById("debug-output");
+    const dot = state.shadow && state.shadow.getElementById("dot");
+    return {
+      present: Boolean(state.panel),
+      debugVisible: state.debugVisible,
+      dotClass: dot && dot.className || "",
+      debugOutputOpen: Boolean(output && output.classList.contains("open")),
+    };
+  }
+
+  function collectClientScriptDiagnostics() {
+    return Array.from(document.querySelectorAll("script"))
+      .map((script, index) => ({
+        index,
+        src: script.src || "",
+        type: script.type || "",
+        hook: script.dataset && script.dataset.horderBufferRuntimeHooked || "",
+        source: script.dataset && script.dataset.horderBufferRuntimeSource || "",
+        krHook: script.dataset && script.dataset.hordesKrRuntimeHooked || "",
+        krSource: script.dataset && script.dataset.hordesKrRuntimeSource || "",
+        textLength: script.src ? 0 : (script.textContent || "").length,
+      }))
+      .filter((item) => item.src.includes("client") || item.hook || item.krHook)
+      .slice(-30);
+  }
+
+  function buildPossibleCauses(report) {
+    const causes = [];
+    const hasBufferHook = report.scripts.some((script) => script.hook);
+    const hasFallback = report.scripts.some((script) => script.hook === "fallback");
+    const hasKrHook = report.scripts.some((script) => script.krHook);
+
+    if (!report.runtime.present) {
+      causes.push("Buffer runtime object 없음: Buffer가 client.js 패치에 성공하지 못했거나 너무 늦게 실행되었습니다.");
+    }
+    if (!hasBufferHook) {
+      causes.push("client.js에 Buffer hook 표시가 없음: 유저스크립트가 document-start로 먼저 실행되지 않았을 가능성이 큽니다.");
+    }
+    if (hasFallback) {
+      causes.push("fallback client.js가 삽입됨: client.js 다운로드/패치 중 오류가 있어 원본 스크립트로 되돌아갔습니다.");
+    }
+    if (hasKrHook || report.krRuntime.present) {
+      causes.push("KR runtime/hook 감지됨: 버퍼 계정에서는 KR 모드를 끄고 Buffer만 켜야 합니다.");
+    }
+    if (report.runtime.present && !report.runtime.hasEngine) {
+      causes.push("engine 미감지: client.js 내부 engine setter 패턴이 바뀌었거나 아직 캐릭터 접속이 완료되지 않았습니다.");
+    }
+    if (report.runtime.present && !report.runtime.hasPlayer) {
+      causes.push("player 미감지: 캐릭터가 아직 월드에 들어오지 않았거나 런타임 update가 실패했습니다.");
+    }
+    if (report.runtime.present && !report.runtime.functions.sendInteract) {
+      causes.push("sendInteract 함수 없음: packet bridge 설치가 실패했습니다.");
+    }
+    if (!causes.length && !report.runtime.ready) {
+      causes.push("명확한 원인 없음: 리포트 전체를 전달해 주세요.");
+    }
+    return causes;
+  }
+
+  function summarizeEntity(entity) {
+    const pos = entity && Array.isArray(entity.pos) ? entity.pos : [];
+    return {
+      id: entity && entity.id,
+      name: entity && entity.name || "",
+      type: entity && entity.type,
+      pos: [Number(pos[0]) || 0, Number(pos[1]) || 0, Number(pos[2]) || 0],
+    };
+  }
+
+  function safeCall(fn, fallback) {
+    try {
+      const value = fn();
+      return value === undefined ? fallback : value;
+    } catch (error) {
+      return {
+        error: (error && error.message) || String(error),
+      };
+    }
   }
 
   function buildRuntimeFailureMessage() {
@@ -875,12 +1133,19 @@
     const guardstone = state.shadow.getElementById("guardstone");
     const headless = state.shadow.getElementById("headless");
     const stop = state.shadow.getElementById("stop");
+    const debugOutput = state.shadow.getElementById("debug-output");
     const runtime = getRuntime();
 
     if (status) status.textContent = state.status || "대기";
     if (guardstone) guardstone.disabled = state.running;
     if (headless) headless.disabled = state.running;
     if (stop) stop.disabled = !state.running;
+    if (debugOutput) {
+      debugOutput.classList.toggle("open", state.debugVisible);
+      if (state.debugVisible && state.lastDebugText && debugOutput.value !== state.lastDebugText) {
+        debugOutput.value = state.lastDebugText;
+      }
+    }
 
     if (dot) {
       dot.className = "dot";
