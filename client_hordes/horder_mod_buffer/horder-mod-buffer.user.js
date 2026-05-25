@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.2.1
+// @version      0.2.2
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.2.1";
+  const MOD_VERSION = "0.2.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -673,21 +673,32 @@
     if (pageWindow.__horderBufferHotkeyInstalled) return;
     pageWindow.__horderBufferHotkeyInstalled = true;
 
-    document.addEventListener(
-      "keydown",
-      (event) => {
-        if (!event || event.defaultPrevented) return;
-        if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-        const destination = getHotkeyDestination(event);
-        if (!destination) return;
-        if (isEditableTarget(event.target)) return;
+    const handler = (event) => handleBufferHotkeyEvent(event);
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      pageWindow.addEventListener(type, handler, true);
+      document.addEventListener(type, handler, true);
+    }
+  }
 
-        event.preventDefault();
-        event.stopPropagation();
-        runBufferFlow(destination);
-      },
-      true
-    );
+  function handleBufferHotkeyEvent(event) {
+    if (!event || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const destination = getHotkeyDestination(event);
+    if (!destination) return;
+    if (isEditableTarget(event.target)) return;
+
+    suppressHotkeyEvent(event);
+    if (event.type !== "keydown" || event.repeat) return;
+    runBufferFlow(destination);
+  }
+
+  function suppressHotkeyEvent(event) {
+    try {
+      if (event.cancelable !== false) event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+    } catch {
+      // Keep routing the buffer hotkey even if the browser rejects cancellation.
+    }
   }
 
   function getHotkeyDestination(event) {
