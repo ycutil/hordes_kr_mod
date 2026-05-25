@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.4
+// @version      0.1.5
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.4";
+  const MOD_VERSION = "0.1.5";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -387,11 +387,33 @@
     patched = patchEngineConstructorCall(patched);
 
     if (patched.includes("window.onload=async()=>{")) {
-      patched = patched.replace("window.onload=async()=>{", `window.onload=async()=>{${prototypeRuntime}`);
+      patched = patched.replace(
+        "window.onload=async()=>{",
+        `window.onload=async()=>{if(window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__)return;window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__=true;${prototypeRuntime}`
+      );
+      patched = patchClientOnloadAutoStart(patched);
     } else {
       markRuntimeError("patch", new Error("window.onload marker not found"));
     }
 
+    return patched;
+  }
+
+  function patchClientOnloadAutoStart(source) {
+    const marker = "};var RT=0,zT=()=>{";
+    const autoStart = [
+      "};try{",
+      `var __hmbRt=window.${RUNTIME_KEY}=window.${RUNTIME_KEY}||{};`,
+      "__hmbRt.hookHits=__hmbRt.hookHits||{};",
+      "__hmbRt.hookHits.onloadAutoStartInstall=(__hmbRt.hookHits.onloadAutoStartInstall||0)+1;",
+      "if(document.readyState!=='loading'){setTimeout(function(){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.hookHits=r.hookHits||{};r.hookHits.onloadAutoStartRun=(r.hookHits.onloadAutoStartRun||0)+1;if(typeof window.onload==='function')window.onload()}catch(e){try{var rr=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};rr.errors=rr.errors||[];rr.errors.push('onloadAutoStart:'+((e&&e.message)||e))}catch(_){}}},0)}",
+      "}catch(e){}",
+      "var RT=0,zT=()=>{",
+    ].join("");
+    const patched = source.replace(marker, autoStart);
+    if (patched === source) {
+      markRuntimeError("patch", new Error("client onload tail marker not found"));
+    }
     return patched;
   }
 
@@ -968,6 +990,7 @@
         readyState: document.readyState,
         visibilityState: document.visibilityState || "",
         userAgent: pageWindow.navigator && pageWindow.navigator.userAgent || "",
+        clientOnloadStarted: Boolean(pageWindow.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__),
       },
       panel: readPanelDiagnostics(),
       state: {
@@ -1118,6 +1141,8 @@
             engineConstructor: text.includes("__HORDER_MOD_BUFFER_CAPTURE_ENGINE__"),
             prototypePatch: text.includes("prototypePatchFhType"),
             delayedPrototype: text.includes("prototypeInstallTimerStarted"),
+            onloadGuard: text.includes("__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__"),
+            onloadAutoStart: text.includes("onloadAutoStartRun"),
           },
         };
       })
