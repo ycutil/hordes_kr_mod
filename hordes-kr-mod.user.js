@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.134-local
+// @version      0.9.135-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.134-local";
+  const BOOT_VERSION = "0.9.135-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -306,7 +306,8 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HIGHLIGHT_MATCH_CACHE_MAX = 256;
-  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODE = "KeyR";
+  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODES = ["KeyR", "Digit5", "KeyQ", "KeyE", "KeyF"];
+  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODE = SWIFTSHOT_TURBO_DEFAULT_KEY_CODES[0];
   const SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS = 120;
   const SWIFTSHOT_TURBO_MIN_INTERVAL_MS = 60;
   const SWIFTSHOT_TURBO_MAX_INTERVAL_MS = 500;
@@ -598,6 +599,7 @@
     incomingTargetWatchEnabled: false,
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
+    swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
     swiftshotTurboKeyCode: SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
     swiftshotTurboIntervalMs: SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS,
   });
@@ -607,7 +609,12 @@
   FEATURE_CONFIG.incomingTargetWatchEnabled = false;
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
   FEATURE_CONFIG.swiftshotTurboEnabled = FEATURE_CONFIG.swiftshotTurboEnabled !== false;
-  FEATURE_CONFIG.swiftshotTurboKeyCode = normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+  FEATURE_CONFIG.swiftshotTurboKeyCodes = normalizeSwiftshotTurboKeyCodes(
+    Array.isArray(FEATURE_CONFIG.swiftshotTurboKeyCodes)
+      ? FEATURE_CONFIG.swiftshotTurboKeyCodes
+      : SWIFTSHOT_TURBO_DEFAULT_KEY_CODES
+  );
+  FEATURE_CONFIG.swiftshotTurboKeyCode = FEATURE_CONFIG.swiftshotTurboKeyCodes[0] || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
   FEATURE_CONFIG.swiftshotTurboIntervalMs = clampInteger(
     FEATURE_CONFIG.swiftshotTurboIntervalMs,
     SWIFTSHOT_TURBO_MIN_INTERVAL_MS,
@@ -6939,20 +6946,22 @@
     const onKeyDown = (event) => {
       if (SWIFTSHOT_TURBO_STATE.synthetic) return;
       if (!isSwiftshotTurboKeyEvent(event)) return;
+      const normalizedCode = normalizeKeyboardCode(event.code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
 
-      if (SWIFTSHOT_TURBO_STATE.held && event.repeat) {
+      if (SWIFTSHOT_TURBO_STATE.held && event.repeat && SWIFTSHOT_TURBO_STATE.activeCode === normalizedCode) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
       }
 
       if (event.repeat || shouldIgnoreSwiftshotTurboEvent(event)) return;
-      startSwiftshotTurbo(event.code);
+      startSwiftshotTurbo(normalizedCode);
     };
 
     const onKeyUp = (event) => {
       if (SWIFTSHOT_TURBO_STATE.synthetic) return;
       if (!isSwiftshotTurboKeyEvent(event)) return;
+      if (SWIFTSHOT_TURBO_STATE.activeCode && SWIFTSHOT_TURBO_STATE.activeCode !== normalizeKeyboardCode(event.code)) return;
       stopSwiftshotTurbo();
     };
 
@@ -6967,8 +6976,7 @@
   }
 
   function isSwiftshotTurboKeyEvent(event) {
-    const configured = normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
-    return Boolean(event && event.code === configured);
+    return Boolean(event && FEATURE_CONFIG.swiftshotTurboKeyCodes.includes(normalizeKeyboardCode(event.code)));
   }
 
   function shouldIgnoreSwiftshotTurboEvent(event) {
@@ -7110,6 +7118,19 @@
     return { code: normalized, key: formatKeyboardCode(normalized), keyCode: 0, charCode: 0 };
   }
 
+  function normalizeSwiftshotTurboKeyCodes(value) {
+    const rawValues = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+    const normalized = [];
+
+    for (const rawValue of rawValues) {
+      const code = normalizeKeyboardCode(rawValue);
+      if (code && !normalized.includes(code)) normalized.push(code);
+    }
+
+    if (normalized.length === 0) return [...SWIFTSHOT_TURBO_DEFAULT_KEY_CODES];
+    return normalized;
+  }
+
   function getSwiftshotTurboIntervalMs() {
     return clampInteger(
       FEATURE_CONFIG.swiftshotTurboIntervalMs,
@@ -7128,10 +7149,14 @@
   }
 
   function getSwiftshotTurboStatus() {
+    const keyCodes = normalizeSwiftshotTurboKeyCodes(FEATURE_CONFIG.swiftshotTurboKeyCodes);
+    const keys = keyCodes.map(formatKeyboardCode);
     return {
       enabled: FEATURE_CONFIG.swiftshotTurboEnabled,
-      key: formatKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE),
-      keyCode: normalizeKeyboardCode(FEATURE_CONFIG.swiftshotTurboKeyCode) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
+      key: keys.join(", "),
+      keys,
+      keyCode: keyCodes[0] || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
+      keyCodes,
       intervalMs: getSwiftshotTurboIntervalMs(),
       held: SWIFTSHOT_TURBO_STATE.held,
       activeCode: SWIFTSHOT_TURBO_STATE.activeCode,
@@ -17638,7 +17663,7 @@
     setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
     setFeatureToggleButton(shadow, "togglePartyUi", "파티창이동", PARTY_UI_CONFIG.enabled);
     setFeatureToggleButton(shadow, "togglePartyCommandPanel", "파티패널", PARTY_COMMAND_CONFIG.enabled);
-    setFeatureToggleButton(shadow, "toggleSwiftshotTurbo", "스위프트터보", FEATURE_CONFIG.swiftshotTurboEnabled);
+    setFeatureToggleButton(shadow, "toggleSwiftshotTurbo", "스킬터보", FEATURE_CONFIG.swiftshotTurboEnabled);
     const preset = shadow.getElementById("partyPreset5x2");
     if (preset) {
       preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
