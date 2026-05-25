@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.7
+// @version      0.1.8
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.7";
+  const MOD_VERSION = "0.1.8";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -28,6 +28,7 @@
   const AFTER_TELEPORT_FALLBACK_MS = 3500;
   const AFTER_INTERACT_DELAY_MS = 180;
   const AFTER_CHOICE_DELAY_MS = 650;
+  const AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS = 1000;
   const BETWEEN_BUFFS_MS = 1000;
   const AFTER_BUFFS_MS = 600;
   const DEFAULT_HOTKEY_CODE = "Digit1";
@@ -658,8 +659,9 @@
       await waitForRuntime(token);
 
       await openConjurer(token);
-      await chooseDestination("Faivel", token);
-      await waitForWorldOrFallback("Faivel", token);
+      await chooseDestination("Faivel", token, 0);
+      setStatus("Faivel 이동 후 1초 대기");
+      await sleep(AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS, token);
 
       await useSkillbarSlot(4, token);
       await sleep(BETWEEN_BUFFS_MS, token);
@@ -724,7 +726,7 @@
     );
   }
 
-  async function chooseDestination(destination, token) {
+  async function chooseDestination(destination, token, afterDelayMs = AFTER_CHOICE_DELAY_MS) {
     const element = await waitFor(
       () => findChoiceElement(destination),
       DEFAULT_CHOICE_TIMEOUT_MS,
@@ -734,7 +736,7 @@
 
     setStatus(`이동 선택: ${destination}`);
     clickLikeUser(element);
-    await sleep(AFTER_CHOICE_DELAY_MS, token);
+    if (afterDelayMs > 0) await sleep(afterDelayMs, token);
   }
 
   async function waitForWorldOrFallback(worldName, token) {
