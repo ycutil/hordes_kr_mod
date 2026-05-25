@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.136-local
+// @version      0.9.138-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.136-local";
+  const BOOT_VERSION = "0.9.138-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -308,8 +308,6 @@
   const HIGHLIGHT_MATCH_CACHE_MAX = 256;
   const SWIFTSHOT_TURBO_DEFAULT_KEY_CODES = ["KeyR", "Digit5", "KeyQ", "KeyE", "KeyF"];
   const SWIFTSHOT_TURBO_DEFAULT_KEY_CODE = SWIFTSHOT_TURBO_DEFAULT_KEY_CODES[0];
-  const SWIFTSHOT_TURBO_MOVEMENT_KEY_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
-  const SWIFTSHOT_TURBO_STOP_MOVEMENT_KEY_CODES = ["KeyE"];
   const SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS = 120;
   const SWIFTSHOT_TURBO_MIN_INTERVAL_MS = 60;
   const SWIFTSHOT_TURBO_MAX_INTERVAL_MS = 500;
@@ -804,13 +802,6 @@
     timer: null,
     activeCode: "",
     synthetic: false,
-    movementHeldCodes: new Set(),
-    movementSuppressedCodes: new Set(),
-    movementSuppressionActive: false,
-    movementSuppressionTargetCode: "",
-    movementSuppressionCount: 0,
-    movementRestoreCount: 0,
-    lastMovementSuppressedAt: null,
     repeatCount: 0,
     lastAt: null,
     lastError: "",
@@ -6954,7 +6945,6 @@
 
     const onKeyDown = (event) => {
       if (SWIFTSHOT_TURBO_STATE.synthetic) return;
-      if (handleSwiftshotTurboMovementKeyDown(event)) return;
       if (!isSwiftshotTurboKeyEvent(event)) return;
       const normalizedCode = normalizeKeyboardCode(event.code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
 
@@ -6970,7 +6960,6 @@
 
     const onKeyUp = (event) => {
       if (SWIFTSHOT_TURBO_STATE.synthetic) return;
-      handleSwiftshotTurboMovementKeyUp(event);
       if (!isSwiftshotTurboKeyEvent(event)) return;
       if (SWIFTSHOT_TURBO_STATE.activeCode && SWIFTSHOT_TURBO_STATE.activeCode !== normalizeKeyboardCode(event.code)) return;
       stopSwiftshotTurbo();
@@ -6980,13 +6969,9 @@
     document.addEventListener("keydown", onKeyDown, true);
     pageWindow.addEventListener("keyup", onKeyUp, true);
     document.addEventListener("keyup", onKeyUp, true);
-    pageWindow.addEventListener("blur", () => {
-      stopSwiftshotTurbo({ restoreMovement: false, clearMovementHeld: true });
-    });
+    pageWindow.addEventListener("blur", stopSwiftshotTurbo);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") {
-        stopSwiftshotTurbo({ restoreMovement: false, clearMovementHeld: true });
-      }
+      if (document.visibilityState !== "visible") stopSwiftshotTurbo();
     });
   }
 
@@ -7011,24 +6996,18 @@
     SWIFTSHOT_TURBO_STATE.held = true;
     SWIFTSHOT_TURBO_STATE.activeCode = normalized;
     SWIFTSHOT_TURBO_STATE.lastError = "";
-    startSwiftshotMovementSuppression(normalized);
     SWIFTSHOT_TURBO_STATE.timer = setInterval(() => {
       dispatchSwiftshotTurboPulse(normalized);
     }, getSwiftshotTurboIntervalMs());
   }
 
-  function stopSwiftshotTurbo(options = {}) {
-    const restoreMovement = options.restoreMovement !== false;
-    const clearMovementHeld = options.clearMovementHeld === true;
-
+  function stopSwiftshotTurbo() {
     if (SWIFTSHOT_TURBO_STATE.timer) {
       clearInterval(SWIFTSHOT_TURBO_STATE.timer);
       SWIFTSHOT_TURBO_STATE.timer = null;
     }
     SWIFTSHOT_TURBO_STATE.held = false;
     SWIFTSHOT_TURBO_STATE.activeCode = "";
-    stopSwiftshotMovementSuppression({ restoreMovement });
-    if (clearMovementHeld) SWIFTSHOT_TURBO_STATE.movementHeldCodes.clear();
   }
 
   function dispatchSwiftshotTurboPulse(code) {
@@ -7051,7 +7030,6 @@
 
     SWIFTSHOT_TURBO_STATE.synthetic = true;
     try {
-      refreshSwiftshotMovementSuppression(target);
       dispatchKeyboardPulseForCode(target, code);
       SWIFTSHOT_TURBO_STATE.repeatCount++;
       SWIFTSHOT_TURBO_STATE.lastAt = Date.now();
@@ -7068,105 +7046,6 @@
   function isSwiftshotTurboSuspended() {
     if (document.visibilityState && document.visibilityState !== "visible") return true;
     return isEditableTargetOrderElement(document.activeElement);
-  }
-
-  function handleSwiftshotTurboMovementKeyDown(event) {
-    const code = normalizeKeyboardCode(event && event.code);
-    if (!isSwiftshotTurboMovementKeyCode(code)) return false;
-    if (shouldIgnoreSwiftshotMovementEvent(event)) return false;
-
-    SWIFTSHOT_TURBO_STATE.movementHeldCodes.add(code);
-    if (!SWIFTSHOT_TURBO_STATE.movementSuppressionActive) return false;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    dispatchSwiftshotMovementKey("keyup", code);
-    return true;
-  }
-
-  function handleSwiftshotTurboMovementKeyUp(event) {
-    const code = normalizeKeyboardCode(event && event.code);
-    if (!isSwiftshotTurboMovementKeyCode(code)) return;
-    if (shouldIgnoreSwiftshotMovementEvent(event)) return;
-
-    SWIFTSHOT_TURBO_STATE.movementHeldCodes.delete(code);
-  }
-
-  function shouldIgnoreSwiftshotMovementEvent(event) {
-    if (!event || event.isComposing) return true;
-    if (TARGET_ORDER_STATE.hotkeyCaptureActive) return true;
-    if (event.altKey || event.ctrlKey || event.metaKey) return true;
-    if (document.visibilityState && document.visibilityState !== "visible") return true;
-    return isPartyCommandEditableEvent(event) || isStatusUiKeyboardEvent(event);
-  }
-
-  function startSwiftshotMovementSuppression(code) {
-    const normalized = normalizeKeyboardCode(code);
-    if (!shouldStopMovementForSwiftshotTurbo(normalized)) return;
-
-    SWIFTSHOT_TURBO_STATE.movementSuppressionActive = true;
-    SWIFTSHOT_TURBO_STATE.movementSuppressionTargetCode = normalized;
-    refreshSwiftshotMovementSuppression();
-  }
-
-  function refreshSwiftshotMovementSuppression(target) {
-    if (!SWIFTSHOT_TURBO_STATE.movementSuppressionActive) return;
-
-    for (const code of SWIFTSHOT_TURBO_STATE.movementHeldCodes) {
-      dispatchSwiftshotMovementKey("keyup", code, target);
-    }
-  }
-
-  function stopSwiftshotMovementSuppression(options = {}) {
-    const wasActive = SWIFTSHOT_TURBO_STATE.movementSuppressionActive;
-    const restoreMovement = options.restoreMovement !== false;
-    const restoreCodes = restoreMovement
-      ? [...SWIFTSHOT_TURBO_STATE.movementSuppressedCodes].filter((code) => SWIFTSHOT_TURBO_STATE.movementHeldCodes.has(code))
-      : [];
-
-    SWIFTSHOT_TURBO_STATE.movementSuppressionActive = false;
-    SWIFTSHOT_TURBO_STATE.movementSuppressionTargetCode = "";
-    SWIFTSHOT_TURBO_STATE.movementSuppressedCodes.clear();
-
-    if (!wasActive || restoreCodes.length === 0) return;
-    for (const code of restoreCodes) {
-      dispatchSwiftshotMovementKey("keydown", code);
-      SWIFTSHOT_TURBO_STATE.movementRestoreCount++;
-    }
-  }
-
-  function dispatchSwiftshotMovementKey(type, code, target = null) {
-    const normalized = normalizeKeyboardCode(code);
-    if (!isSwiftshotTurboMovementKeyCode(normalized)) return false;
-
-    const eventTarget = target || getSwiftshotTurboInputTarget();
-    if (!eventTarget || typeof eventTarget.dispatchEvent !== "function") return false;
-
-    const previousSynthetic = SWIFTSHOT_TURBO_STATE.synthetic;
-    SWIFTSHOT_TURBO_STATE.synthetic = true;
-    try {
-      eventTarget.dispatchEvent(createKeyboardEventFromCode(type, normalized));
-      if (type === "keyup") {
-        SWIFTSHOT_TURBO_STATE.movementSuppressedCodes.add(normalized);
-        SWIFTSHOT_TURBO_STATE.movementSuppressionCount++;
-        SWIFTSHOT_TURBO_STATE.lastMovementSuppressedAt = Date.now();
-      }
-      return true;
-    } finally {
-      SWIFTSHOT_TURBO_STATE.synthetic = previousSynthetic;
-    }
-  }
-
-  function getSwiftshotTurboInputTarget() {
-    return getRuntimeInputCanvas(getExposedRuntime()) || document.body || document.documentElement || document;
-  }
-
-  function shouldStopMovementForSwiftshotTurbo(code) {
-    return SWIFTSHOT_TURBO_STOP_MOVEMENT_KEY_CODES.includes(normalizeKeyboardCode(code));
-  }
-
-  function isSwiftshotTurboMovementKeyCode(code) {
-    return SWIFTSHOT_TURBO_MOVEMENT_KEY_CODES.includes(normalizeKeyboardCode(code));
   }
 
   function dispatchKeyboardPulseForCode(target, code) {
@@ -7281,14 +7160,6 @@
       intervalMs: getSwiftshotTurboIntervalMs(),
       held: SWIFTSHOT_TURBO_STATE.held,
       activeCode: SWIFTSHOT_TURBO_STATE.activeCode,
-      movementStopKeys: SWIFTSHOT_TURBO_STOP_MOVEMENT_KEY_CODES.map(formatKeyboardCode),
-      movementSuppressionActive: SWIFTSHOT_TURBO_STATE.movementSuppressionActive,
-      movementSuppressionTargetCode: SWIFTSHOT_TURBO_STATE.movementSuppressionTargetCode,
-      movementHeldCodes: [...SWIFTSHOT_TURBO_STATE.movementHeldCodes],
-      movementSuppressedCodes: [...SWIFTSHOT_TURBO_STATE.movementSuppressedCodes],
-      movementSuppressionCount: SWIFTSHOT_TURBO_STATE.movementSuppressionCount,
-      movementRestoreCount: SWIFTSHOT_TURBO_STATE.movementRestoreCount,
-      lastMovementSuppressedAt: SWIFTSHOT_TURBO_STATE.lastMovementSuppressedAt,
       repeatCount: SWIFTSHOT_TURBO_STATE.repeatCount,
       lastAt: SWIFTSHOT_TURBO_STATE.lastAt,
       lastError: SWIFTSHOT_TURBO_STATE.lastError,
@@ -9479,6 +9350,12 @@
       "__hkrRuntime.skillStores={active:typeof Hs!==\"undefined\"?Hs:null,learned:typeof Jc!==\"undefined\"?Jc:null,configs:typeof Ea!==\"undefined\"?Ea:null};",
       "__hkrRuntime.skillDefinitions=typeof zt!==\"undefined\"?zt:null;",
       "__hkrRuntime.sendClientCommand=yt;",
+      "__hkrRuntime.getActiveWorld=function(){var __hkrValue=\"\";try{var __hkrUnsub=Gr&&Gr.subscribe&&Gr.subscribe(function(__hkrWorld){__hkrValue=__hkrWorld});if(typeof __hkrUnsub===\"function\")__hkrUnsub()}catch(__hkrError){}return __hkrValue||\"\"};",
+      "__hkrRuntime.listEntities=function(){var __hkrOut=[];try{var __hkrEngine=typeof I!==\"undefined\"?I:null;var __hkrArr=__hkrEngine&&__hkrEngine.entities&&__hkrEngine.entities.array||[];for(var __hkrIndex=0;__hkrIndex<__hkrArr.length;__hkrIndex+=1){var __hkrEntity=__hkrArr[__hkrIndex];if(!__hkrEntity)continue;var __hkrPos=__hkrEntity.pos||__hkrEntity.visualPosition||[];__hkrOut.push({id:__hkrEntity.id,name:__hkrEntity.name||\"\",type:__hkrEntity.type,faction:__hkrEntity.faction,party:__hkrEntity.party,pos:[Number(__hkrPos[0])||0,Number(__hkrPos[1])||0,Number(__hkrPos[2])||0]})}}catch(__hkrError){try{__hkrRuntime.hookErrors=__hkrRuntime.hookErrors||[];__hkrRuntime.hookErrors.push(\"listEntities:\"+((__hkrError&&__hkrError.message)||__hkrError))}catch(__hkrNestedError){}}return __hkrOut};",
+      "__hkrRuntime.getPlayerInfo=function(){try{var __hkrPlayer=typeof I!==\"undefined\"&&I&&I.player;var __hkrPos=__hkrPlayer&&(__hkrPlayer.pos||__hkrPlayer.visualPosition)||[];return __hkrPlayer?{id:__hkrPlayer.id,name:__hkrPlayer.name||\"\",type:__hkrPlayer.type,pos:[Number(__hkrPos[0])||0,Number(__hkrPos[1])||0,Number(__hkrPos[2])||0],target:__hkrPlayer.target}:null}catch(__hkrError){return null}};",
+      "__hkrRuntime.changeTarget=function(__hkrId){__hkrId=Number(__hkrId);try{if(typeof vr===\"function\")return vr(__hkrId)}catch(__hkrError){}try{return Io(Mt.clientPlayerChangeTarget.packData({target:__hkrId}))}catch(__hkrError){throw new Error(\"changeTarget failed: \"+((__hkrError&&__hkrError.message)||__hkrError))}};",
+      "__hkrRuntime.sendInteract=function(__hkrId){__hkrId=Number(__hkrId);try{return Io(Mt.clientPlayerInteract.packData({id:__hkrId}))}catch(__hkrError){throw new Error(\"sendInteract failed: \"+((__hkrError&&__hkrError.message)||__hkrError))}};",
+      "__hkrRuntime.useSkillbarSlot=function(__hkrSlot){__hkrSlot=Number(__hkrSlot);try{if(!Number.isInteger(__hkrSlot)||__hkrSlot<1)throw new Error(\"invalid slot\");var __hkrPlayer=typeof I!==\"undefined\"&&I&&I.player;if(!__hkrPlayer)throw new Error(\"player not ready\");var __hkrSettings=typeof fe!==\"undefined\"&&fe&&fe.skillbarsettings;var __hkrBar=__hkrSettings&&__hkrSettings[__hkrPlayer.name];var __hkrSkill=__hkrBar&&__hkrBar[__hkrSlot-1];if(!__hkrSkill||Number(__hkrSkill.id)<0)throw new Error(\"empty skillbar slot \"+__hkrSlot);var __hkrInfo=Array.isArray(__hkrSkill.info)?__hkrSkill.info.slice():[];if(__hkrSkill.item&&__hkrPlayer.inventory&&typeof __hkrPlayer.inventory.findFirstSlotOfType===\"function\"){var __hkrInvSlot=__hkrPlayer.inventory.findFirstSlotOfType(__hkrSkill.item.type,__hkrSkill.item.tier);if(__hkrInvSlot===void 0)throw new Error(\"item for slot \"+__hkrSlot+\" not found\");__hkrInfo[0]=__hkrInvSlot}var __hkrDef=typeof zt!==\"undefined\"&&zt&&zt.get?zt.get(__hkrSkill.id):null;if(__hkrDef&&__hkrDef.envCast>0&&typeof gu===\"function\"){gu(__hkrSkill.id,__hkrDef.range,__hkrDef.envCast);return {ok:true,slot:__hkrSlot,id:__hkrSkill.id,env:true}}Io(Mt.clientPlayerSkill.packData({id:__hkrSkill.id,info:__hkrInfo}));return {ok:true,slot:__hkrSlot,id:__hkrSkill.id,env:false}}catch(__hkrError){return {ok:false,slot:__hkrSlot,reason:(__hkrError&&__hkrError.message)||String(__hkrError)}}};",
       "__hkrRuntime.isSkillConfigurable=function(__hkrId){",
       "try{",
       "__hkrId=Number(__hkrId);",
