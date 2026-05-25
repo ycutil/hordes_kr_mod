@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.2.0
+// @version      0.2.1
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.2.0";
+  const MOD_VERSION = "0.2.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -31,7 +31,8 @@
   const AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS = 300;
   const BETWEEN_BUFFS_MS = 1000;
   const AFTER_BUFFS_MS = 600;
-  const DEFAULT_HOTKEY_CODE = "Digit1";
+  const GUARDSTONE_HOTKEY_CODE = "Digit1";
+  const HEADLESS_HOTKEY_CODE = "Digit2";
   const STORAGE_MINIMIZED_KEY = "horder_mod_buffer_minimized";
   const STORAGE_USE_SLOT4_KEY = "horder_mod_buffer_use_slot4";
 
@@ -677,15 +678,22 @@
       (event) => {
         if (!event || event.defaultPrevented) return;
         if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-        if (event.code !== DEFAULT_HOTKEY_CODE && event.key !== "1") return;
+        const destination = getHotkeyDestination(event);
+        if (!destination) return;
         if (isEditableTarget(event.target)) return;
 
         event.preventDefault();
         event.stopPropagation();
-        runBufferFlow("Guardstone");
+        runBufferFlow(destination);
       },
       true
     );
+  }
+
+  function getHotkeyDestination(event) {
+    if (event.code === GUARDSTONE_HOTKEY_CODE || event.key === "1") return "Guardstone";
+    if (event.code === HEADLESS_HOTKEY_CODE || event.key === "2") return "Headless Landing";
+    return "";
   }
 
   function isEditableTarget(target) {
