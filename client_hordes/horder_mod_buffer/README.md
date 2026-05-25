@@ -24,4 +24,14 @@ Hordes.io 보조 계정용 Tampermonkey 스크립트입니다.
 
 - 캐릭터가 Conjurer 근처에 있어야 합니다.
 - 목적지 선택지는 게임에서 실제로 보이는 이름을 기준으로 찾습니다.
+- `런타임 연결 실패`가 뜨면 스크립트를 업데이트한 뒤 `https://hordes.io/play`를 완전 새로고침합니다.
 - CDP는 필요하지 않게 만들었습니다. 9222 포트는 건드리지 않습니다.
+
+## 진단
+
+브라우저 콘솔에서 현재 상태를 볼 수 있습니다.
+
+```js
+HorderModBuffer.status()
+HorderModBuffer.diagnose()
+```

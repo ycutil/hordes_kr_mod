@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.1.0
+// @version      0.1.1
 // @description  One-button buffer route helper for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -14,10 +14,11 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.1.0";
+  const MOD_VERSION = "0.1.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
+  const KR_RUNTIME_KEY = "__HORDES_KR_RUNTIME__";
   const PANEL_ID = "horder-mod-buffer-panel";
   const CLIENT_SOURCE_TAG = "horder-mod-buffer-runtime";
   const DEFAULT_CHOICE_TIMEOUT_MS = 12000;
@@ -82,6 +83,7 @@
       runtime: summarizeRuntime(),
       log: state.log.slice(-12),
     }),
+    diagnose: () => buildDiagnosticStatus(),
   };
 
   function isPlayPage() {
@@ -188,7 +190,11 @@
     if (!node.getAttribute || node.dataset.horderBufferRuntimeHooked) return false;
 
     const url = toUrl(node.getAttribute("src"));
-    if (!url || !shouldPatchClientScript(url)) return false;
+    if (!url) {
+      return interceptInlineClientScriptBeforeInsert(parent, node, nextSibling);
+    }
+
+    if (!shouldPatchClientScript(url)) return false;
 
     node.dataset.horderBufferRuntimeHooked = "sync-blocked";
     loadAndPatchClientScript(parent, nextSibling, url, node.getAttribute("type") || "");
@@ -199,7 +205,12 @@
     if (!script || !script.getAttribute || script.dataset.horderBufferRuntimeHooked) return;
 
     const url = toUrl(script.getAttribute("src"));
-    if (!url || !shouldPatchClientScript(url)) return;
+    if (!url) {
+      interceptInlineClientScriptTag(script);
+      return;
+    }
+
+    if (!shouldPatchClientScript(url)) return;
 
     const parent = script.parentNode;
     const nextSibling = script.nextSibling;
@@ -217,10 +228,55 @@
     loadAndPatchClientScript(parent, nextSibling, url, originalType);
   }
 
+  function interceptInlineClientScriptBeforeInsert(parent, node, nextSibling) {
+    const source = getInlineScriptSource(node);
+    if (!shouldPatchInlineClientScript(source)) return false;
+
+    node.dataset.horderBufferRuntimeHooked = "inline-blocked";
+    insertPatchedInlineScript(parent, nextSibling, source, node.getAttribute("type") || "");
+    return true;
+  }
+
+  function interceptInlineClientScriptTag(script) {
+    const source = getInlineScriptSource(script);
+    if (!shouldPatchInlineClientScript(source)) return;
+
+    const parent = script.parentNode;
+    const nextSibling = script.nextSibling;
+    const originalType = script.getAttribute("type") || "";
+    script.dataset.horderBufferRuntimeHooked = "inline-checking";
+
+    try {
+      script.type = "javascript/horder-buffer-inline-blocked";
+      if (parent) parent.removeChild(script);
+    } catch (error) {
+      markRuntimeError("remove-inline-client-script", error);
+      return;
+    }
+
+    insertPatchedInlineScript(parent, nextSibling, source, originalType);
+  }
+
   function shouldPatchClientScript(url) {
     if (!url || url.origin !== location.origin) return false;
     const path = url.pathname.toLowerCase();
     return path.endsWith("/client.js") || path.endsWith("client.js");
+  }
+
+  function shouldPatchInlineClientScript(source) {
+    if (!source || source.includes(RUNTIME_KEY)) return false;
+    if (!source.includes("clientPlayerInteract")) return false;
+    if (!source.includes("clientPlayerSkill")) return false;
+    if (!source.includes("window.onload=async()=>")) return false;
+    return source.includes("var Mt={") || source.includes("Mt={clientPlayerInput");
+  }
+
+  function getInlineScriptSource(script) {
+    try {
+      return String(script.textContent || "");
+    } catch {
+      return "";
+    }
   }
 
   function loadAndPatchClientScript(parent, nextSibling, url, originalType) {
@@ -275,6 +331,23 @@
     }
   }
 
+  function insertPatchedInlineScript(parent, nextSibling, source, originalType) {
+    const targetParent = parent || document.head || document.documentElement;
+    if (!targetParent) return;
+
+    const replacement = document.createElement("script");
+    replacement.dataset.horderBufferRuntimeHooked = "inline-inlined";
+    replacement.dataset.horderBufferRuntimeSource = "inline-client";
+    if (originalType && !/^(text|application)\/javascript$/i.test(originalType)) replacement.type = originalType;
+    replacement.textContent = `${patchClientSource(source, "inline-client")}\n//# sourceURL=${location.origin}/client.js#${CLIENT_SOURCE_TAG}`;
+
+    if (nextSibling && nextSibling.parentNode === targetParent) {
+      targetParent.insertBefore(replacement, nextSibling);
+    } else {
+      targetParent.appendChild(replacement);
+    }
+  }
+
   function insertFallbackScript(parent, nextSibling, url, originalType) {
     const targetParent = parent || document.head || document.documentElement;
     if (!targetParent) return;
@@ -293,7 +366,7 @@
 
   function patchClientSource(source, url) {
     let patched = String(source || "");
-    const runtimeProbe = buildRuntimeProbeSource(shortScriptUrl(url));
+    const runtimeProbe = buildRuntimeProbeSource(typeof url === "string" ? url : shortScriptUrl(url));
 
     if (patched.includes("(()=>{")) {
       patched = patched.replace("(()=>{", `(()=>{${runtimeProbe}`);
@@ -533,7 +606,7 @@
         return rt && rt.ready && typeof rt.sendInteract === "function" && typeof rt.listEntities === "function" ? rt : null;
       },
       15000,
-      "런타임 연결 실패. 페이지를 새로고침해 주세요.",
+      buildRuntimeFailureMessage(),
       token
     );
     return runtime;
@@ -733,7 +806,26 @@
   }
 
   function getRuntime() {
-    return pageWindow[RUNTIME_KEY] || null;
+    const runtime = pageWindow[RUNTIME_KEY] || null;
+    if (runtime && runtime.ready) return runtime;
+
+    const krRuntime = pageWindow[KR_RUNTIME_KEY];
+    if (krRuntime && krRuntime.engine && krRuntime.player) {
+      const target = pageWindow[RUNTIME_KEY] = runtime || {};
+      target.engine = krRuntime.engine;
+      target.player = krRuntime.player;
+      target.activeWorld = krRuntime.activeWorld || "";
+      target.updatedAt = Date.now();
+      target.ready = false;
+      target.krRuntimeSeen = true;
+      if (!target.errors) target.errors = [];
+      if (!target.errors.some((item) => String(item).includes("KR runtime"))) {
+        target.errors.push("KR runtime found, but packet bridge is not available. Reload after updating buffer script.");
+      }
+      return target;
+    }
+
+    return runtime;
   }
 
   function summarizeRuntime() {
@@ -744,7 +836,34 @@
       activeWorld: runtime.activeWorld || "",
       updatedAt: runtime.updatedAt || null,
       errors: Array.isArray(runtime.errors) ? runtime.errors.slice(-4) : [],
+      krRuntimeSeen: Boolean(runtime.krRuntimeSeen || pageWindow[KR_RUNTIME_KEY]),
     };
+  }
+
+  function buildDiagnosticStatus() {
+    const runtime = getRuntime();
+    return {
+      version: MOD_VERSION,
+      ready: Boolean(runtime && runtime.ready),
+      bufferRuntime: summarizeRuntime(),
+      krRuntimePresent: Boolean(pageWindow[KR_RUNTIME_KEY]),
+      clientScripts: Array.from(document.querySelectorAll("script"))
+        .map((script) => ({
+          src: script.src || "",
+          hook: script.dataset && script.dataset.horderBufferRuntimeHooked || "",
+          krHook: script.dataset && script.dataset.hordesKrRuntimeHooked || "",
+        }))
+        .filter((item) => item.src.includes("client") || item.hook || item.krHook)
+        .slice(-20),
+    };
+  }
+
+  function buildRuntimeFailureMessage() {
+    const diagnostics = buildDiagnosticStatus();
+    if (diagnostics.krRuntimePresent && !diagnostics.ready) {
+      return "런타임 연결 실패. KR 모드가 client.js를 먼저 잡은 상태라 Buffer 패치가 필요합니다. 스크립트 업데이트 후 페이지를 완전 새로고침해 주세요.";
+    }
+    return "런타임 연결 실패. 스크립트 업데이트 후 페이지를 완전 새로고침해 주세요.";
   }
 
   function updatePanel() {
