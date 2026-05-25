@@ -16,9 +16,11 @@ Hordes.io 보조 계정용 Tampermonkey 스크립트입니다.
 
 ## 설치
 
-1. Tampermonkey에서 새 스크립트를 만듭니다.
-2. `horder-mod-buffer.user.js` 내용을 붙여넣습니다.
-3. `https://hordes.io/play`를 새로고침합니다.
+현재 플레이하는 Brave 프로필에서 아래 URL을 열어 Tampermonkey에 설치합니다.
+
+- https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/client_hordes/horder_mod_buffer/horder-mod-buffer.user.js
+
+설치 후 `https://hordes.io/play`를 완전 새로고침합니다.
 
 ## 주의
 

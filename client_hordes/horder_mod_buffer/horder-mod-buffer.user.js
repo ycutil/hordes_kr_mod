@@ -9,6 +9,8 @@
 // @run-at       document-start
 // @grant        unsafeWindow
 // @inject-into  page
+// @updateURL    https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/client_hordes/horder_mod_buffer/horder-mod-buffer.user.js
+// @downloadURL  https://raw.githubusercontent.com/ycutil/hordes_kr_mod/main/client_hordes/horder_mod_buffer/horder-mod-buffer.user.js
 // ==/UserScript==
 
 (function horderModBufferBootstrap() {
