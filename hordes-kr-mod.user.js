@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.138-local
+// @version      0.9.139-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.138-local";
+  const BOOT_VERSION = "0.9.139-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -938,6 +938,7 @@
     contextMenuLastX: 0,
     contextMenuLastY: 0,
     contextMenuLastElement: null,
+    contextMenuLastSource: "",
     presetBarHost: null,
     lastPresetBarTickAt: 0,
     presetBarRenderKey: "",
@@ -7710,23 +7711,27 @@
 
   function injectTargetContextMenuHighlightAction() {
     try {
-      const target = getSelectedTargetForHighlightMenu();
-      if (!target || !target.name) return;
-      if (!isRecentContextMenuOnSelectedTarget(target)) {
+      const target = getContextMenuHighlightTarget();
+      if (!target || !target.name) {
         clearTargetContextMenuHighlightActions();
-        HIGHLIGHT_STATE.contextMenuLastError = "타겟 체력바 우클릭이 아니어서 강조 ID 메뉴를 표시하지 않았습니다.";
+        HIGHLIGHT_STATE.contextMenuLastError = "타겟/채팅 유저 메뉴가 아니어서 강조 ID 메뉴를 표시하지 않았습니다.";
         return;
       }
 
       const menus = findPlayerContextMenuElements();
       let inserted = false;
       for (const menu of menus) {
-        if (!menu || menu.querySelector(".hordes-kr-context-highlight-add")) continue;
+        if (!menu) continue;
+        if (menu.querySelector(".hordes-kr-context-highlight-add")) {
+          inserted = true;
+          continue;
+        }
 
         const action = createTargetContextMenuHighlightAction(target.name);
         menu.appendChild(action);
         HIGHLIGHT_STATE.contextMenuLastInjectedAt = Date.now();
         HIGHLIGHT_STATE.contextMenuLastTargetName = target.name;
+        HIGHLIGHT_STATE.contextMenuLastSource = target.source || "";
         HIGHLIGHT_STATE.contextMenuLastError = "";
         inserted = true;
       }
@@ -7737,6 +7742,15 @@
     } catch (error) {
       HIGHLIGHT_STATE.contextMenuLastError = error && error.message ? error.message : String(error);
     }
+  }
+
+  function getContextMenuHighlightTarget() {
+    const target = getSelectedTargetForHighlightMenu();
+    if (target && target.name && isRecentContextMenuOnSelectedTarget(target)) {
+      return { ...target, source: "target" };
+    }
+
+    return getChatContextMenuHighlightTarget();
   }
 
   function getContextMenuEventElement(target) {
@@ -7783,6 +7797,120 @@
     }
 
     return false;
+  }
+
+  function getChatContextMenuHighlightTarget() {
+    const age = Date.now() - Number(HIGHLIGHT_STATE.contextMenuLastAt || 0);
+    if (!Number.isFinite(age) || age < 0 || age > 1800) return null;
+
+    const element = HIGHLIGHT_STATE.contextMenuLastElement;
+    if (!isChatContextMenuElement(element)) return null;
+
+    const line = getChatContextLineElement(element);
+    const name = normalizeHighlightName(extractChatContextSenderName(line || element, element));
+    if (!name || name === "unknown") return null;
+
+    return {
+      id: "",
+      name,
+      path: "chatContext",
+      source: "chat",
+    };
+  }
+
+  function isChatContextMenuElement(element) {
+    if (!element || !document.contains(element)) return false;
+    if (element.closest("#hordes-kr-mod-status-root, #hordes-kr-chat-translation-toggle")) return false;
+    if (element.closest("#chatinput, input, textarea, select, [contenteditable='true']")) return false;
+    return Boolean(element.closest("#chat, .chat, [class*='chat'], [id*='chat'], [class*='Chat'], [id*='Chat']"));
+  }
+
+  function getChatContextLineElement(element) {
+    if (!element || !document.contains(element)) return null;
+    if (element.closest) {
+      const line = element.closest(".linewrap, [class*='message'], [class*='Message'], [class*='line'], [class*='Line'], [class*='entry'], [class*='Entry']");
+      if (line && isChatContextMenuElement(line)) return line;
+    }
+
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 8; depth++) {
+      if (isChatContextMenuElement(current) && normalizeText(current.textContent || "").length >= 2) return current;
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function extractChatContextSenderName(line, eventElement) {
+    const fromEventTarget = extractChatContextNameFromElement(eventElement, { allowGenericText: true });
+    if (fromEventTarget) return fromEventTarget;
+
+    const fromStructuredElement = extractChatContextNameFromElement(line, { allowGenericText: false });
+    if (fromStructuredElement) return fromStructuredElement;
+
+    return extractChatContextNameFromText(line && line.textContent || "");
+  }
+
+  function extractChatContextNameFromElement(element, options = {}) {
+    if (!element || !document.contains(element)) return "";
+
+    const structuredSelectors = [
+      ".sender",
+      "[class*='sender']",
+      "[class*='Sender']",
+      ".author",
+      "[class*='author']",
+      "[class*='Author']",
+      ".username",
+      "[class*='username']",
+      "[class*='Username']",
+      ".name",
+      "[class*='name']",
+      "[class*='Name']",
+    ];
+
+    for (const selector of structuredSelectors) {
+      const nodes = element.matches && element.matches(selector)
+        ? [element]
+        : Array.from(element.querySelectorAll && element.querySelectorAll(selector) || []);
+      for (const node of nodes) {
+        const candidate = sanitizeChatContextName(node.textContent || "");
+        if (candidate) return candidate;
+      }
+    }
+
+    for (const attr of ["data-name", "data-username", "data-player", "data-player-name", "title", "aria-label"]) {
+      const candidate = sanitizeChatContextName(element.getAttribute && element.getAttribute(attr) || "");
+      if (candidate) return candidate;
+    }
+
+    if (!options.allowGenericText) return "";
+
+    const candidate = sanitizeChatContextName(element.textContent || "");
+    return candidate || "";
+  }
+
+  function extractChatContextNameFromText(text) {
+    let value = normalizeText(text);
+    if (!value) return "";
+
+    value = value.replace(/^\d{1,2}[.:]\d{2}\s*/, "");
+    value = value.replace(/^(?:party|clan|faction|pvp|yell|inv|whisper|local|to|from|tell|pm|dm|w)\s+/i, "");
+    value = value.replace(/^[^\p{L}\p{N}_-]+/u, "");
+    value = value.replace(/^(?:to|from)\s+/i, "");
+    value = value.replace(/^\d{1,3}\s+/, "");
+
+    const token = value.match(/^([A-Za-z0-9_\-]{2,32})\b/);
+    return sanitizeChatContextName(token && token[1] || "");
+  }
+
+  function sanitizeChatContextName(value) {
+    const text = normalizeText(value).replace(/^[@#]+/, "").replace(/[,:：]$/, "");
+    if (!text || text.length < 2 || text.length > 32) return "";
+    if (!/^[A-Za-z0-9_\-]+$/.test(text)) return "";
+    if (/^\d+$/.test(text)) return "";
+    if (/^(?:party|clan|faction|pvp|yell|inv|invite|whisper|local|system|to|from|tell|pm|dm|w|hi|gg|raw|mid|deep|left|right|cancel)$/i.test(text)) return "";
+    return text;
   }
 
   function doesElementTextContainName(element, lowerName) {
@@ -7958,6 +8086,7 @@
         ? new Date(HIGHLIGHT_STATE.contextMenuLastInjectedAt).toISOString()
         : null,
       lastTargetName: HIGHLIGHT_STATE.contextMenuLastTargetName,
+      lastSource: HIGHLIGHT_STATE.contextMenuLastSource,
       lastError: HIGHLIGHT_STATE.contextMenuLastError,
       floating: Boolean(HIGHLIGHT_STATE.contextMenuActionHost && document.contains(HIGHLIGHT_STATE.contextMenuActionHost)),
       lastPoint: {
@@ -7965,6 +8094,7 @@
         y: HIGHLIGHT_STATE.contextMenuLastY,
       },
       selected: getSelectedTargetForHighlightMenu(),
+      chat: getChatContextMenuHighlightTarget(),
     };
   }
 
