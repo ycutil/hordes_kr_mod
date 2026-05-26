@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.139-local
+// @version      0.9.141-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.139-local";
+  const BOOT_VERSION = "0.9.141-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -290,6 +290,8 @@
   const UI_CONFIG_KEY = "hordesKrMod.ui.config";
   const HIGHLIGHT_CONFIG_KEY = "hordesKrMod.highlight.config";
   const FEATURE_CONFIG_KEY = "hordesKrMod.features.config";
+  const INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY = "hordesKrMod.incomingTargetWatch.defaultVersion";
+  const INCOMING_TARGET_WATCH_DEFAULT_VERSION = "2026-05-27-enable-watch";
   const PARTY_UI_CONFIG_KEY = "hordesKrMod.partyUi.config";
   const PARTY_COMMAND_CONFIG_KEY = "hordesKrMod.partyCommand.config";
   const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
@@ -323,6 +325,9 @@
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
   const INCOMING_WARNING_SCAN_LIMIT = 700;
+  const INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH = 3;
+  const INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS = 180;
+  const INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT = 64;
   const INCOMING_SKILL_LIST_MAX_ROWS = 6;
   const MINIMAP_DEFAULT_SCALE = 0.6;
   const MINIMAP_LIST_DEFAULT_SCALE = 1.5;
@@ -606,7 +611,16 @@
   FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
-  FEATURE_CONFIG.incomingTargetWatchEnabled = false;
+  FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+  if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
+    FEATURE_CONFIG.incomingTargetWatchEnabled = true;
+    try {
+      localStorage.setItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY, INCOMING_TARGET_WATCH_DEFAULT_VERSION);
+    } catch {
+      // Storage can be unavailable in strict browser modes.
+    }
+    saveFeatureConfig();
+  }
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
   FEATURE_CONFIG.swiftshotTurboEnabled = FEATURE_CONFIG.swiftshotTurboEnabled !== false;
   FEATURE_CONFIG.swiftshotTurboKeyCodes = normalizeSwiftshotTurboKeyCodes(
@@ -2874,23 +2888,30 @@
       return FEATURE_CONFIG.targetDistanceEnabled;
     },
     toggleIncomingSkillOverlay() {
-      FEATURE_CONFIG.incomingSkillOverlayEnabled = !FEATURE_CONFIG.incomingSkillOverlayEnabled;
+      const enabled = !(FEATURE_CONFIG.incomingSkillOverlayEnabled !== false || FEATURE_CONFIG.incomingTargetWatchEnabled !== false);
+      FEATURE_CONFIG.incomingSkillOverlayEnabled = enabled;
+      FEATURE_CONFIG.incomingTargetWatchEnabled = enabled;
       saveFeatureConfig();
       updateRuntimeNameOverlay();
       renderStatusUi();
-      return FEATURE_CONFIG.incomingSkillOverlayEnabled;
+      return {
+        incomingSkillOverlayEnabled: FEATURE_CONFIG.incomingSkillOverlayEnabled,
+        incomingTargetWatchEnabled: FEATURE_CONFIG.incomingTargetWatchEnabled,
+      };
     },
     toggleIncomingSkillList() {
       return false;
     },
     toggleIncomingTargetWatch() {
-      FEATURE_CONFIG.incomingTargetWatchEnabled = false;
+      FEATURE_CONFIG.incomingTargetWatchEnabled = !isIncomingTargetWatchEnabled();
       saveFeatureConfig();
-      HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
-      HIGHLIGHT_STATE.lastIncomingTargetWatchError = "";
+      if (!FEATURE_CONFIG.incomingTargetWatchEnabled) {
+        HIGHLIGHT_STATE.lastIncomingTargetWatchMatches = [];
+        HIGHLIGHT_STATE.lastIncomingTargetWatchError = "";
+      }
       updateRuntimeNameOverlay();
       renderStatusUi();
-      return false;
+      return FEATURE_CONFIG.incomingTargetWatchEnabled;
     },
     toggleChatTranslation() {
       return setChatTranslationEnabled(!isChatTranslationEnabled());
@@ -3302,7 +3323,7 @@
   }
 
   function isIncomingTargetWatchEnabled() {
-    return false;
+    return FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
   }
 
   function isChatTranslationEnabled() {
@@ -12045,27 +12066,36 @@
   function getRuntimeEntityTargetInfo(entity, runtime, selfEntity) {
     const fields = [];
     const activeFields = [];
+    const seenFieldKeys = new Set();
     let target = null;
     let targetsSelf = false;
 
-    for (const key of getRuntimeTargetFieldKeys(entity)) {
-      const raw = safeReadValue(entity, key);
-      const field = parseRuntimeTargetField(key, raw, runtime, selfEntity);
+    const addField = (field) => {
+      if (!field) return;
+      const fieldKey = `${String(field.key || "")}|${String(field.id || "")}|${field.targetsSelf ? "self" : ""}`;
+      if (seenFieldKeys.has(fieldKey)) return;
+      seenFieldKeys.add(fieldKey);
       fields.push(field);
 
-      if (!field.active) continue;
+      if (!field.active) return;
       activeFields.push(field);
       if (!target) target = field;
       if (field.targetsSelf) targetsSelf = true;
+    };
+
+    for (const key of getRuntimeTargetFieldKeys(entity)) {
+      const raw = safeReadValue(entity, key);
+      addField(parseRuntimeTargetField(key, raw, runtime, selfEntity));
     }
 
     for (const field of getRuntimeSkillTargetFields(entity, runtime, selfEntity)) {
-      fields.push(field);
+      addField(field);
+      if (field && field.active && field.targetsSelf) target = field;
+    }
 
-      if (!field.active) continue;
-      activeFields.push(field);
-      if (!target || field.targetsSelf) target = field;
-      if (field.targetsSelf) targetsSelf = true;
+    for (const field of getRuntimeNestedTargetFields(entity, runtime, selfEntity)) {
+      addField(field);
+      if (field && field.active && field.targetsSelf && (!target || !target.targetsSelf)) target = field;
     }
 
     return {
@@ -12097,6 +12127,76 @@
     }
 
     return fields;
+  }
+
+  function getRuntimeNestedTargetFields(entity, runtime, selfEntity) {
+    if (!isRuntimeObject(entity)) return [];
+
+    const fields = [];
+    const queue = [{ value: entity, path: "", depth: 0 }];
+    const seen = new WeakSet();
+    const seenFields = new Set();
+    let visited = 0;
+
+    for (
+      let cursor = 0;
+      cursor < queue.length && visited < INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS;
+      cursor++
+    ) {
+      const item = queue[cursor];
+      const value = item.value;
+      if (!isRuntimeTraversable(value, item.path || "entity") || seen.has(value)) continue;
+
+      seen.add(value);
+      visited++;
+
+      const keys = safeOwnKeys(value).slice(0, INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT);
+      for (const key of keys) {
+        if (shouldSkipRuntimeTargetWatchTraversalKey(key, item.path)) continue;
+
+        const path = item.path ? `${item.path}.${key}` : key;
+        const raw = safeReadValue(value, key);
+        if (isRuntimeTargetWatchFieldPath(path, raw)) {
+          const field = parseRuntimeTargetField(path, raw, runtime, selfEntity);
+          const fieldKey = `${field.key}|${String(field.id || "")}|${field.targetsSelf ? "self" : ""}`;
+          if (!seenFields.has(fieldKey)) {
+            seenFields.add(fieldKey);
+            fields.push(field);
+          }
+        }
+
+        if (item.depth >= INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH) continue;
+        if (!isRuntimeTraversable(raw, path)) continue;
+        queue.push({ value: raw, path, depth: item.depth + 1 });
+      }
+    }
+
+    return fields;
+  }
+
+  function isRuntimeTargetWatchFieldPath(path, raw) {
+    const key = String(path || "").split(".").pop() || "";
+    if (!isRuntimeWatchTargetFieldKey(key)) return false;
+    if (raw === undefined || raw === null || raw === "" || raw === false || raw === 0 || raw === "0") return false;
+    if (isRuntimeObject(raw)) return Boolean(getRuntimeWorldPosition(raw) || getRuntimeEntityId(raw) !== undefined);
+    return Boolean(normalizeRuntimeEntityId(raw));
+  }
+
+  function shouldSkipRuntimeTargetWatchTraversalKey(key, path) {
+    const normalized = String(key || "");
+    const lower = normalized.toLowerCase();
+    if (!normalized) return true;
+    if (normalized.startsWith("_") && !isRuntimeTargetWatchContainerKey(normalized)) return true;
+    if (path === "" && lower === "skills") return true;
+    if (/^(parent|root|scene|mesh|geometry|material|children|dom|element|canvas|texture|sprite|model|object3d)$/i.test(normalized)) return true;
+    if (/^(history|log|logs|cache|pool|buffer|buffers|queue|queues|listeners|events)$/i.test(normalized)) return true;
+    if (/interiorlight|targetmode|targettimer/i.test(normalized)) return true;
+    return false;
+  }
+
+  function isRuntimeTargetWatchContainerKey(key) {
+    const normalized = String(key || "").replace(/^_+/, "");
+    return /target|selected|focus|attack|enemy|combat|controller|selection|targeting|state/i.test(normalized);
   }
 
   function summarizeRuntimeTimedSkill(skills, runtime) {
@@ -12447,7 +12547,7 @@
         }
       }
 
-      if (wantsWatch && item.type === 0) {
+      if (wantsWatch && item.type === 0 && isLikelyRuntimePlayerEntity(item.entity, item.name)) {
         const targetInfo = getRuntimeEntityTargetInfo(item.entity, runtime, self.entity);
         const watchField = getIncomingTargetWatchField(targetInfo);
         if (watchField) {
@@ -12462,6 +12562,7 @@
             incomingTargetWatch: true,
             relation,
             watchTargetField: watchField.key,
+            watchTargetResolved: Boolean(watchField.resolved),
             distance,
             distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
           });
@@ -12486,12 +12587,26 @@
   function getIncomingTargetWatchField(targetInfo) {
     if (!targetInfo || !Array.isArray(targetInfo.activeFields)) return null;
 
-    return targetInfo.activeFields.find((field) => (
-      field &&
-      field.targetsSelf &&
-      !/^skills\./.test(field.key || "") &&
-      isRuntimeWatchTargetFieldKey(field.key)
-    )) || null;
+    return targetInfo.activeFields
+      .filter((field) => (
+        field &&
+        field.targetsSelf &&
+        !/^skills\./.test(field.key || "") &&
+        isRuntimeWatchTargetFieldKey(field.key)
+      ))
+      .sort((left, right) => scoreIncomingTargetWatchField(right) - scoreIncomingTargetWatchField(left))
+      [0] || null;
+  }
+
+  function scoreIncomingTargetWatchField(field) {
+    const key = String(field && field.key || "").toLowerCase();
+    let score = 0;
+    if (field && field.resolved) score += 20;
+    if (/(^|\.)target(entity|unit)?$/i.test(key)) score += 80;
+    if (/(^|\.)(current|selected|focus)target/i.test(key)) score += 70;
+    if (/(^|\.)(attack|enemy|combat)target/i.test(key)) score += 60;
+    if (/controller|combat|selection|targeting|state/.test(key)) score += 25;
+    return score;
   }
 
   function isRuntimeWatchTargetFieldKey(key) {
@@ -17791,7 +17906,12 @@
 
   function renderFeatureToggles(shadow) {
     setFeatureToggleButton(shadow, "toggleMinimapLabels", "미니맵", HIGHLIGHT_CONFIG.minimapLabelsEnabled);
-    setFeatureToggleButton(shadow, "toggleIncomingSkill", "시전경고", FEATURE_CONFIG.incomingSkillOverlayEnabled);
+    setFeatureToggleButton(
+      shadow,
+      "toggleIncomingSkill",
+      "시전/주시",
+      FEATURE_CONFIG.incomingSkillOverlayEnabled !== false || FEATURE_CONFIG.incomingTargetWatchEnabled !== false
+    );
     setFeatureToggleButton(shadow, "toggleTargetDistance", "타겟거리", FEATURE_CONFIG.targetDistanceEnabled);
     renderChatTranslationToggle(shadow);
     setFeatureToggleButton(shadow, "toggleTargetOrder", "타겟오더", TARGET_ORDER_CONFIG.enabled);
