@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>makegame — hordes.io learning clone</title>
+<link rel="stylesheet" href="/client/css/style.css" />
+</head>
+<body>
+<canvas id="view3d" class="hidden"></canvas>
+<canvas id="view"></canvas>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div id="self-frame" class="frame">
+    <div class="row"><span id="self-name">Hero</span><span id="self-lv" class="lv">Lv1</span></div>
+    <div class="bar hp"><span id="self-hp-fill"></span><b id="self-hp-text"></b></div>
+    <div class="bar mp"><span id="self-mp-fill"></span><b id="self-mp-text"></b></div>
+    <div class="bar xp"><span id="self-xp-fill"></span></div>
+  </div>
+
+  <div id="target-frame" class="frame hidden">
+    <div class="row"><span id="tgt-name">—</span><span id="tgt-lv" class="lv"></span></div>
+    <div class="bar hp"><span id="tgt-hp-fill"></span><b id="tgt-hp-text"></b></div>
+    <div id="tgt-dist" class="dist"></div>
+  </div>
+
+  <div id="castbar" class="hidden"><span id="cast-fill"></span><b id="cast-text"></b></div>
+
+  <div id="skillbar"></div>
+
+  <div id="log"></div>
+  <div id="help">WASD 이동 · 마우스 조준 · 클릭/Tab 타겟 · 1~5 스킬 · I 가방 · V 2D/3D · Esc 해제</div>
+</div>
+
+<!-- character / inventory window -->
+<div id="inventory" class="hidden">
+  <div class="pw-title">캐릭터 & 가방 <span id="inv-close">✕</span></div>
+  <div class="pw-body">
+    <div class="pw-col">
+      <div class="pw-h">장비</div>
+      <div id="equip-slots"></div>
+      <div class="pw-h">스탯</div>
+      <div id="char-stats"></div>
+    </div>
+    <div class="pw-col grow">
+      <div class="pw-h">가방</div>
+      <div id="bag"></div>
+    </div>
+  </div>
+</div>
+
+<!-- start screen -->
+<div id="start">
+  <div class="panel">
+    <img id="logo" src="/client/assets/logo.svg" alt="makegame" />
+    <p class="sub">hordes.io 학습용 클론 — 권위 서버 + WebSocket</p>
+    <label>이름 <input id="in-name" maxlength="16" value="Hero" /></label>
+    <div class="picker" id="class-picker">
+      <button data-cls="0">Warrior</button>
+      <button data-cls="1">Mage</button>
+      <button data-cls="2" class="sel">Archer</button>
+      <button data-cls="3">Shaman</button>
+    </div>
+    <div class="picker" id="faction-picker">
+      <button data-fac="0" class="sel"><img src="/client/assets/crest-blue.svg" alt="" />Blue</button>
+      <button data-fac="1"><img src="/client/assets/crest-red.svg" alt="" />Red</button>
+    </div>
+    <button id="play">월드 입장</button>
+    <p id="conn-status" class="status"></p>
+  </div>
+</div>
+
+<script type="module" src="/client/js/game.js"></script>
+</body>
+</html>

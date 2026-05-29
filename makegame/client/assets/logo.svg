@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/><stop offset="1" stop-color="#3a6fd0"/>
+    </linearGradient>
+  </defs>
+  <!-- crossed sword + staff emblem (original) -->
+  <g transform="translate(48 48)" stroke-linecap="round" fill="none">
+    <circle r="34" fill="rgba(125,180,255,.12)" stroke="#5a8fe0" stroke-width="2"/>
+    <line x1="-20" y1="20" x2="18" y2="-18" stroke="#cdd8e8" stroke-width="5"/>
+    <line x1="14" y1="-22" x2="22" y2="-14" stroke="#cdd8e8" stroke-width="5"/>
+    <line x1="20" y1="20" x2="-18" y2="-18" stroke="#c79a3a" stroke-width="5"/>
+    <circle cx="-18" cy="-18" r="5" fill="#bfe3ff" stroke="none"/>
+  </g>
+  <text x="92" y="46" font-family="Arial, sans-serif" font-weight="900" font-size="38" fill="url(#g)" letter-spacing="1">makegame</text>
+  <text x="94" y="70" font-family="Arial, sans-serif" font-size="13" fill="#8ba0bd">hordes.io learning clone</text>
+</svg>
