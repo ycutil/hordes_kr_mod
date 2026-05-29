@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.141-local
+// @version      0.9.144-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.141-local";
+  const BOOT_VERSION = "0.9.144-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -292,6 +292,8 @@
   const FEATURE_CONFIG_KEY = "hordesKrMod.features.config";
   const INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY = "hordesKrMod.incomingTargetWatch.defaultVersion";
   const INCOMING_TARGET_WATCH_DEFAULT_VERSION = "2026-05-27-enable-watch";
+  const SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION_KEY = "hordesKrMod.swiftshotTurbo.keysVersion";
+  const SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION = "2026-05-29-add-digit1";
   const PARTY_UI_CONFIG_KEY = "hordesKrMod.partyUi.config";
   const PARTY_COMMAND_CONFIG_KEY = "hordesKrMod.partyCommand.config";
   const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
@@ -308,7 +310,7 @@
   const MINIMAP_LIST_SCALE_DEFAULT_VERSION = "2026-05-19-scale-1.5";
   const DEFAULT_HIGHLIGHT_NAMES = ["HO2", "HMage"];
   const HIGHLIGHT_MATCH_CACHE_MAX = 256;
-  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODES = ["KeyR", "Digit5", "KeyQ", "KeyE", "KeyF"];
+  const SWIFTSHOT_TURBO_DEFAULT_KEY_CODES = ["KeyR", "Digit1", "Digit5", "KeyQ", "KeyE", "KeyF"];
   const SWIFTSHOT_TURBO_DEFAULT_KEY_CODE = SWIFTSHOT_TURBO_DEFAULT_KEY_CODES[0];
   const SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS = 120;
   const SWIFTSHOT_TURBO_MIN_INTERVAL_MS = 60;
@@ -629,6 +631,21 @@
       : SWIFTSHOT_TURBO_DEFAULT_KEY_CODES
   );
   FEATURE_CONFIG.swiftshotTurboKeyCode = FEATURE_CONFIG.swiftshotTurboKeyCodes[0] || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+  if (localStorage.getItem(SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION_KEY) !== SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION) {
+    if (!FEATURE_CONFIG.swiftshotTurboKeyCodes.includes("Digit1")) {
+      FEATURE_CONFIG.swiftshotTurboKeyCodes = normalizeSwiftshotTurboKeyCodes([
+        ...FEATURE_CONFIG.swiftshotTurboKeyCodes,
+        "Digit1",
+      ]);
+      FEATURE_CONFIG.swiftshotTurboKeyCode = FEATURE_CONFIG.swiftshotTurboKeyCodes[0] || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    }
+    try {
+      localStorage.setItem(SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION_KEY, SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION);
+    } catch {
+      // Storage can be unavailable in strict browser modes.
+    }
+    saveFeatureConfig();
+  }
   FEATURE_CONFIG.swiftshotTurboIntervalMs = clampInteger(
     FEATURE_CONFIG.swiftshotTurboIntervalMs,
     SWIFTSHOT_TURBO_MIN_INTERVAL_MS,
@@ -7044,10 +7061,19 @@
       return false;
     }
 
-    try {
-      if (typeof target.focus === "function") target.focus({ preventScroll: true });
-    } catch {
-      // Focus is best-effort.
+    // Only grab focus when no game canvas is focused yet. Re-focusing on every
+    // pulse can steal focus from the canvas that actually receives movement
+    // keys (Hordes runs multiple canvases), which drops the keyup for a held
+    // movement key and leaves the forward key locked on. Synthetic events are
+    // delivered via dispatchEvent + bubbling regardless of focus.
+    const activeElement = document.activeElement;
+    const canvasAlreadyFocused = Boolean(activeElement && activeElement.tagName === "CANVAS");
+    if (!canvasAlreadyFocused) {
+      try {
+        if (typeof target.focus === "function") target.focus({ preventScroll: true });
+      } catch {
+        // Focus is best-effort.
+      }
     }
 
     SWIFTSHOT_TURBO_STATE.synthetic = true;
@@ -7809,6 +7835,11 @@
       return false;
     }
 
+    // The selected-target name comes from the runtime, so right-clicking the
+    // target frame itself should always qualify even when the displayed name is
+    // truncated/styled and the text match below would miss it.
+    if (element.closest("#uftarget, .targetframes")) return true;
+
     let current = element;
     for (let depth = 0; current && current !== document.body && depth < 8; depth++) {
       const rect = current.getBoundingClientRect ? current.getBoundingClientRect() : null;
@@ -7921,14 +7952,16 @@
     value = value.replace(/^(?:to|from)\s+/i, "");
     value = value.replace(/^\d{1,3}\s+/, "");
 
-    const token = value.match(/^([A-Za-z0-9_\-]{2,32})\b/);
+    const token = value.match(/^([\p{L}\p{N}_\-]{2,32})/u);
     return sanitizeChatContextName(token && token[1] || "");
   }
 
   function sanitizeChatContextName(value) {
     const text = normalizeText(value).replace(/^[@#]+/, "").replace(/[,:：]$/, "");
     if (!text || text.length < 2 || text.length > 32) return "";
-    if (!/^[A-Za-z0-9_\-]+$/.test(text)) return "";
+    // Allow Unicode letters/digits so non-ASCII player names (e.g. Korean) are
+    // not silently rejected. Keep the channel-word blocklist below as the guard.
+    if (!/^[\p{L}\p{N}_\-]+$/u.test(text)) return "";
     if (/^\d+$/.test(text)) return "";
     if (/^(?:party|clan|faction|pvp|yell|inv|invite|whisper|local|system|to|from|tell|pm|dm|w|hi|gg|raw|mid|deep|left|right|cancel)$/i.test(text)) return "";
     return text;
@@ -10579,10 +10612,12 @@
       const projected = [];
 
       for (const candidate of dedupeRuntimeOverlayCandidates(candidates).sort(sortRuntimeOverlayCandidateForDisplay)) {
-        const point = projectRuntimeEntityToScreen(candidate, runtime);
+        const point = (candidate.incomingSkill || candidate.incomingTargetWatch)
+          ? projectRuntimeIncomingWarningPoint(candidate, runtime)
+          : projectRuntimeEntityToScreen(candidate, runtime);
         if (!point) continue;
 
-        projected.push({ ...candidate, screen: point });
+        projected.push({ ...candidate, screen: point, offScreen: Boolean(point.offScreen) });
         if (projected.length >= 18) break;
       }
 
@@ -10938,48 +10973,15 @@
 
     const lockedId = getLockedTargetId();
     const selectedId = getSelectedTargetIdFromContext(context);
-    const renderKey = buildMinimapHighlightListRenderKey({
-      left,
-      top,
-      width,
-      lockedId,
-      selectedId,
-      scale,
-      candidates: listCandidates,
-    });
-    if (HIGHLIGHT_STATE.minimapListRenderKey === renderKey) return;
-    HIGHLIGHT_STATE.minimapListRenderKey = renderKey;
 
-    const panel = createUiElement("div", "hordes-kr-minimap-list-panel");
-    const title = createUiElement("div", "hordes-kr-minimap-list-title");
-    const titleMain = createUiElement("div", "hordes-kr-minimap-list-title-main");
-    const count = createUiElement("span", "hordes-kr-minimap-list-count", `${listCandidates.length}`);
-    titleMain.append(count);
+    // Reconcile rows in place (keyed by entity id) instead of rebuilding the
+    // whole panel each tick. A full rebuild reset the panel scroll position and
+    // destroyed the row under the cursor mid-click (so single clicks were often
+    // swallowed) because distance/position values change every frame.
+    const { panel, count } = ensureMinimapHighlightListShell(host);
+    count.textContent = `${listCandidates.length}`;
+    reconcileMinimapHighlightListRows(panel, listCandidates, { lockedId, selectedId });
 
-    const controls = createUiElement("div", "hordes-kr-minimap-list-title-controls");
-    controls.append(
-      createMinimapListScaleButton("-", -0.1),
-      createMinimapListScaleButton("+", 0.1),
-      createMinimapListResetButton(),
-      createMinimapListAllHostilesButton()
-    );
-    title.append(titleMain, controls);
-    panel.appendChild(title);
-    installMinimapHighlightListDragHandle(title, host);
-
-    if (listCandidates.length === 0) {
-      const empty = createUiElement("div", "hordes-kr-minimap-list-empty", "감지 없음");
-      panel.appendChild(empty);
-    } else {
-      for (const candidate of listCandidates) {
-        panel.appendChild(createMinimapHighlightListRow(candidate, {
-          lockedId,
-          selectedId,
-        }));
-      }
-    }
-
-    host.replaceChildren(panel);
     HIGHLIGHT_STATE.lastMinimapListMatches = listCandidates.map((candidate) => ({
       id: candidate.id,
       name: candidate.name,
@@ -11520,6 +11522,73 @@
     ].join("\u0002");
   }
 
+  function ensureMinimapHighlightListShell(host) {
+    const existing = host.querySelector(".hordes-kr-minimap-list-panel");
+    if (existing && existing.__hkrCount) {
+      return { panel: existing, count: existing.__hkrCount };
+    }
+
+    const panel = createUiElement("div", "hordes-kr-minimap-list-panel");
+    const title = createUiElement("div", "hordes-kr-minimap-list-title");
+    const titleMain = createUiElement("div", "hordes-kr-minimap-list-title-main");
+    const count = createUiElement("span", "hordes-kr-minimap-list-count", "0");
+    titleMain.append(count);
+
+    const controls = createUiElement("div", "hordes-kr-minimap-list-title-controls");
+    controls.append(
+      createMinimapListScaleButton("-", -0.1),
+      createMinimapListScaleButton("+", 0.1),
+      createMinimapListResetButton(),
+      createMinimapListAllHostilesButton()
+    );
+    title.append(titleMain, controls);
+    panel.appendChild(title);
+    installMinimapHighlightListDragHandle(title, host);
+
+    panel.__hkrCount = count;
+    host.replaceChildren(panel);
+    return { panel, count };
+  }
+
+  function reconcileMinimapHighlightListRows(panel, candidates, state) {
+    const existing = new Map();
+    panel.querySelectorAll(".hordes-kr-minimap-list-row").forEach((row) => {
+      if (row.dataset.rowKey) existing.set(row.dataset.rowKey, row);
+    });
+
+    let empty = panel.querySelector(".hordes-kr-minimap-list-empty");
+
+    if (candidates.length === 0) {
+      existing.forEach((row) => row.remove());
+      if (!empty) {
+        empty = createUiElement("div", "hordes-kr-minimap-list-empty", "감지 없음");
+        panel.appendChild(empty);
+      }
+      return;
+    }
+
+    if (empty) empty.remove();
+
+    const usedKeys = new Set();
+    candidates.forEach((candidate, index) => {
+      const key = candidate.id ? `id:${candidate.id}` : `nm:${candidate.name || ""}:${index}`;
+      usedKeys.add(key);
+      let row = existing.get(key);
+      if (!row) {
+        row = createMinimapHighlightListRowShell();
+        row.dataset.rowKey = key;
+      }
+      updateMinimapHighlightListRow(row, candidate, state);
+      // appendChild moves the existing node into sorted order (after the title)
+      // without recreating it, so its click target and the panel scroll survive.
+      panel.appendChild(row);
+    });
+
+    existing.forEach((row, key) => {
+      if (!usedKeys.has(key)) row.remove();
+    });
+  }
+
   function enrichMinimapListCandidate(candidate, context) {
     if (!candidate || !context || !context.selfPosition) return null;
 
@@ -11548,38 +11617,52 @@
     };
   }
 
-  function createMinimapHighlightListRow(candidate, state) {
+  function createMinimapHighlightListRowShell() {
     const row = document.createElement("button");
-    const selected = Boolean(candidate.id && state.selectedId && candidate.id === state.selectedId);
-    const locked = Boolean(candidate.id && state.lockedId && candidate.id === state.lockedId);
-    const identity = createUiElement("span", "identity");
-    const nameLine = createUiElement("span", "name-line");
-    const icon = createMinimapListClassIcon(candidate);
-    const name = createUiElement("span", "name", candidate.name || "unknown");
-    const health = createMinimapListHealth(candidate);
-    const distance = createUiElement("span", "distance", candidate.distanceText || "-");
-    const status = createUiElement("span", "state", selected ? "타겟 ON" : locked ? "고정" : "OFF");
-
     row.type = "button";
     row.className = "hordes-kr-minimap-list-row";
-    row.classList.toggle("targeted", selected);
-    row.classList.toggle("locked", !selected && locked);
-    row.classList.toggle("nearby", Number.isFinite(candidate.distance) && candidate.distance <= 35);
-    row.dataset.hordesKrTargetId = candidate.id || "";
-    row.dataset.hordesKrTargetName = candidate.name || "";
-    row.title = getMinimapListRowTitle(candidate, selected);
+
+    const identity = createUiElement("span", "identity");
+    const nameLine = createUiElement("span", "name-line");
+
+    const icon = document.createElement("img");
+    icon.className = "class-icon";
+    icon.alt = "";
+    icon.decoding = "async";
+    icon.loading = "lazy";
+    icon.hidden = true;
+    icon.addEventListener("error", () => {
+      icon.hidden = true;
+    });
+
+    const name = createUiElement("span", "name");
+
+    const health = createUiElement("span", "hp");
+    const healthBar = createUiElement("span", "hp-bar");
+    const healthFill = createUiElement("span", "hp-fill");
+    const healthText = createUiElement("span", "hp-text");
+    healthBar.appendChild(healthFill);
+    health.append(healthBar, healthText);
+
+    const distance = createUiElement("span", "distance");
+    const status = createUiElement("span", "state");
 
     nameLine.append(icon, name);
     identity.append(nameLine, health);
-
     row.append(identity, distance, status);
+
+    row.__hkrParts = { icon, name, health, healthBar, healthFill, healthText, distance, status };
 
     row.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const result = selected
+      // Read identity from the row at click time so reused rows always act on
+      // their current candidate, not the one captured when the row was created.
+      const id = row.dataset.hordesKrTargetId || "";
+      const rowName = row.dataset.hordesKrTargetName || "";
+      const result = row.classList.contains("targeted")
         ? pageWindow.HordesKrMod.clearHighlightedTarget()
-        : pageWindow.HordesKrMod.targetMinimapHighlight(candidate.id, candidate.name);
+        : pageWindow.HordesKrMod.targetMinimapHighlight(id, rowName);
       HIGHLIGHT_STATE.lastMinimapTargetResult = result;
       updateMinimapNameOverlay();
       updateTargetDistanceOverlay();
@@ -11589,45 +11672,49 @@
     return row;
   }
 
-  function createMinimapListClassIcon(candidate) {
-    const icon = document.createElement("img");
-    icon.className = "class-icon";
-    icon.alt = "";
-    icon.decoding = "async";
-    icon.loading = "lazy";
+  function updateMinimapHighlightListRow(row, candidate, state) {
+    const parts = row.__hkrParts;
+    if (!parts) return;
 
-    if (!candidate.classIconUrl) {
-      icon.hidden = true;
-      return icon;
+    const selected = Boolean(candidate.id && state.selectedId && candidate.id === state.selectedId);
+    const locked = Boolean(candidate.id && state.lockedId && candidate.id === state.lockedId);
+
+    row.classList.toggle("targeted", selected);
+    row.classList.toggle("locked", !selected && locked);
+    row.classList.toggle("nearby", Number.isFinite(candidate.distance) && candidate.distance <= 35);
+    row.dataset.hordesKrTargetId = candidate.id || "";
+    row.dataset.hordesKrTargetName = candidate.name || "";
+    row.title = getMinimapListRowTitle(candidate, selected);
+
+    const nameText = candidate.name || "unknown";
+    if (parts.name.textContent !== nameText) parts.name.textContent = nameText;
+
+    if (candidate.classIconUrl) {
+      if (parts.icon.getAttribute("src") !== candidate.classIconUrl) parts.icon.src = candidate.classIconUrl;
+      parts.icon.title = `직업 ${candidate.classId}`;
+      parts.icon.hidden = false;
+    } else {
+      parts.icon.hidden = true;
+      parts.icon.removeAttribute("src");
     }
 
-    icon.src = candidate.classIconUrl;
-    icon.title = `직업 ${candidate.classId}`;
-    icon.addEventListener("error", () => {
-      icon.hidden = true;
-    }, { once: true });
-    return icon;
-  }
-
-  function createMinimapListHealth(candidate) {
-    const health = createUiElement("span", "hp");
-    const healthBar = createUiElement("span", "hp-bar");
-    const healthFill = createUiElement("span", "hp-fill");
-    const healthText = createUiElement("span", "hp-text");
     const info = candidate.health;
-
     if (!info || !Number.isFinite(info.ratio)) {
-      health.hidden = true;
-      return health;
+      parts.health.hidden = true;
+    } else {
+      parts.health.hidden = false;
+      const hpPercent = Math.max(0, Math.min(100, Math.round(info.ratio * 100)));
+      parts.healthFill.style.setProperty("width", `${hpPercent > 0 ? Math.max(2, hpPercent) : 0}%`, "important");
+      const text = info.maxText ? `${info.currentText}/${info.maxText}` : info.currentText;
+      if (parts.healthText.textContent !== text) parts.healthText.textContent = text;
+      parts.healthBar.title = `HP ${text}`;
     }
 
-    const hpPercent = Math.max(0, Math.min(100, Math.round(info.ratio * 100)));
-    healthFill.style.setProperty("width", `${hpPercent > 0 ? Math.max(2, hpPercent) : 0}%`, "important");
-    healthText.textContent = info.maxText ? `${info.currentText}/${info.maxText}` : info.currentText;
-    healthBar.title = `HP ${healthText.textContent}`;
-    healthBar.appendChild(healthFill);
-    health.append(healthBar, healthText);
-    return health;
+    const distanceText = candidate.distanceText || "-";
+    if (parts.distance.textContent !== distanceText) parts.distance.textContent = distanceText;
+
+    const statusText = selected ? "타겟 ON" : locked ? "고정" : "OFF";
+    if (parts.status.textContent !== statusText) parts.status.textContent = statusText;
   }
 
   function getMinimapListRowTitle(candidate, selected) {
@@ -13303,6 +13390,45 @@
     const position = candidate.position.slice();
     position[1] += getRuntimeEntityNameYOffset(candidate.entity);
     return projectRuntimePointToScreen(position, runtime);
+  }
+
+  // Incoming-warning threats (someone targeting/casting at me) are most
+  // dangerous when off-screen or directly behind the camera — exactly the case
+  // where projectRuntimePointToScreen returns null and the warning would be
+  // dropped. For those candidates only, clamp to the nearest screen edge so the
+  // warning still shows instead of silently disappearing.
+  function projectRuntimeIncomingWarningPoint(candidate, runtime) {
+    const onScreen = projectRuntimeEntityToScreen(candidate, runtime);
+    if (onScreen) return onScreen;
+
+    const matrix = getRuntimeProjectionMatrix(runtime);
+    const rect = getRuntimeCanvasRect(runtime);
+    if (!matrix || !rect || rect.width <= 0 || rect.height <= 0) return null;
+
+    const position = candidate.position.slice();
+    position[1] += getRuntimeEntityNameYOffset(candidate.entity);
+
+    const raw = projectRuntimePointWithMatrix(position, matrix, rect, true)
+      || projectRuntimePointWithMatrix(position, matrix, rect, false);
+    if (!raw) return null;
+
+    let ndcX = raw.ndcX;
+    let ndcY = raw.ndcY;
+    if (raw.clipW <= 0) {
+      // Behind the camera the projected NDC is mirrored; flip it so the edge
+      // marker sits on the side the threat is actually coming from.
+      ndcX = -ndcX;
+      ndcY = -ndcY;
+    }
+
+    const limit = 0.98;
+    const clampedX = Math.max(-limit, Math.min(limit, ndcX));
+    const clampedY = Math.max(-limit, Math.min(limit, ndcY));
+    return {
+      x: rect.left + (clampedX * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-clampedY * 0.5 + 0.5) * rect.height,
+      offScreen: true,
+    };
   }
 
   function getRuntimeEntityCanvasPoint(entity) {

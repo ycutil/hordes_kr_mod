@@ -68,10 +68,11 @@
 - `isResolvedRuntimeEntity()`는 ID 일치 여부를 먼저 확인한 뒤 좌표를 파싱한다. ID 기반 직접 조회 경로에서 좌표 파싱 순서를 다시 비싸게 바꾸지 않는다.
 - `findBestRuntimeEntity()` hot path는 `forEachRuntimeChild()`를 직접 사용해 자식 배열 생성을 피한다. 외부 디버그용 `getRuntimeChildren()` API는 유지한다.
 - 강조 ID 목록은 로드/저장 시 unique 처리하고, `getHighlightNameCache()`는 원본 배열 참조/키가 바뀔 때만 sort/lower/matcher를 재계산한다. 캔버스 텍스트 강조 매칭은 `HIGHLIGHT_NAME_CACHE.matchCache`로 짧게 캐시된다.
-- 강조 ID 우클릭 추가는 타겟 체력바 메뉴와 채팅 유저 컨텍스트 메뉴 둘 다 지원한다. 채팅에서는 `.linewrap`의 채널/레벨/닉네임 형태를 파싱해 닉네임만 추가한다.
-- `시전/주시` 경고는 시전 대상뿐 아니라 다른 플레이어 엔티티의 직접/nested target 계열 필드가 내 캐릭터를 가리키는지도 감지한다. 예전 비활성화 상태를 2026-05-27 마이그레이션으로 기본 활성화한다.
+- 강조 ID 우클릭 추가는 타겟 체력바 메뉴와 채팅 유저 컨텍스트 메뉴 둘 다 지원한다. 채팅에서는 `.linewrap`의 채널/레벨/닉네임 형태를 파싱해 닉네임만 추가한다. `sanitizeChatContextName`/`extractChatContextNameFromText`는 ASCII 전용이 아니라 유니코드(`\p{L}\p{N}_-`)를 허용해 한글 등 비ASCII 닉도 추가 가능하다(채널 단어 블록리스트는 유지). 선택 타겟 경로는 클릭 요소가 `#uftarget, .targetframes` 안이면 표시 텍스트가 잘려도 이름 텍스트 매칭 없이 인정한다.
+- 미니맵 강조 리스트(`renderMinimapHighlightList`)는 매 틱 전체 재생성(replaceChildren) 대신 id 기반 **재조정**을 쓴다: `ensureMinimapHighlightListShell`이 패널/타이틀/컨트롤/드래그핸들을 1회만 만들고, `reconcileMinimapHighlightListRows`가 행을 `data-row-key`로 재사용(appendChild로 거리순 재정렬)하며 `updateMinimapHighlightListRow`가 텍스트만 갱신한다. 이전엔 거리/좌표가 매 프레임 바뀌어 렌더키가 항상 달라져 패널 스크롤 초기화 + 커서 아래 행 파괴로 클릭이 씹혔다. 행 클릭 핸들러는 생성 시 닫힌 candidate 대신 `row.dataset`에서 현재 id/name을 읽는다. (`buildMinimapHighlightListRenderKey`는 죽은 코드로 남음)
+- `시전/주시` 경고는 시전 대상뿐 아니라 다른 플레이어 엔티티의 직접/nested target 계열 필드가 내 캐릭터를 가리키는지도 감지한다. 예전 비활성화 상태를 2026-05-27 마이그레이션으로 기본 활성화한다. 오버레이 라벨은 적 엔티티의 화면 투영 위치에 붙는데, `isUsableProjectedPoint`가 `clipW>0`(카메라 앞)+NDC ±1.35만 통과시켜 **등 뒤/화면 밖** 적은 투영 null로 버려졌다(경고가 가장 필요한데 누락). 그래서 incoming 후보(`incomingSkill`/`incomingTargetWatch`)에 한해 `projectRuntimeIncomingWarningPoint`로 폴백해 화면 가장자리에 클램프한다(카메라 뒤는 NDC가 미러라 부호 반전 후 클램프 — 근사치). 일반 강조 라벨은 종전대로 화면 밖이면 표시 안 함. `screen.offScreen`/candidate `offScreen` 플래그로 구분.
 - `runtimeDebug().scriptHook.missingExpectedPatches`는 현재 클라이언트에서 실제 성공하는 핵심 패치만 기준으로 본다. 예전 `client-frame-loop`, `client-onload-runtime`, `client-set-state` 계열은 특정 client.js 빌드에서 안 잡혀도 현재 runtime 노출이 정상일 수 있다.
-- `Swiftshot Turbo`는 기본 `R, 5, Q, E, F` 꾹 누름 보조 기능이다. 입력창/채팅/관리패널에서는 동작하지 않고, 실제 첫 keydown은 통과시키며 이후 반복 keydown은 막고 synthetic pulse를 보낸다.
+- `Swiftshot Turbo`는 기본 `R, 1, 5, Q, E, F` 꾹 누름 보조 기능이다. 입력창/채팅/관리패널에서는 동작하지 않고, 실제 첫 keydown은 통과시키며 이후 반복 keydown은 막고 synthetic pulse를 보낸다. `Digit1` 추가는 `SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION` 키로 기존 저장 설정에도 1회 마이그레이션된다. 펄스마다 `canvas.focus()`를 호출하던 동작은 이미 캔버스가 포커스된 경우 건너뛴다 — 매 펄스 재포커스가 이동키 keyup을 흘려 전진키가 잠기던 문제를 막기 위함(synthetic 이벤트는 dispatchEvent+버블링으로 포커스와 무관하게 전달됨).
 - 파티 오더 패널처럼 제거된 UI의 잔여 CSS 제거.
 
 ### 2. 중간 위험
