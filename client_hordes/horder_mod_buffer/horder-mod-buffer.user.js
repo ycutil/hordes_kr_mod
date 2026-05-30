@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.4
+// @version      0.3.5
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.4";
+  const MOD_VERSION = "0.3.5";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -49,6 +49,8 @@
   const ROAM_RADIUS = 34;              // how far from home (town) the bot strolls
   const ROAM_HARD_LIMIT = 58;          // never let it drift past this from home
   const ARRIVE_DIST = 3.2;             // "reached" a stroll target
+  const TURN_MS_PER_RAD = 320;         // ArrowLeft/Right hold time per radian of turn (~700ms=120°)
+  const TELEPORT_DIST = 80;            // pos jump beyond this => treat as teleport, re-anchor home
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -114,7 +116,10 @@
     homeWorld: "",
     waypoints: loadWaypoints(),  // learned static landmark positions (persisted)
     leg: null,             // current stroll target {x,z}
-    lastDir: null,         // sticky movement direction
+    lastPos: null,         // for teleport detection
+    turnSign: 1,           // +1 => ArrowRight increases heading (self-calibrated)
+    _lastErr: null,
+    _lastTurned: false,
     lastBuffAt: 0,
     pendingBuff: null,
     pendingRecall: null,
@@ -1909,35 +1914,34 @@
     const world = typeof runtime.getActiveWorld === "function"
       ? safeCall(() => runtime.getActiveWorld(), "")
       : "";
+    const pos = playerPos();
+    // Detect a teleport (recall / move-NPC jump on the single map) and re-anchor home.
+    if (ai.lastPos && pos && Math.hypot(pos[0] - ai.lastPos[0], pos[2] - ai.lastPos[2]) > TELEPORT_DIST) {
+      ai.home = null; ai.leg = null;
+    }
+    ai.lastPos = pos;
     if (ai.home && ai.homeWorld && world && world !== ai.homeWorld) {
-      ai.home = null; ai.leg = null; ai.lastDir = null; // moved zones (e.g. teleport): re-anchor
+      ai.home = null; ai.leg = null;
     }
     if (!ai.home) {
       const conjurer = findNearestConjurer(runtime);
-      const pos0 = playerPos();
-      ai.home = (conjurer && conjurer.pos) || pos0 || null;
+      ai.home = (conjurer && conjurer.pos) || pos || null;
       ai.homeWorld = world || "";
     }
-    if (!ai.home) { await sleep(900); return; }
+    if (!ai.home || !pos) { await sleep(800); return; }
 
-    learnWaypoints(runtime); // remember nearby static landmarks for sightseeing
+    learnWaypoints(runtime); // remember nearby static landmarks (town NPCs) for sightseeing
 
-    const pos = playerPos();
-    if (!pos) { await sleep(800); return; }
-
-    // Hard leash so it never strolls off the map.
+    // Leash: if we somehow drifted off, head back toward town.
     if (dist2(pos, { x: ai.home[0], z: ai.home[2] }) > ROAM_HARD_LIMIT) {
       ai.leg = { x: ai.home[0], z: ai.home[2] };
-      ai.lastDir = null;
     }
-    if (!ai.leg) { ai.leg = pickRoamTarget(); ai.lastDir = null; }
+    if (!ai.leg) ai.leg = pickRoamTarget();
 
-    if (dist2(pos, ai.leg) <= ARRIVE_DIST) {
-      await lookAround(runtime); // arrived: observe + rest like a person
-      ai.leg = null;
-      return;
-    }
-    await walkSegment(runtime, ai.leg);
+    // Stroll to the chosen spot (turn to face, run forward), then look around + rest.
+    const reached = await walkTo(runtime, ai.leg, ARRIVE_DIST, 14000);
+    if (reached) await lookAround(runtime);
+    ai.leg = null;
   }
 
   function pickRoamTarget() {
@@ -1954,72 +1958,86 @@
     return { x: ai.home[0], z: ai.home[2] }; // amble back toward town center
   }
 
-  async function walkSegment(runtime, target) {
+  // Walk to a target the human way: probe a stride, turn (arrow keys) to face the
+  // target, then run forward. Self-corrects heading; the camera follows the turn.
+  async function walkTo(runtime, target, withinDist, maxMs) {
     ai.mode = "배회";
-    if (Math.random() < 0.32 && typeof runtime.rotateCamera === "function") {
-      await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 0.8));
-      ai.lastDir = null; // view changed -> re-pick heading
-    }
-    let dir = ai.lastDir;
-    if (dir && !(await reducesDist(runtime, dir, target))) dir = null;
-    if (!dir) dir = await bestDirToward(runtime, target);
-    if (!dir) {
-      // Stuck: turn to look elsewhere or hop, retry next tick.
-      if (Math.random() < 0.6 && typeof runtime.rotateCamera === "function") {
-        await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.7));
-      } else {
-        dispatchKeyEvent("keydown", "Space", " ");
-        await sleep(150);
-        dispatchKeyEvent("keyup", "Space", " ");
-      }
-      ai.lastDir = null;
-      return;
-    }
-    ai.lastDir = dir;
-    await holdMove(dir, 550 + Math.floor(Math.random() * 850)); // a natural stride
-    await sleep(110 + Math.floor(Math.random() * 320));
-  }
-
-  async function reducesDist(runtime, dir, target) {
-    const before = playerPos();
-    if (!before) return false;
-    await holdMove(dir, 240);
-    const after = playerPos();
-    if (!after) return false;
-    return dist2(before, target) - dist2(after, target) > 0.35;
-  }
-
-  async function bestDirToward(runtime, target) {
-    let best = null;
-    let bestGain = 0.35;
-    for (const d of ["forward", "right", "back", "left"]) {
+    const startedAt = Date.now();
+    let stuck = 0;
+    while (Date.now() - startedAt < maxMs) {
+      if (ai.stopped || !ai.enabled || ai.pendingBuff || ai.pendingRecall) return false;
       const before = playerPos();
-      if (!before) return null;
-      await holdMove(d, 220);
+      if (!before) return false;
+      if (dist2(before, target) <= withinDist) return true;
+
+      await holdMove("forward", 330); // probe stride (also makes progress)
       const after = playerPos();
-      if (!after) return null;
-      const gain = dist2(before, target) - dist2(after, target);
-      if (gain > bestGain) { bestGain = gain; best = d; }
+      if (!after) return false;
+      if (dist2(after, target) <= withinDist) return true;
+
+      const moved = Math.hypot(after[0] - before[0], after[2] - before[2]);
+      if (moved < 0.25) {
+        // Blocked (wall/ledge): turn a chunk to break free.
+        await turnBy((Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.8));
+        if (++stuck > 6) return false;
+        continue;
+      }
+      stuck = 0;
+
+      const heading = Math.atan2(after[2] - before[2], after[0] - before[0]);
+      const desired = Math.atan2(target.z - after[2], target.x - after[0]);
+      const err = normAngle(desired - heading);
+      // Self-calibrate turn direction if a turn made the heading worse.
+      if (ai._lastErr != null && ai._lastTurned && Math.abs(err) > Math.abs(ai._lastErr) + 0.25) {
+        ai.turnSign = -ai.turnSign;
+      }
+      if (Math.abs(err) > 0.3) {
+        await turnBy(err * ai.turnSign);
+        ai._lastTurned = true;
+      } else {
+        await holdMove("forward", 420 + Math.floor(Math.random() * 700)); // facing it: run a stride
+        ai._lastTurned = false;
+      }
+      ai._lastErr = err;
+      if (Math.random() < 0.1) await sleep(180 + Math.floor(Math.random() * 420)); // human micro-pause
     }
-    return best;
+    return false;
+  }
+
+  // Turn the character by ~rad radians using the camera turn keys (ArrowLeft/Right).
+  async function turnBy(rad) {
+    const key = rad >= 0 ? "ArrowRight" : "ArrowLeft";
+    const ms = Math.min(Math.abs(rad) * TURN_MS_PER_RAD, 650);
+    if (ms < 45) return;
+    dispatchKeyEvent("keydown", key, key);
+    try {
+      await sleep(ms);
+    } finally {
+      dispatchKeyEvent("keyup", key, key);
+    }
+    await sleep(60);
+  }
+
+  function normAngle(a) {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
   }
 
   async function lookAround(runtime) {
     ai.mode = "구경";
-    ai.lastDir = null;
     const turns = 2 + Math.floor(Math.random() * 3);
     for (let i = 0; i < turns; i++) {
-      if (typeof runtime.rotateCamera === "function") {
-        await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.4 + Math.random() * 1.1));
-      }
-      await sleep(700 + Math.floor(Math.random() * 1700)); // observe
+      if (ai.stopped || !ai.enabled || ai.pendingBuff) return;
+      await turnBy((Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 1.3)); // look around
+      await sleep(800 + Math.floor(Math.random() * 1900)); // observe
     }
     if (Math.random() < 0.25) {
       dispatchKeyEvent("keydown", "Space", " ");
       await sleep(150);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    await sleep(900 + Math.floor(Math.random() * 3200)); // rest a while
+    await sleep(900 + Math.floor(Math.random() * 3200)); // rest a while, like a person
   }
 
   function learnWaypoints(runtime) {
