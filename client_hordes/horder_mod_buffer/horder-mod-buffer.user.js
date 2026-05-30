@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.0";
+  const MOD_VERSION = "0.4.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -136,6 +136,8 @@
     activity: "",          // current one-line "thought" (granular action narration)
     brain: [],             // rolling decision log [{t, m}]
     persona: null,         // stable per-bot personality (activity/radius/rest/social/afk...)
+    profile: null,         // learned human behavior profile (imitation), fetched from panel
+    profileAt: 0,
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -1772,6 +1774,54 @@
     return Math.round(baseMs * (0.4 + skew * 2.8));
   }
 
+  // ---- Imitation: sample timing/rhythm from the learned human profile ----
+  const PROFILE_BUCKETS = [500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, Infinity];
+
+  async function fetchProfile() {
+    try {
+      const res = await fetchJson(PANEL_BASE_URL + "/api.php?action=getprofile&token=" + panelToken());
+      if (res && res.ok && res.profile && res.profile.v === 1) { ai.profile = res.profile; ai.profileAt = Date.now(); }
+    } catch {
+      // best-effort; falls back to persona heuristics
+    }
+  }
+
+  function sampleHist(hist) {
+    if (!Array.isArray(hist)) return null;
+    const total = hist.reduce((a, b) => a + (b || 0), 0);
+    if (total <= 0) return null;
+    let r = Math.random() * total, i = 0;
+    for (; i < hist.length; i++) { r -= hist[i] || 0; if (r <= 0) break; }
+    const lo = i === 0 ? 100 : PROFILE_BUCKETS[i - 1];
+    const hi = isFinite(PROFILE_BUCKETS[i]) ? PROFILE_BUCKETS[i] : lo * 2;
+    return Math.round(lo + Math.random() * (hi - lo));
+  }
+
+  // Idle/rest duration: sampled from the human's pause distribution when learned.
+  function idleDuration(fallbackMs) {
+    if (ai.profile && ai.profile.pauseHist) { const v = sampleHist(ai.profile.pauseHist); if (v) return v; }
+    return humanPause(fallbackMs);
+  }
+
+  // Activity level (0..1): from the human's learned hour rhythm, else persona*rhythm.
+  function activityLevel() {
+    const p = ai.profile;
+    if (p && p.hourActive) {
+      const h = p.hourActive[(new Date().getUTCHours() + 9) % 24];
+      if (h && h.t > 30000) return Math.max(0.1, Math.min(0.95, h.a / h.t));
+    }
+    const persona = ensurePersona();
+    return (persona ? persona.activity : 0.6) * rhythmFactor();
+  }
+
+  // AFK probability per idle, blended from the human's AFK fraction.
+  function afkChance() {
+    const p = ai.profile;
+    if (p && p.totalMs > 120000) return Math.max(0.02, Math.min(0.4, (p.afkMs / p.totalMs) * 1.5));
+    const persona = ensurePersona();
+    return (persona ? persona.afk : 0.08) * (2 - rhythmFactor());
+  }
+
   function stateForPanel() {
     const mode = ai.mode || "";
     if (ai.stopped) return "stopped";
@@ -1801,6 +1851,7 @@
   function startAiController() {
     if (ai.started) return;
     ai.started = true;
+    fetchProfile();   // imitation profile (timing/rhythm learned from real play)
     pollPanelLoop();
     aiBehaviorLoop();
   }
@@ -1809,6 +1860,7 @@
     for (;;) {
       try {
         await pollPanelOnce();
+        if (Date.now() - ai.profileAt > 600000) await fetchProfile(); // refresh ~10min
       } catch {
         ai.lastPollOk = false;
       }
@@ -2070,7 +2122,7 @@
 
     learnWaypoints(runtime); // remember nearby static landmarks (town NPCs) for sightseeing
     const persona = ensurePersona();
-    const act = (persona ? persona.activity : 0.6) * rhythmFactor();
+    const act = activityLevel(); // learned human rhythm if available, else persona*time-of-day
 
     // Often just hang around instead of always striking off somewhere (idle / AFK / people-watch).
     if (!ai.leg && Math.random() > act) {
@@ -2098,7 +2150,7 @@
 
   // Hang-around behaviors when not heading somewhere: AFK, people-watching, or fidgeting.
   async function idleBehavior(runtime, persona) {
-    if (persona && Math.random() < persona.afk * (2 - rhythmFactor())) {
+    if (Math.random() < afkChance()) {
       const ms = 20000 + Math.floor(Math.random() * 95000);
       ai.mode = "AFK";
       think("💤 잠수 (" + Math.round(ms / 1000) + "초)");
@@ -2116,7 +2168,7 @@
       await sleep(humanPause(1400));
     }
     if (Math.random() < 0.15) { dispatchKeyEvent("keydown", "Space", " "); await sleep(140); dispatchKeyEvent("keyup", "Space", " "); }
-    await sleep(humanPause(1800 * (persona ? persona.restMul : 1)));
+    await sleep(idleDuration(1800 * (persona ? persona.restMul : 1)));
   }
 
   // Notice a nearby player and turn to look at them (like a curious passer-by).
@@ -2449,7 +2501,7 @@
       await sleep(150);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    const restMs = humanPause(1600 * restMul);
+    const restMs = idleDuration(1600 * restMul);
     think("😌 잠깐 쉬는 중 (" + (restMs / 1000).toFixed(1) + "초)");
     await sleep(restMs); // rest a while, like a person
   }
