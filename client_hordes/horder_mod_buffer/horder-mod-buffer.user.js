@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.3";
+  const MOD_VERSION = "0.3.4";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -38,16 +38,19 @@
   const STORAGE_AI_ENABLED_KEY = "horder_mod_buffer_ai_enabled";
   const STORAGE_RECALL_SLOT_KEY = "horder_mod_buffer_recall_slot";
   const STORAGE_FINAL_DEST_KEY = "horder_mod_buffer_final_dest";
+  const STORAGE_WAYPOINTS_KEY = "horder_mod_buffer_waypoints";
 
   // --- Panel-driven AI controller config ---
   const PANEL_BASE_URL = "https://kbr1.cafe24.com/hordes_panel";
   const PANEL_TOKEN = "f091c884e74edd251d897ceb23ce6f5d";
   const PANEL_POLL_MS = 6000;            // heartbeat + command poll interval
-  const AI_TICK_MS = 1400;              // behavior loop tick
-  const OBELISK_HOURS_KST = [3, 6, 9, 12];
-  const OBELISK_WINDOW_END_MIN = 20;    // obelisk window active from HH:00 to HH:END
-  const OBELISK_REBUFF_MS = 240000;     // re-run buff route every 4 min during window
-  const WANDER_RADIUS = 12;             // stay within this many units of the town anchor
+  const AI_TICK_MS = 1100;              // behavior loop tick
+  // Human-like sightseeing wander (single-map, position-aware)
+  const ROAM_RADIUS = 34;              // how far from home (town) the bot strolls
+  const ROAM_HARD_LIMIT = 58;          // never let it drift past this from home
+  const ARRIVE_DIST = 3.2;             // "reached" a stroll target
+  const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
+  const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
   const RECALL_FAR_DIST = 40;           // farther than this from a Conjurer => use town recall
   const RECALL_WAIT_MS = 9000;          // wait for recall cast + zone load
@@ -107,8 +110,11 @@
     mode: "꺼짐",
     account: "",
     klass: "",
-    anchor: null,
-    anchorWorld: "",
+    home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
+    homeWorld: "",
+    waypoints: loadWaypoints(),  // learned static landmark positions (persisted)
+    leg: null,             // current stroll target {x,z}
+    lastDir: null,         // sticky movement direction
     lastBuffAt: 0,
     pendingBuff: null,
     pendingRecall: null,
@@ -152,6 +158,12 @@
       writeStoredString("horder_mod_buffer_panel_token", String(value || ""));
       setStatus("패널 토큰 갱신됨");
     },
+    waypoints: () => (ai.waypoints || []).slice(),
+    clearWaypoints: () => {
+      ai.waypoints = [];
+      saveWaypoints();
+      setStatus("학습 웨이포인트 초기화");
+    },
     aiStatus: () => ({
       enabled: ai.enabled,
       stopped: ai.stopped,
@@ -160,7 +172,9 @@
       klass: ai.klass,
       recallSlot: ai.recallSlot,
       finalDest: ai.finalDest,
-      anchor: ai.anchor,
+      home: ai.home,
+      waypoints: ai.waypoints ? ai.waypoints.length : 0,
+      leg: ai.leg,
       lastPollOk: ai.lastPollOk,
       lastPollAt: ai.lastPollAt,
       pendingBuff: Boolean(ai.pendingBuff),
@@ -511,7 +525,7 @@
       "__hmbRt.installOnloadAutoStart=function(){try{if(__hmbRt.onloadAutoStartInstalled)return;__hmbRt.onloadAutoStartInstalled=true;__hmbRt.onloadAutoStartInstalledAt=Date.now();__hmbRt.hookHits.onloadAutoStartInstall=(__hmbRt.hookHits.onloadAutoStartInstall||0)+1;var attempts=0,currentOnload=window.onload,assignmentCount=0,timer=null;var isClientOnload=function(fn){try{if(typeof fn!=='function')return false;var text=Function.prototype.toString.call(fn);return text.indexOf('__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__')>=0||text.indexOf('game.bin')>=0||text.indexOf('new Fh')>=0}catch(e){return false}};var tryRun=function(reason){try{attempts+=1;__hmbRt.onloadAutoStartAttempts=attempts;__hmbRt.onloadAutoStartReason=reason;__hmbRt.onloadAutoStartReadyState=document.readyState;__hmbRt.onloadAutoStartOnloadType=typeof currentOnload;__hmbRt.onloadAutoStartAssignmentCount=assignmentCount;__hmbRt.onloadAutoStartIsClientOnload=isClientOnload(currentOnload);if(window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){if(timer)clearInterval(timer);__hmbRt.onloadAutoStartStopped='already-started';return}if(document.readyState==='loading')return;if(typeof currentOnload!=='function')return;if(!isClientOnload(currentOnload)){__hmbRt.onloadAutoStartStopped='waiting-client-onload';return}__hmbRt.hookHits.onloadAutoStartRun=(__hmbRt.hookHits.onloadAutoStartRun||0)+1;currentOnload.call(window);if(timer)clearInterval(timer);__hmbRt.onloadAutoStartStopped='ran'}catch(e){try{__hmbRt.errors.push('onloadAutoStart:'+((e&&e.message)||e));__hmbRt.onloadAutoStartStopped='error';if(timer)clearInterval(timer)}catch(_){}}};try{var desc=Object.getOwnPropertyDescriptor(window,'onload');if(!desc||desc.configurable){Object.defineProperty(window,'onload',{configurable:true,enumerable:true,get:function(){return currentOnload},set:function(fn){currentOnload=fn;assignmentCount+=1;__hmbRt.onloadAutoStartAssignedAt=Date.now();__hmbRt.hookHits.onloadAutoStartAssign=(__hmbRt.hookHits.onloadAutoStartAssign||0)+1;setTimeout(function(){tryRun('assignment')},0)}});__hmbRt.onloadAutoStartDescriptor='installed'}else{__hmbRt.onloadAutoStartDescriptor='not-configurable'}}catch(e){__hmbRt.onloadAutoStartDescriptor='error:'+((e&&e.message)||e)}timer=setInterval(function(){tryRun('timer')},50);setTimeout(function(){try{if(!window.__HORDER_MOD_BUFFER_CLIENT_ONLOAD_STARTED__){__hmbRt.onloadAutoStartStopped='timeout';if(timer)clearInterval(timer)}}catch(_){}},30000)}catch(e){try{__hmbRt.errors.push('installOnloadAutoStart:'+((e&&e.message)||e))}catch(_){}}};",
       "__hmbRt.installOnloadAutoStart();",
       "__hmbRt.update=function(){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:r.engine||null;r.engine=engine;r.player=engine&&engine.player||r.player||null;r.ready=!!(r.engine&&r.player&&typeof Mt!=='undefined'&&typeof Io==='function');r.activeWorld=typeof Gr!=='undefined'?r.readStore(Gr):r.activeWorld||'';r.updatedAt=Date.now();r.hookHits=r.hookHits||{};r.hookHits.update=(r.hookHits.update||0)+1}catch(e){try{__hmbRt.errors.push('update:'+((e&&e.message)||e))}catch(_){}}};",
-      "__hmbRt.listEntities=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var arr=engine&&engine.entities&&engine.entities.array||[];for(var i=0;i<arr.length;i++){var e=arr[i];if(!e)continue;var pos=e.pos||e.visualPosition||[];out.push({id:e.id,name:e.name||'',type:e.type,faction:e.faction,party:e.party,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0]})}}catch(err){try{__hmbRt.errors.push('listEntities:'+((err&&err.message)||err))}catch(_){}}return out};",
+      "__hmbRt.listEntities=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var arr=engine&&engine.entities&&engine.entities.array||[];for(var i=0;i<arr.length;i++){var e=arr[i];if(!e)continue;var pos=e.pos||e.visualPosition||[];out.push({id:e.id,name:e.name||'',type:e.type,faction:e.faction,party:e.party,static:!!e.static,level:e.level,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0]})}}catch(err){try{__hmbRt.errors.push('listEntities:'+((err&&err.message)||err))}catch(_){}}return out};",
       "__hmbRt.getPlayerInfo=function(){try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var p=engine&&engine.player||runtime.player||null;var pos=p&&(p.pos||p.visualPosition)||[];return p?{id:p.id,name:p.name||'',type:p.type,pos:[Number(pos[0])||0,Number(pos[1])||0,Number(pos[2])||0],target:p.target}:null}catch(e){return null}};",
       "__hmbRt.changeTarget=function(id){id=Number(id);try{if(typeof vr==='function')return vr(id)}catch(e){}try{return Io(Mt.clientPlayerChangeTarget.packData({target:id}))}catch(e){throw new Error('changeTarget failed: '+((e&&e.message)||e))}};",
       "__hmbRt.sendInteract=function(id){id=Number(id);try{return Io(Mt.clientPlayerInteract.packData({id:id}))}catch(e){throw new Error('sendInteract failed: '+((e&&e.message)||e))}};",
@@ -1578,7 +1592,8 @@
     ai.enabled = Boolean(value);
     writeStoredBoolean(STORAGE_AI_ENABLED_KEY, ai.enabled);
     if (!ai.enabled) {
-      ai.anchor = null;
+      ai.leg = null;
+      ai.lastDir = null;
       releaseAllMoveKeys();
     } else {
       ai.stopped = false;
@@ -1637,22 +1652,11 @@
   function stateForPanel() {
     const mode = ai.mode || "";
     if (ai.stopped) return "stopped";
-    if (mode.indexOf("obelisk") >= 0 || mode.indexOf("오벨") >= 0) return "obelisk_buff";
     if (mode.indexOf("버프") >= 0) return "buffing";
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
-    if (mode.indexOf("배회") >= 0) return "wander";
+    if (mode.indexOf("배회") >= 0 || mode.indexOf("구경") >= 0) return "wander";
     if (mode.indexOf("수동") >= 0) return "idle";
     return "idle";
-  }
-
-  function obeliskWindow() {
-    const now = new Date();
-    const kstHour = (now.getUTCHours() + 9) % 24;
-    const kstMin = now.getUTCMinutes();
-    for (const hour of OBELISK_HOURS_KST) {
-      if (kstHour === hour && kstMin < OBELISK_WINDOW_END_MIN) return { active: true, hour };
-    }
-    return { active: false, hour: -1 };
   }
 
   // The embedded token is a default. If this script is published publicly, set a
@@ -1803,18 +1807,7 @@
       return;
     }
 
-    const window = obeliskWindow();
-    if (window.active) {
-      ai.mode = "오벨리스크";
-      if (Date.now() - ai.lastBuffAt > OBELISK_REBUFF_MS) {
-        await goBuff(runtime);
-      } else {
-        await ensureNearConjurer(runtime, true);
-      }
-      return;
-    }
-
-    ai.mode = "배회";
+    // Obelisk auto-buff removed by request (handled manually via the panel button).
     await wanderStep(runtime);
   }
 
@@ -1910,51 +1903,168 @@
     return distance3(pos, target);
   }
 
+  // Human-like sightseeing: stroll to a point, look around, rest, move on. Learns
+  // static landmarks (NPCs/shops) on the single map and revisits them.
   async function wanderStep(runtime) {
     const world = typeof runtime.getActiveWorld === "function"
       ? safeCall(() => runtime.getActiveWorld(), "")
       : "";
-    if (ai.anchor && ai.anchorWorld && world && world !== ai.anchorWorld) {
-      ai.anchor = null; // changed zone (e.g. teleported by a buff route): re-anchor here
+    if (ai.home && ai.homeWorld && world && world !== ai.homeWorld) {
+      ai.home = null; ai.leg = null; ai.lastDir = null; // moved zones (e.g. teleport): re-anchor
     }
-    if (!ai.anchor) {
+    if (!ai.home) {
       const conjurer = findNearestConjurer(runtime);
-      const pos = playerPos();
-      ai.anchor = (conjurer && conjurer.pos) || pos || null;
-      ai.anchorWorld = world || "";
+      const pos0 = playerPos();
+      ai.home = (conjurer && conjurer.pos) || pos0 || null;
+      ai.homeWorld = world || "";
     }
+    if (!ai.home) { await sleep(900); return; }
+
+    learnWaypoints(runtime); // remember nearby static landmarks for sightseeing
+
     const pos = playerPos();
-    if (!pos) {
-      await sleep(900);
+    if (!pos) { await sleep(800); return; }
+
+    // Hard leash so it never strolls off the map.
+    if (dist2(pos, { x: ai.home[0], z: ai.home[2] }) > ROAM_HARD_LIMIT) {
+      ai.leg = { x: ai.home[0], z: ai.home[2] };
+      ai.lastDir = null;
+    }
+    if (!ai.leg) { ai.leg = pickRoamTarget(); ai.lastDir = null; }
+
+    if (dist2(pos, ai.leg) <= ARRIVE_DIST) {
+      await lookAround(runtime); // arrived: observe + rest like a person
+      ai.leg = null;
       return;
     }
-    if (ai.anchor && distance3(pos, ai.anchor) > WANDER_RADIUS) {
-      await navTowardPos(runtime, ai.anchor, WANDER_RADIUS * 0.4, 6000);
+    await walkSegment(runtime, ai.leg);
+  }
+
+  function pickRoamTarget() {
+    const r = Math.random();
+    if (r < 0.5 && ai.waypoints.length) {
+      const w = ai.waypoints[Math.floor(Math.random() * ai.waypoints.length)];
+      return { x: w.x + (Math.random() - 0.5) * 6, z: w.z + (Math.random() - 0.5) * 6 };
+    }
+    if (r < 0.82 || !ai.home) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 8 + Math.random() * ROAM_RADIUS;
+      return { x: ai.home[0] + Math.cos(ang) * rad, z: ai.home[2] + Math.sin(ang) * rad };
+    }
+    return { x: ai.home[0], z: ai.home[2] }; // amble back toward town center
+  }
+
+  async function walkSegment(runtime, target) {
+    ai.mode = "배회";
+    if (Math.random() < 0.32 && typeof runtime.rotateCamera === "function") {
+      await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 0.8));
+      ai.lastDir = null; // view changed -> re-pick heading
+    }
+    let dir = ai.lastDir;
+    if (dir && !(await reducesDist(runtime, dir, target))) dir = null;
+    if (!dir) dir = await bestDirToward(runtime, target);
+    if (!dir) {
+      // Stuck: turn to look elsewhere or hop, retry next tick.
+      if (Math.random() < 0.6 && typeof runtime.rotateCamera === "function") {
+        await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.7));
+      } else {
+        dispatchKeyEvent("keydown", "Space", " ");
+        await sleep(150);
+        dispatchKeyEvent("keyup", "Space", " ");
+      }
+      ai.lastDir = null;
       return;
     }
-    // Pan the camera (real view rotation) so wandering looks human and explores new directions.
-    if (Math.random() < 0.5 && typeof runtime.rotateCamera === "function") {
-      await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 1.0));
+    ai.lastDir = dir;
+    await holdMove(dir, 550 + Math.floor(Math.random() * 850)); // a natural stride
+    await sleep(110 + Math.floor(Math.random() * 320));
+  }
+
+  async function reducesDist(runtime, dir, target) {
+    const before = playerPos();
+    if (!before) return false;
+    await holdMove(dir, 240);
+    const after = playerPos();
+    if (!after) return false;
+    return dist2(before, target) - dist2(after, target) > 0.35;
+  }
+
+  async function bestDirToward(runtime, target) {
+    let best = null;
+    let bestGain = 0.35;
+    for (const d of ["forward", "right", "back", "left"]) {
+      const before = playerPos();
+      if (!before) return null;
+      await holdMove(d, 220);
+      const after = playerPos();
+      if (!after) return null;
+      const gain = dist2(before, target) - dist2(after, target);
+      if (gain > bestGain) { bestGain = gain; best = d; }
     }
-    // Rare short idle (humans pause briefly, not for long stretches).
-    if (Math.random() < 0.08) {
-      await sleep(600 + Math.floor(Math.random() * 1600));
-      return;
+    return best;
+  }
+
+  async function lookAround(runtime) {
+    ai.mode = "구경";
+    ai.lastDir = null;
+    const turns = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < turns; i++) {
+      if (typeof runtime.rotateCamera === "function") {
+        await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.4 + Math.random() * 1.1));
+      }
+      await sleep(700 + Math.floor(Math.random() * 1700)); // observe
     }
-    // Move: forward-biased, often diagonal (two keys), with longer holds = covers more ground.
-    const primary = Math.random() < 0.62 ? "forward" : ["back", "left", "right"][Math.floor(Math.random() * 3)];
-    const dur = 650 + Math.floor(Math.random() * 1500);
-    if (Math.random() < 0.4) {
-      await holdMoveMulti([primary, Math.random() < 0.5 ? "left" : "right"], dur);
-    } else {
-      await holdMove(primary, dur);
-    }
-    if (Math.random() < 0.1) {
+    if (Math.random() < 0.25) {
       dispatchKeyEvent("keydown", "Space", " ");
-      await sleep(120);
+      await sleep(150);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    await sleep(120 + Math.floor(Math.random() * 600));
+    await sleep(900 + Math.floor(Math.random() * 3200)); // rest a while
+  }
+
+  function learnWaypoints(runtime) {
+    try {
+      const ents = typeof runtime.listEntities === "function" ? runtime.listEntities() : [];
+      let added = false;
+      for (const e of ents) {
+        if (!e || !e.name || !e.static || !Array.isArray(e.pos)) continue;
+        const x = Number(e.pos[0]) || 0;
+        const z = Number(e.pos[2]) || 0;
+        if (ai.waypoints.some((w) => Math.hypot(w.x - x, w.z - z) < WAYPOINT_DEDUP_DIST)) continue;
+        ai.waypoints.push({ x, z, name: String(e.name).slice(0, 32) });
+        if (ai.waypoints.length > MAX_WAYPOINTS) ai.waypoints.shift();
+        added = true;
+      }
+      if (added) saveWaypoints();
+    } catch {
+      // Learning is best-effort.
+    }
+  }
+
+  function dist2(pos, t) {
+    const x = Array.isArray(pos) ? pos[0] : pos.x;
+    const z = Array.isArray(pos) ? pos[2] : pos.z;
+    return Math.hypot((Number(x) || 0) - t.x, (Number(z) || 0) - t.z);
+  }
+
+  function loadWaypoints() {
+    try {
+      const raw = pageWindow.localStorage && pageWindow.localStorage.getItem(STORAGE_WAYPOINTS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((w) => w && isFinite(w.x) && isFinite(w.z)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveWaypoints() {
+    try {
+      if (pageWindow.localStorage) {
+        pageWindow.localStorage.setItem(STORAGE_WAYPOINTS_KEY, JSON.stringify(ai.waypoints.slice(-MAX_WAYPOINTS)));
+      }
+    } catch {
+      // Ignore storage errors.
+    }
   }
 
   async function panCamera(runtime, totalRad) {
