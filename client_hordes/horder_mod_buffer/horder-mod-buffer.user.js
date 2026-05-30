@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.8
+// @version      0.3.9
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.8";
+  const MOD_VERSION = "0.3.9";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -133,6 +133,8 @@
     finalDest: readStoredString(STORAGE_FINAL_DEST_KEY, "Guardstone"),
     stopped: false,
     mode: "꺼짐",
+    activity: "",          // current one-line "thought" (granular action narration)
+    brain: [],             // rolling decision log [{t, m}]
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -220,6 +222,8 @@
       enabled: ai.enabled,
       stopped: ai.stopped,
       mode: ai.mode,
+      activity: ai.activity,
+      brain: ai.brain.slice(-15).map((e) => formatBrainTime(e.t) + " " + e.m),
       account: ai.account,
       klass: ai.klass,
       recallSlot: ai.recallSlot,
@@ -1468,8 +1472,9 @@
     if (recallSlot && state.shadow.activeElement !== recallSlot) recallSlot.value = String(ai.recallSlot || 0);
     if (aiStatus) {
       const poll = ai.lastPollAt ? (ai.lastPollOk ? "패널OK" : "패널?") : "패널대기";
-      const head = ai.enabled ? (ai.mode || "대기") : (ai.stopped ? "정지" : "수동");
-      aiStatus.textContent = "AI: " + head + (ai.account ? " · " + ai.account : "") + " · " + poll;
+      const head = ai.enabled ? (ai.account || "AI") : (ai.stopped ? "정지" : "수동");
+      aiStatus.textContent = "🧠 " + (ai.activity || ai.mode || "대기") + "\n" + head + " · " + poll;
+      aiStatus.style.whiteSpace = "pre-wrap";
     }
 
     if (debugOutput) {
@@ -1701,6 +1706,27 @@
     return null;
   }
 
+  // Narrate the bot's current decision/action (real-time "thought" feed).
+  function think(message) {
+    if (!message) return;
+    ai.activity = message;
+    const last = ai.brain[ai.brain.length - 1];
+    if (!last || last.m !== message) {
+      ai.brain.push({ t: Date.now(), m: message });
+      if (ai.brain.length > 30) ai.brain.shift();
+    }
+  }
+
+  function formatBrainTime(t) {
+    try {
+      const d = new Date(t);
+      const p = (n) => ("0" + n).slice(-2);
+      return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    } catch {
+      return "";
+    }
+  }
+
   function stateForPanel() {
     const mode = ai.mode || "";
     if (ai.stopped) return "stopped";
@@ -1762,6 +1788,8 @@
       x: String(Math.round(account.pos[0] || 0)),
       y: String(Math.round(account.pos[1] || 0)),
       z: String(Math.round(account.pos[2] || 0)),
+      activity: (ai.activity || "").slice(0, 120),
+      brain: ai.brain.slice(-10).map((e) => formatBrainTime(e.t) + " " + e.m).join("\n").slice(0, 700),
     });
     const result = await fetchJson(PANEL_BASE_URL + "/api.php?" + params.toString());
     ai.lastPollAt = Date.now();
@@ -1827,6 +1855,7 @@
     // Explicit remote commands run regardless of the auto toggle.
     if (ai.pendingRecall) {
       ai.mode = "귀환";
+      think("📥 귀환 명령 수신 → 마을로 리콜");
       releaseAllMoveKeys();
       await doRecall(runtime);
       const id = ai.pendingRecall.id;
@@ -1840,6 +1869,7 @@
       setAiEnabled(false);
       ai.stopped = false;
       ai.mode = "버프";
+      think("📥 버프 명령 수신 → " + (dest || "Guardstone") + " 코스 시작");
       releaseAllMoveKeys();
       // item 6: if it was wandering, force recall -> move to NPC -> run buff route
       await goBuff(runtime, dest, wasWandering);
@@ -1851,11 +1881,13 @@
 
     if (ai.stopped) {
       ai.mode = "정지";
+      think("⏸ 정지됨 (패널 명령 대기)");
       releaseAllMoveKeys();
       return;
     }
     if (!ai.enabled) {
       ai.mode = "수동(폴링만)";
+      think("🅿️ 자율행동 OFF (명령만 대기)");
       return;
     }
 
@@ -1867,13 +1899,16 @@
     releaseAllMoveKeys();
     if (forceRecall) {
       ai.mode = "리콜";
+      think("🏠 배회 중단 → 마을 리콜(5초 캐스트)");
       castRecall(runtime);
       await sleep(RECALL_WAIT_MS);
     } else {
       await maybeRecallToTown(runtime);
     }
+    think("🚶 Conjurer 앞으로 이동");
     await ensureNearConjurer(runtime, false);
     if (!state.running) {
+      think("✨ Faivel 버프 코스 실행 → " + (dest || ai.finalDest || "Guardstone"));
       await runBufferFlow(dest || ai.finalDest || "Guardstone");
     }
     ai.lastBuffAt = Date.now();
@@ -1995,10 +2030,16 @@
     }
     if (!ai.leg) ai.leg = pickRoamTarget();
 
+    think("🎯 " + (ai.townName || "이 동네") + "에서 (" + Math.round(ai.leg.x) + "," + Math.round(ai.leg.z) + ") 구경하러 가는 중");
     // Route to the spot via the learned walkable map (A*), following it with smooth
     // steering — no walls hit. Then look around + rest.
     const reached = await navTo(runtime, ai.leg, ARRIVE_DIST, 16000);
-    if (reached) await lookAround(runtime);
+    if (reached) {
+      think("👀 도착 — 두리번거리는 중");
+      await lookAround(runtime);
+    } else {
+      think("…경로 막힘, 다른 곳으로");
+    }
     ai.leg = null;
   }
 
@@ -2197,8 +2238,12 @@
     const me = playerPos();
     const occ = ensureOccupancy(runtime);
     const path = (occ && me) ? findPath(occ, me[0], me[2], target.x, target.z) : null;
-    if (!path || path.length < 2) return walkTo(runtime, target, withinDist, maxMs);
+    if (!path || path.length < 2) {
+      think(occ ? "🧭 직선 접근(가까움)" : "🧭 맵 학습 전 — 직선 이동");
+      return walkTo(runtime, target, withinDist, maxMs);
+    }
     const wp = path.filter((_, i) => i % 3 === 0 || i === path.length - 1);
+    think("🗺️ 경로 계획: 벽 피해 " + wp.length + "개 지점 따라 이동");
     ai.mode = "배회";
     holdForward(true);
     try {
@@ -2262,7 +2307,9 @@
       await sleep(150);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    await sleep(900 + Math.floor(Math.random() * 3200)); // rest a while, like a person
+    const restMs = 900 + Math.floor(Math.random() * 3200);
+    think("😌 잠깐 쉬는 중 (" + (restMs / 1000).toFixed(1) + "초)");
+    await sleep(restMs); // rest a while, like a person
   }
 
   function learnWaypoints(runtime) {
@@ -2276,6 +2323,7 @@
         if (ai.waypoints.some((w) => Math.hypot(w.x - x, w.z - z) < WAYPOINT_DEDUP_DIST)) continue;
         ai.waypoints.push({ x, z, name: String(e.name).slice(0, 32) });
         if (ai.waypoints.length > MAX_WAYPOINTS) ai.waypoints.shift();
+        think("📝 랜드마크 기억: " + String(e.name).slice(0, 24));
         added = true;
       }
       if (added) saveWaypoints();
