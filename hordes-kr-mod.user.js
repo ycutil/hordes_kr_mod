@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.144-local
+// @version      0.9.146-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.144-local";
+  const BOOT_VERSION = "0.9.146-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -315,6 +315,13 @@
   const SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS = 120;
   const SWIFTSHOT_TURBO_MIN_INTERVAL_MS = 60;
   const SWIFTSHOT_TURBO_MAX_INTERVAL_MS = 500;
+  // Companion keys fire right after the primary key's skill resolves. Holding E
+  // pulses E, and fires 5 the moment E lands. See SWIFTSHOT_TURBO_COMPANION_WATCH_MS.
+  const SWIFTSHOT_TURBO_COMPANION_KEY_CODES = { KeyE: ["Digit5"] };
+  // Detection cadence for the companion. Runs only while a companion key is held,
+  // independently of the (slower) primary pulse, so 5 follows E within ~this many
+  // ms of E actually landing instead of waiting for the next primary pulse.
+  const SWIFTSHOT_TURBO_COMPANION_WATCH_MS = 10;
   const RUNTIME_OVERLAY_INTERVAL_MS = 100;
   const RUNTIME_NAME_OVERLAY_REFRESH_MS = 100;
   const MINIMAP_OVERLAY_REFRESH_MS = 100;
@@ -347,6 +354,15 @@
   const CHAT_TRANSLATION_BATCH_SIZE = 1;
   const CHAT_TRANSLATION_MAX_TEXT_LENGTH = 220;
   const CHAT_TRANSLATION_TOGGLE_REFRESH_MS = 1000;
+  // Damage log overlay (above the chat panel).
+  const DAMAGE_LOG_REFRESH_MS = 140;
+  const DAMAGE_LOG_MAX_LINES = 8;
+  const DAMAGE_LOG_LINE_TTL_MS = 9000;
+  // Full-session history kept for file export (independent of the on-screen lines).
+  const DAMAGE_LOG_HISTORY_MAX = 50000;
+  // Reserve a strip above the chat for the chat-translation toggle so the two
+  // chat-anchored overlays do not overlap.
+  const DAMAGE_LOG_CHAT_TOP_GAP = 32;
   const CHAT_TRANSLATION_ALLOWED_CHANNELS = new Set(["faction", "party", "yell", "whisper"]);
   const CHAT_TRANSLATION_BRIDGE_REQUEST = "HORDES_KR_MOD_OPENAI_REQUEST";
   const CHAT_TRANSLATION_BRIDGE_RESPONSE = "HORDES_KR_MOD_OPENAI_RESPONSE";
@@ -609,6 +625,7 @@
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
     swiftshotTurboKeyCode: SWIFTSHOT_TURBO_DEFAULT_KEY_CODE,
     swiftshotTurboIntervalMs: SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS,
+    damageLogEnabled: true,
   });
   FEATURE_CONFIG.domTranslationEnabled = localStorage.getItem(ENABLED_KEY) !== "false";
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
@@ -624,6 +641,7 @@
     saveFeatureConfig();
   }
   FEATURE_CONFIG.chatTranslationEnabled = FEATURE_CONFIG.chatTranslationEnabled === true;
+  FEATURE_CONFIG.damageLogEnabled = FEATURE_CONFIG.damageLogEnabled !== false;
   FEATURE_CONFIG.swiftshotTurboEnabled = FEATURE_CONFIG.swiftshotTurboEnabled !== false;
   FEATURE_CONFIG.swiftshotTurboKeyCodes = normalizeSwiftshotTurboKeyCodes(
     Array.isArray(FEATURE_CONFIG.swiftshotTurboKeyCodes)
@@ -831,11 +849,27 @@
     keyboardInstalled: false,
     held: false,
     timer: null,
+    companionTimer: null,
     activeCode: "",
     synthetic: false,
     repeatCount: 0,
     lastAt: null,
     lastError: "",
+    // Companion keys (e.g. 5 paired with E) are only fired on the pulse where the
+    // primary key's skill actually casts. We detect that by watching the primary
+    // skill's cooldown-end timestamp jump forward. null = not yet initialized.
+    companionPrevCdEnd: null,
+  };
+  const DAMAGE_LOG_STATE = {
+    host: null,
+    listEl: null,
+    headerEl: null,
+    countEl: null,
+    timer: null,
+    styleInstalled: false,
+    lastSeq: 0,
+    lines: [],
+    history: [],
   };
   const TARGET_ORDER_STATE = {
     ws: null,
@@ -2795,6 +2829,7 @@
     initPartyUiManager();
     initPartyCommandPanel();
     initSwiftshotTurbo();
+    initDamageLog();
     initTargetOrderClient();
   } catch (error) {
     showBootstrapFailureBadge("KR Mod 초기화 실패", [
@@ -2941,6 +2976,21 @@
     },
     swiftshotTurboStatus() {
       return getSwiftshotTurboStatus();
+    },
+    toggleDamageLog() {
+      return setDamageLogEnabled(!isDamageLogEnabled());
+    },
+    setDamageLogEnabled(enabled) {
+      return setDamageLogEnabled(enabled);
+    },
+    damageLogStatus() {
+      return getDamageLogStatus();
+    },
+    exportDamageLog(format) {
+      return exportDamageLog(format);
+    },
+    clearDamageLog() {
+      return clearDamageLogHistory();
     },
     setChatTranslationApiKey(apiKey) {
       return setChatTranslationApiKey(apiKey);
@@ -5167,6 +5217,436 @@
     return Boolean(element.closest("#chat"));
   }
 
+  // ===== Damage log overlay (sits above the chat panel) =====
+  function isDamageLogEnabled() {
+    return FEATURE_CONFIG.damageLogEnabled !== false;
+  }
+
+  function initDamageLog() {
+    const start = () => {
+      installDamageLogStyle();
+      syncDamageLogRuntimeFlag();
+      ensureDamageLogHost();
+      startDamageLogLoop();
+    };
+    if (document.body) start();
+    else document.addEventListener("DOMContentLoaded", start, { once: true });
+  }
+
+  function syncDamageLogRuntimeFlag() {
+    const runtime = getExposedRuntime();
+    if (!runtime) return;
+    try {
+      runtime.combatLogEnabled = isDamageLogEnabled();
+    } catch {
+      // Best-effort; the capture hook also defaults to on.
+    }
+  }
+
+  function installDamageLogStyle() {
+    if (DAMAGE_LOG_STATE.styleInstalled || document.getElementById("hordes-kr-damage-log-style")) {
+      DAMAGE_LOG_STATE.styleInstalled = true;
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "hordes-kr-damage-log-style";
+    style.textContent = `
+      #hordes-kr-damage-log {
+        position: fixed !important;
+        z-index: 2147483646 !important;
+        left: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 1px;
+        max-width: 440px;
+        pointer-events: none;
+        font: 700 12px/1.36 "Segoe UI", system-ui, sans-serif;
+        text-align: left;
+      }
+      #hordes-kr-damage-log[hidden] { display: none !important; }
+      #hordes-kr-damage-log .dmg-header {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-bottom: 2px;
+        pointer-events: none;
+      }
+      #hordes-kr-damage-log .dmg-count {
+        color: #cdd6e0;
+        opacity: 0.85;
+        font-size: 11px;
+        margin-right: auto;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+      }
+      #hordes-kr-damage-log .dmg-save {
+        pointer-events: auto;
+        cursor: pointer;
+        font: 700 11px/1 "Segoe UI", system-ui, sans-serif;
+        color: #e7eef6;
+        background: rgba(28, 36, 48, 0.86);
+        border: 1px solid rgba(120, 140, 165, 0.55);
+        border-radius: 4px;
+        padding: 3px 7px;
+      }
+      #hordes-kr-damage-log .dmg-save:hover { background: rgba(46, 60, 80, 0.94); }
+      #hordes-kr-damage-log .dmg-clear { color: #ff9f93; }
+      #hordes-kr-damage-log .dmg-line {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 6px;
+        border-radius: 3px;
+        background: rgba(0, 0, 0, 0.42);
+        text-shadow:
+          1px 0 0 rgba(0, 0, 0, 0.95), -1px 0 0 rgba(0, 0, 0, 0.95),
+          0 1px 0 rgba(0, 0, 0, 0.95), 0 -1px 0 rgba(0, 0, 0, 0.95);
+        transition: opacity 0.4s ease;
+      }
+      #hordes-kr-damage-log .dmg-line.dir-out { color: #ffe27a; }
+      #hordes-kr-damage-log .dmg-line.dir-in { color: #ff8f80; }
+      #hordes-kr-damage-log .dmg-line.dir-out.crit { color: #fff3a6; font-weight: 800; }
+      #hordes-kr-damage-log .dmg-line.dir-in.crit { color: #ff6552; font-weight: 800; }
+      #hordes-kr-damage-log .dmg-line.miss { color: #b9c2cc; font-weight: 600; }
+      #hordes-kr-damage-log .dmg-line .dmg-num { font-weight: 800; }
+      #hordes-kr-damage-log .dmg-line .dmg-tag { opacity: 0.85; }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+    DAMAGE_LOG_STATE.styleInstalled = true;
+  }
+
+  function ensureDamageLogHost() {
+    if (DAMAGE_LOG_STATE.host && document.contains(DAMAGE_LOG_STATE.host)) return DAMAGE_LOG_STATE.host;
+    if (!document.body) return null;
+    const host = document.createElement("div");
+    host.id = "hordes-kr-damage-log";
+    host.hidden = true;
+
+    const header = document.createElement("div");
+    header.className = "dmg-header";
+    const count = document.createElement("span");
+    count.className = "dmg-count";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "dmg-save";
+    saveBtn.textContent = "💾 저장";
+    saveBtn.title = "데미지 기록을 CSV·JSON 파일로 다운로드";
+    saveBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      exportDamageLog("both");
+    });
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "dmg-save dmg-clear";
+    clearBtn.textContent = "비움";
+    clearBtn.title = "모아둔 기록 초기화";
+    clearBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearDamageLogHistory();
+    });
+    installBasicUiEventGuards([saveBtn, clearBtn]);
+    header.append(count, saveBtn, clearBtn);
+
+    const list = document.createElement("div");
+    list.className = "dmg-list";
+
+    host.append(header, list);
+    document.body.appendChild(host);
+    DAMAGE_LOG_STATE.host = host;
+    DAMAGE_LOG_STATE.listEl = list;
+    DAMAGE_LOG_STATE.headerEl = header;
+    DAMAGE_LOG_STATE.countEl = count;
+    return host;
+  }
+
+  function startDamageLogLoop() {
+    if (DAMAGE_LOG_STATE.timer) return;
+    DAMAGE_LOG_STATE.timer = setInterval(updateDamageLog, DAMAGE_LOG_REFRESH_MS);
+  }
+
+  function stopDamageLogLoop() {
+    if (DAMAGE_LOG_STATE.timer) {
+      clearInterval(DAMAGE_LOG_STATE.timer);
+      DAMAGE_LOG_STATE.timer = null;
+    }
+  }
+
+  function updateDamageLog() {
+    const host = ensureDamageLogHost();
+    if (!host) return;
+
+    if (!isDamageLogEnabled()) {
+      if (!host.hidden) host.hidden = true;
+      return;
+    }
+
+    pullNewDamageEvents();
+
+    const now = Date.now();
+    if (DAMAGE_LOG_STATE.lines.length) {
+      DAMAGE_LOG_STATE.lines = DAMAGE_LOG_STATE.lines.filter((line) => now - line.at < DAMAGE_LOG_LINE_TTL_MS);
+    }
+
+    const chat = getChatPanelRect();
+    // Keep the panel (and its save button) up while there is anything to save,
+    // even after the live lines have faded out.
+    const hasContent = DAMAGE_LOG_STATE.lines.length > 0 || DAMAGE_LOG_STATE.history.length > 0;
+    if (!chat || !hasContent) {
+      if (!host.hidden) host.hidden = true;
+      return;
+    }
+
+    renderDamageLogLines(now);
+    positionDamageLog(host, chat);
+    if (host.hidden) host.hidden = false;
+  }
+
+  function pullNewDamageEvents() {
+    const runtime = getExposedRuntime();
+    const log = runtime && Array.isArray(runtime.combatLog) ? runtime.combatLog : null;
+    if (!log || !log.length) return;
+
+    const lastSeq = DAMAGE_LOG_STATE.lastSeq;
+    let maxSeq = lastSeq;
+    const fresh = [];
+    for (const event of log) {
+      if (!event || typeof event.seq !== "number" || event.seq <= lastSeq) continue;
+      fresh.push(event);
+      if (event.seq > maxSeq) maxSeq = event.seq;
+    }
+    if (!fresh.length) return;
+    DAMAGE_LOG_STATE.lastSeq = maxSeq;
+
+    const at = Date.now();
+    const history = DAMAGE_LOG_STATE.history;
+    for (const event of fresh) {
+      DAMAGE_LOG_STATE.lines.push({ event, at });
+      history.push({ ...event, ts: at });
+    }
+    if (DAMAGE_LOG_STATE.lines.length > DAMAGE_LOG_MAX_LINES) {
+      DAMAGE_LOG_STATE.lines.splice(0, DAMAGE_LOG_STATE.lines.length - DAMAGE_LOG_MAX_LINES);
+    }
+    if (history.length > DAMAGE_LOG_HISTORY_MAX) {
+      history.splice(0, history.length - DAMAGE_LOG_HISTORY_MAX);
+    }
+  }
+
+  function renderDamageLogLines(now) {
+    const list = DAMAGE_LOG_STATE.listEl;
+    if (!list) return;
+    const fragment = document.createDocumentFragment();
+    for (const line of DAMAGE_LOG_STATE.lines) {
+      fragment.appendChild(buildDamageLogLineEl(line, now));
+    }
+    list.replaceChildren(fragment);
+    if (DAMAGE_LOG_STATE.countEl) {
+      DAMAGE_LOG_STATE.countEl.textContent = `${DAMAGE_LOG_STATE.history.length.toLocaleString("en-US")}건`;
+    }
+  }
+
+  function buildDamageLogLineEl(line, now) {
+    const event = line.event;
+    const el = document.createElement("div");
+    const classes = ["dmg-line", event.dir === "in" ? "dir-in" : "dir-out"];
+    if (event.crit) classes.push("crit");
+    if (event.miss) classes.push("miss");
+    el.className = classes.join(" ");
+
+    const skill = event.skill || "?";
+    const source = event.source || "?";
+    const target = event.target || "?";
+    const subject = event.dir === "in" ? `${source} → 나` : `${skill} → ${target}`;
+
+    if (event.miss) {
+      el.textContent = `${subject}  빗나감`;
+    } else {
+      const skillLabel = event.dir === "in" ? `(${skill}) ` : "";
+      el.append(document.createTextNode(`${subject}  ${skillLabel}`));
+      const num = document.createElement("span");
+      num.className = "dmg-num";
+      num.textContent = formatDamageAmount(event.dmg);
+      el.appendChild(num);
+      const tag = event.crit ? " 치명" : event.block ? " 막힘" : "";
+      if (tag) {
+        const tagEl = document.createElement("span");
+        tagEl.className = "dmg-tag";
+        tagEl.textContent = tag;
+        el.appendChild(tagEl);
+      }
+    }
+
+    const age = now - line.at;
+    const fadeStart = DAMAGE_LOG_LINE_TTL_MS - 1500;
+    el.style.opacity = age > fadeStart ? String(Math.max(0.15, (DAMAGE_LOG_LINE_TTL_MS - age) / 1500)) : "1";
+    return el;
+  }
+
+  function positionDamageLog(host, chat) {
+    const viewportHeight = Math.max(240, Number(pageWindow.innerHeight) || 0);
+    const left = Math.round(Math.max(2, chat.left + 4));
+    const bottom = Math.round(Math.max(2, viewportHeight - (chat.top - DAMAGE_LOG_CHAT_TOP_GAP)));
+    host.style.left = `${left}px`;
+    host.style.bottom = `${bottom}px`;
+    host.style.maxWidth = `${Math.max(220, Math.min(440, Math.round(chat.width || 440)))}px`;
+  }
+
+  function formatDamageAmount(value) {
+    return (Math.round(Number(value) || 0)).toLocaleString("en-US");
+  }
+
+  function setDamageLogEnabled(enabled) {
+    FEATURE_CONFIG.damageLogEnabled = Boolean(enabled);
+    saveFeatureConfig();
+    syncDamageLogRuntimeFlag();
+    if (FEATURE_CONFIG.damageLogEnabled) {
+      installDamageLogStyle();
+      ensureDamageLogHost();
+      startDamageLogLoop();
+    } else {
+      DAMAGE_LOG_STATE.lines = [];
+      if (DAMAGE_LOG_STATE.host) DAMAGE_LOG_STATE.host.hidden = true;
+    }
+    renderStatusUi();
+    return getDamageLogStatus();
+  }
+
+  function getDamageLogStatus() {
+    const runtime = getExposedRuntime();
+    return {
+      enabled: isDamageLogEnabled(),
+      shownLines: DAMAGE_LOG_STATE.lines.length,
+      captured: runtime && typeof runtime.combatLogSeq === "number" ? runtime.combatLogSeq : 0,
+      buffered: runtime && Array.isArray(runtime.combatLog) ? runtime.combatLog.length : 0,
+      hookInstalled: Boolean(runtime && runtime.damageHookInstalled),
+    };
+  }
+
+  function clearDamageLogHistory() {
+    DAMAGE_LOG_STATE.history = [];
+    DAMAGE_LOG_STATE.lines = [];
+    if (DAMAGE_LOG_STATE.listEl) DAMAGE_LOG_STATE.listEl.replaceChildren();
+    if (DAMAGE_LOG_STATE.countEl) DAMAGE_LOG_STATE.countEl.textContent = "0건";
+    return getDamageLogStatus();
+  }
+
+  function exportDamageLog(format = "both") {
+    const rows = DAMAGE_LOG_STATE.history.slice();
+    if (!rows.length) {
+      setStatus({ lastState: "데미지 기록 없음", lastError: "저장할 기록이 없습니다." });
+      return { ok: false, reason: "empty", count: 0 };
+    }
+    const base = `hordes-damage-log-${getDamageLogFileStamp()}`;
+    const want = String(format || "both").toLowerCase();
+    let files = 0;
+    if (want === "csv" || want === "both") {
+      // UTF-8 BOM so Excel reads Korean correctly.
+      downloadDamageLogFile(`${base}.csv`, "text/csv;charset=utf-8", "﻿" + buildDamageLogCsv(rows));
+      files += 1;
+    }
+    if (want === "json" || want === "both") {
+      const emit = () => downloadDamageLogFile(`${base}.json`, "application/json;charset=utf-8", buildDamageLogJson(rows));
+      // Stagger the second download so the browser does not drop it as a duplicate.
+      if (want === "both") setTimeout(emit, 350);
+      else emit();
+      files += 1;
+    }
+    setStatus({ lastState: `데미지 기록 ${rows.length}건 저장`, lastError: "" });
+    return { ok: true, count: rows.length, files };
+  }
+
+  function buildDamageLogCsv(rows) {
+    const lines = [["time", "dir", "source", "target", "skill", "damage", "result", "school", "seq"].join(",")];
+    for (const row of rows) {
+      lines.push([
+        csvCell(formatDamageLogTimestamp(row.ts)),
+        csvCell(damageLogDirLabel(row.dir)),
+        csvCell(row.source || ""),
+        csvCell(row.target || ""),
+        csvCell(row.skill || ""),
+        csvCell(Math.round(Number(row.dmg) || 0)),
+        csvCell(damageLogResultLabel(row)),
+        csvCell(Number(row.school) === 1 ? "마법" : "물리"),
+        csvCell(row.seq),
+      ].join(","));
+    }
+    return lines.join("\r\n");
+  }
+
+  function buildDamageLogJson(rows) {
+    return JSON.stringify(
+      rows.map((row) => ({
+        time: formatDamageLogTimestamp(row.ts),
+        ts: row.ts,
+        engineTime: row.time,
+        dir: row.dir,
+        source: row.source,
+        target: row.target,
+        skill: row.skill,
+        skillId: row.skillId,
+        damage: Math.round(Number(row.dmg) || 0),
+        crit: Boolean(row.crit),
+        miss: Boolean(row.miss),
+        block: Boolean(row.block),
+        school: Number(row.school) === 1 ? "spell" : "physical",
+        seq: row.seq,
+      })),
+      null,
+      2
+    );
+  }
+
+  function damageLogDirLabel(dir) {
+    return dir === "in" ? "받은" : "가한";
+  }
+
+  function damageLogResultLabel(row) {
+    if (row.miss) return "빗나감";
+    if (row.crit) return "치명";
+    if (row.block) return "막힘";
+    return "일반";
+  }
+
+  function csvCell(value) {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function formatDamageLogTimestamp(ms) {
+    const date = new Date(Number(ms) || Date.now());
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function getDamageLogFileStamp() {
+    const date = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  }
+
+  function downloadDamageLogFile(filename, mime, content) {
+    try {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      setTimeout(() => {
+        try { anchor.remove(); } catch { /* ignore */ }
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      }, 1000);
+      return true;
+    } catch (error) {
+      setStatus({ lastState: "저장 실패", lastError: (error && error.message) || String(error) });
+      return false;
+    }
+  }
+
   function installChatTranslationStyle() {
     if (document.getElementById("hordes-kr-chat-translation-style")) return;
 
@@ -7035,9 +7515,17 @@
     SWIFTSHOT_TURBO_STATE.held = true;
     SWIFTSHOT_TURBO_STATE.activeCode = normalized;
     SWIFTSHOT_TURBO_STATE.lastError = "";
+    SWIFTSHOT_TURBO_STATE.companionPrevCdEnd = null;
     SWIFTSHOT_TURBO_STATE.timer = setInterval(() => {
       dispatchSwiftshotTurboPulse(normalized);
     }, getSwiftshotTurboIntervalMs());
+    // Only the E-style combo keys get the tight companion watcher; plain turbo
+    // keys never enter this branch and keep their single-timer behavior.
+    if (turboKeyHasCompanions(normalized)) {
+      SWIFTSHOT_TURBO_STATE.companionTimer = setInterval(() => {
+        dispatchSwiftshotTurboCompanion(normalized);
+      }, SWIFTSHOT_TURBO_COMPANION_WATCH_MS);
+    }
   }
 
   function stopSwiftshotTurbo() {
@@ -7045,8 +7533,13 @@
       clearInterval(SWIFTSHOT_TURBO_STATE.timer);
       SWIFTSHOT_TURBO_STATE.timer = null;
     }
+    if (SWIFTSHOT_TURBO_STATE.companionTimer) {
+      clearInterval(SWIFTSHOT_TURBO_STATE.companionTimer);
+      SWIFTSHOT_TURBO_STATE.companionTimer = null;
+    }
     SWIFTSHOT_TURBO_STATE.held = false;
     SWIFTSHOT_TURBO_STATE.activeCode = "";
+    SWIFTSHOT_TURBO_STATE.companionPrevCdEnd = null;
   }
 
   function dispatchSwiftshotTurboPulse(code) {
@@ -7094,6 +7587,107 @@
   function isSwiftshotTurboSuspended() {
     if (document.visibilityState && document.visibilityState !== "visible") return true;
     return isEditableTargetOrderElement(document.activeElement);
+  }
+
+  // Companion keys fire only on the pulse where the primary key's skill actually
+  // RESOLVES (finishes casting / fires). Firing the companion at the same instant
+  // as the primary makes the instant, GCD-ignoring companion (5) supersede the
+  // primary's cast so the primary never lands — verified against the live client.
+  // If we can't resolve the skill we fire nothing (the user's rule: "if E didn't
+  // fire, 5 must not fire").
+  function turboKeyHasCompanions(code) {
+    const normalized = normalizeKeyboardCode(code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    const companions = SWIFTSHOT_TURBO_COMPANION_KEY_CODES[normalized];
+    return Boolean(companions && companions.length);
+  }
+
+  // Runs on the fast companion-watch timer (independent of the primary pulse).
+  // Fires the companion keys the moment the primary key's skill resolves.
+  function dispatchSwiftshotTurboCompanion(code) {
+    if (!FEATURE_CONFIG.swiftshotTurboEnabled || isSwiftshotTurboSuspended()) return;
+    const companionCodes = getReadyTurboCompanionCodes(code);
+    if (!companionCodes.length) return;
+
+    const target = getRuntimeInputCanvas(getExposedRuntime()) || document.body || document.documentElement || document;
+    if (!target || typeof target.dispatchEvent !== "function") return;
+
+    SWIFTSHOT_TURBO_STATE.synthetic = true;
+    try {
+      for (const companionCode of companionCodes) {
+        dispatchKeyboardPulseForCode(target, companionCode);
+      }
+    } finally {
+      SWIFTSHOT_TURBO_STATE.synthetic = false;
+    }
+  }
+
+  function getReadyTurboCompanionCodes(code) {
+    const normalized = normalizeKeyboardCode(code) || SWIFTSHOT_TURBO_DEFAULT_KEY_CODE;
+    const companions = SWIFTSHOT_TURBO_COMPANION_KEY_CODES[normalized];
+    if (!companions || !companions.length) return [];
+    if (!didPrimaryTurboSkillResolve(normalized)) return [];
+
+    const codes = [];
+    for (const companion of companions) {
+      const normalizedCompanion = normalizeKeyboardCode(companion);
+      if (normalizedCompanion && normalizedCompanion !== normalized && !codes.includes(normalizedCompanion)) {
+        codes.push(normalizedCompanion);
+      }
+    }
+    return codes;
+  }
+
+  function didPrimaryTurboSkillResolve(code) {
+    const runtime = getExposedRuntime();
+    const skillId = getTurboSkillIdForKeyCode(runtime, code);
+    const state = skillId === null ? null : getTurboPrimarySkillState(runtime, skillId);
+    if (!state) {
+      // Runtime not ready or skill unresolved: drop the baseline so we re-arm
+      // cleanly, and fire no companion (per "if E didn't fire, 5 must not fire").
+      SWIFTSHOT_TURBO_STATE.companionPrevCdEnd = null;
+      return false;
+    }
+
+    const { cdEnd, gcdEnd } = state;
+    const prev = SWIFTSHOT_TURBO_STATE.companionPrevCdEnd;
+    // The cast-start GCD bump pushes the skill's cd.end up to exactly gcdEnd;
+    // only when cd.end extends PAST the GCD window has the skill actually fired
+    // (its own per-skill cooldown). That edge — and only that edge — fires 5.
+    // We always advance the baseline on any change so the bump itself is consumed
+    // without firing, leaving the real resolve as the next detectable jump.
+    const resolved = prev !== null && cdEnd > prev && cdEnd > gcdEnd;
+    if (prev === null || cdEnd !== prev) SWIFTSHOT_TURBO_STATE.companionPrevCdEnd = cdEnd;
+    return resolved;
+  }
+
+  function getTurboSkillIdForKeyCode(runtime, code) {
+    const settings = runtime && runtime.settings;
+    const player = runtime && runtime.player;
+    if (!settings || !player || !player.name) return null;
+
+    const keyChar = getKeyboardDescriptorFromCode(code).key;
+    if (!keyChar) return null;
+
+    for (let slot = 1; slot <= 24; slot++) {
+      if (settings["kbSkillbar" + slot] !== keyChar) continue;
+      const bar = settings.skillbarsettings && settings.skillbarsettings[player.name];
+      const entry = bar && bar[slot - 1];
+      if (entry && Number(entry.id) >= 0) return Number(entry.id);
+      return null;
+    }
+    return null;
+  }
+
+  function getTurboPrimarySkillState(runtime, skillId) {
+    const skills = runtime && runtime.player && runtime.player.skills;
+    const skillMap = skills && skills.skills;
+    if (!skillMap || typeof skillMap.get !== "function") return null;
+    const skill = skillMap.get(skillId);
+    if (!skill || !skill.cd) return null;
+    const cdEnd = Number(skill.cd.end);
+    const gcdEnd = Number(skills.gcdEnd);
+    if (!Number.isFinite(cdEnd)) return null;
+    return { cdEnd, gcdEnd: Number.isFinite(gcdEnd) ? gcdEnd : 0 };
   }
 
   function dispatchKeyboardPulseForCode(target, code) {
@@ -9572,6 +10166,12 @@
       "}catch(__hkrError){}",
       "return __hkrOut;",
       "};",
+      "__hkrRuntime.combatLog=__hkrRuntime.combatLog||[];",
+      "__hkrRuntime.combatLogSeq=__hkrRuntime.combatLogSeq||0;",
+      // Called from inside the patched damage packet handler (.set(7)). t=victim
+      // entity, e=[_,dmg,skillId,attackerId,_,hitType,school,...]. Resolves names
+      // via the in-scope engine (I) and localization (P) and rings a buffer.
+      "__hkrRuntime.captureDamageEvent=function(t,e){try{if(__hkrRuntime.combatLogEnabled===false)return;var __p=(typeof I!=='undefined'&&I)?I.player:null;if(!__p||!e)return;var __atk=(typeof I!=='undefined'&&I&&I.getEntityById)?I.getEntityById(e[3]):null;var __out=__atk===__p,__in=t===__p;if(!__out&&!__in)return;var __sid=Number(e[2]),__hit=e[5],__nm='';try{var __bk=(typeof P!=='undefined'&&P&&P.items&&P.items.book)?P.items.book[__sid]:null;__nm=(__bk&&__bk.name)?__bk.name:('#'+__sid)}catch(__x){__nm='#'+__sid}var __src=__atk?(__atk===__p?'\\uB098':(__atk.name||'')):'';var __tgt=t?(t===__p?'\\uB098':(t.name||'')):'';__hkrRuntime.damageHookInstalled=true;var __log=__hkrRuntime.combatLog;__log.push({seq:(++__hkrRuntime.combatLogSeq),time:(typeof I!=='undefined'&&I)?I.time:0,dir:__out?'out':'in',dmg:Number(e[1])||0,skillId:__sid,skill:__nm,hit:__hit,crit:__hit===3,miss:__hit===0,block:__hit===1,source:__src,target:__tgt});if(__log.length>250)__log.splice(0,__log.length-250)}catch(__x){}};",
       "__hkrRuntime.updatedAt=Date.now();",
       "__hkrRuntime.hookHits=__hkrRuntime.hookHits||{};",
       "__hkrRuntime.hookHits.skillRuntimeExpose=(__hkrRuntime.hookHits.skillRuntimeExpose||0)+1;",
@@ -9698,6 +10298,16 @@
       `var yt=(t,e="")=>{Io(Mt.clientCommand.packData({command:t,string:e+""}))};${exposeClientSkillRuntime}`,
       patches,
       "client-skill-runtime"
+    );
+
+    // Tap the damage packet handler (.set(7)) at its body — the minified packet
+    // map variable name is not stable across builds, but this handler signature is.
+    patched = replaceClientSourceOnce(
+      patched,
+      ".set(7,(t,e,n)=>{let o=e[1],i=e[2],s=I.getEntityById(e[3])",
+      ".set(7,(t,e,n)=>{try{var __hkrRt=window.__HORDES_KR_RUNTIME__;if(__hkrRt&&__hkrRt.captureDamageEvent)__hkrRt.captureDamageEvent(t,e)}catch(__hkrX){}let o=e[1],i=e[2],s=I.getEntityById(e[3])",
+      patches,
+      "client-damage-log"
     );
 
     if (patches.length > 0) {

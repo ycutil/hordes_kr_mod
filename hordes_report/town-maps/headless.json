@@ -1,0 +1,82 @@
+{
+  "dest": "headless",
+  "moved": true,
+  "before": [
+    3210,
+    538,
+    1234
+  ],
+  "world": "main",
+  "player": [
+    1996,
+    504,
+    3629
+  ],
+  "entCount": 20,
+  "typeHist": {
+    "0/d": 3,
+    "1/d": 13,
+    "2/s": 1,
+    "8/s": 1,
+    "5/s": 1,
+    "12/s": 1
+  },
+  "conjurer": {
+    "id": 1064237,
+    "pos": [
+      1998,
+      504,
+      3630
+    ]
+  },
+  "destinations": [
+    "Teleport to Guardstone. (Lv. 1+)",
+    "Teleport to Faivel. (Lv. 35+)"
+  ],
+  "staticEntities": [
+    {
+      "name": "Conjurer",
+      "type": 2,
+      "role": "Conjurer",
+      "lvl": 99,
+      "pos": [
+        1998,
+        504,
+        3630
+      ]
+    },
+    {
+      "name": "General Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        1985,
+        504,
+        3635
+      ]
+    },
+    {
+      "name": "Stash",
+      "type": 5,
+      "role": "Stash",
+      "lvl": 99,
+      "pos": [
+        2009,
+        505,
+        3625
+      ]
+    },
+    {
+      "name": "Priest",
+      "type": 12,
+      "role": "Priest",
+      "lvl": 21,
+      "pos": [
+        2010,
+        504,
+        3602
+      ]
+    }
+  ]
+}

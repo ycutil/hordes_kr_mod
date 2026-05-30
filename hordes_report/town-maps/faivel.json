@@ -1,0 +1,132 @@
+{
+  "world": "main",
+  "player": [
+    4257,
+    542,
+    4197
+  ],
+  "entCount": 21,
+  "typeHist": {
+    "0/d": 2,
+    "7/s": 3,
+    "1/d": 10,
+    "2/s": 2,
+    "8/s": 1,
+    "5/s": 1,
+    "9/s": 1,
+    "12/s": 1
+  },
+  "conjurer": {
+    "id": 1090587,
+    "pos": [
+      4259,
+      542,
+      4199
+    ]
+  },
+  "destinations": [
+    "Teleport to Guardstone. (Lv. 1+)",
+    "Teleport to Headless Landing. (Lv. 25+)"
+  ],
+  "staticEntities": [
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 35,
+      "pos": [
+        4222,
+        542,
+        4176
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 35,
+      "pos": [
+        4224,
+        542,
+        4173
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 35,
+      "pos": [
+        4228,
+        543,
+        4172
+      ]
+    },
+    {
+      "name": "Conjurer",
+      "type": 2,
+      "role": "Conjurer",
+      "lvl": 99,
+      "pos": [
+        4259,
+        542,
+        4199
+      ]
+    },
+    {
+      "name": "General Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        4236,
+        541,
+        4190
+      ]
+    },
+    {
+      "name": "Stash",
+      "type": 5,
+      "role": "Stash",
+      "lvl": 99,
+      "pos": [
+        4234,
+        541,
+        4188
+      ]
+    },
+    {
+      "name": "War Conjurer",
+      "type": 2,
+      "role": "Conjurer",
+      "lvl": 99,
+      "pos": [
+        4244,
+        543,
+        4176
+      ]
+    },
+    {
+      "name": "Sage",
+      "type": 9,
+      "role": "Sage",
+      "lvl": 99,
+      "pos": [
+        4263,
+        542,
+        4191
+      ]
+    },
+    {
+      "name": "Priest",
+      "type": 12,
+      "role": "Priest",
+      "lvl": 31,
+      "pos": [
+        4269,
+        541,
+        4207
+      ]
+    }
+  ]
+}

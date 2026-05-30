@@ -1,0 +1,263 @@
+{
+  "dest": "guardstone",
+  "moved": true,
+  "before": [
+    4257,
+    542,
+    4197
+  ],
+  "world": "main",
+  "player": [
+    3210,
+    538,
+    1234
+  ],
+  "entCount": 46,
+  "typeHist": {
+    "0/d": 6,
+    "7/s": 6,
+    "1/d": 19,
+    "4/s": 1,
+    "6/s": 1,
+    "5/s": 1,
+    "8/s": 8,
+    "2/s": 1,
+    "9/s": 1,
+    "12/s": 1,
+    "10/d": 1
+  },
+  "conjurer": {
+    "id": 978842,
+    "pos": [
+      3208,
+      538,
+      1235
+    ]
+  },
+  "destinations": [
+    "Teleport to Headless Landing. (Lv. 25+)",
+    "Teleport to Faivel. (Lv. 35+)"
+  ],
+  "staticEntities": [
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3233,
+        537,
+        1271
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3247,
+        539,
+        1256
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3250,
+        539,
+        1257
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3248,
+        539,
+        1260
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3246,
+        539,
+        1263
+      ]
+    },
+    {
+      "name": "Training Dummy",
+      "type": 7,
+      "role": "TrainingDummy",
+      "lvl": 15,
+      "pos": [
+        3245,
+        539,
+        1260
+      ]
+    },
+    {
+      "name": "Merchant",
+      "type": 4,
+      "role": "Merchant",
+      "lvl": 99,
+      "pos": [
+        3218,
+        538,
+        1261
+      ]
+    },
+    {
+      "name": "Blacksmith",
+      "type": 6,
+      "role": "Blacksmith",
+      "lvl": 99,
+      "pos": [
+        3199,
+        538,
+        1226
+      ]
+    },
+    {
+      "name": "Stash",
+      "type": 5,
+      "role": "Stash",
+      "lvl": 99,
+      "pos": [
+        3209,
+        538,
+        1258
+      ]
+    },
+    {
+      "name": "General Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3242,
+        539,
+        1235
+      ]
+    },
+    {
+      "name": "Conjurer",
+      "type": 2,
+      "role": "Conjurer",
+      "lvl": 99,
+      "pos": [
+        3208,
+        538,
+        1235
+      ]
+    },
+    {
+      "name": "Sage",
+      "type": 9,
+      "role": "Sage",
+      "lvl": 99,
+      "pos": [
+        3212,
+        537,
+        1250
+      ]
+    },
+    {
+      "name": "Shaman Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3240,
+        539,
+        1240
+      ]
+    },
+    {
+      "name": "Mage Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3239,
+        539,
+        1243
+      ]
+    },
+    {
+      "name": "Archer Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3235,
+        538,
+        1247
+      ]
+    },
+    {
+      "name": "Warrior Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3237,
+        538,
+        1245
+      ]
+    },
+    {
+      "name": "Charm Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3258,
+        540,
+        1245
+      ]
+    },
+    {
+      "name": "Pet Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3267,
+        540,
+        1234
+      ]
+    },
+    {
+      "name": "Mount Trader",
+      "type": 8,
+      "role": "Trader",
+      "lvl": 99,
+      "pos": [
+        3266,
+        540,
+        1229
+      ]
+    },
+    {
+      "name": "Priest",
+      "type": 12,
+      "role": "Priest",
+      "lvl": 1,
+      "pos": [
+        3180,
+        537,
+        1235
+      ]
+    }
+  ]
+}
