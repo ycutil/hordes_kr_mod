@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.6
+// @version      0.3.7
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.6";
+  const MOD_VERSION = "0.3.7";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -2023,48 +2023,63 @@
 
   // Walk to a target the human way: probe a stride, turn (arrow keys) to face the
   // target, then run forward. Self-corrects heading; the camera follows the turn.
+  // Smooth human movement: hold W continuously and steer with brief ArrowLeft/Right
+  // pulses (turn WHILE moving = no stutter). Wall-follow when progress stalls.
   async function walkTo(runtime, target, withinDist, maxMs) {
     ai.mode = "배회";
     const startedAt = Date.now();
-    let stuck = 0;
-    while (Date.now() - startedAt < maxMs) {
-      if (ai.stopped || !ai.enabled || ai.pendingBuff || ai.pendingRecall) return false;
-      const before = playerPos();
-      if (!before) return false;
-      if (dist2(before, target) <= withinDist) return true;
-
-      await holdMove("forward", 330); // probe stride (also makes progress)
-      const after = playerPos();
-      if (!after) return false;
-      if (dist2(after, target) <= withinDist) return true;
-
-      const moved = Math.hypot(after[0] - before[0], after[2] - before[2]);
-      if (moved < 0.25) {
-        // Blocked (wall/ledge): turn a chunk to break free.
-        await turnBy((Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.8));
-        if (++stuck > 6) return false;
-        continue;
+    let prev = playerPos();
+    if (!prev) return false;
+    let best = dist2(prev, target);
+    let lastImprove = Date.now();
+    let mode = "direct";
+    let followFlip = 1;
+    holdForward(true);
+    try {
+      while (Date.now() - startedAt < maxMs) {
+        if (ai.stopped || !ai.enabled || ai.pendingBuff || ai.pendingRecall) return false;
+        await sleep(210);
+        const p = playerPos();
+        if (!p) return false;
+        const d = dist2(p, target);
+        if (d <= withinDist) return true;
+        const moved = Math.hypot(p[0] - prev[0], p[2] - prev[2]);
+        const heading = moved > 0.5 ? Math.atan2(p[2] - prev[2], p[0] - prev[0]) : null;
+        if (d < best - 0.6) { best = d; lastImprove = Date.now(); if (mode === "wallfollow") mode = "direct"; }
+        if (Date.now() - lastImprove > 1400) mode = "wallfollow";
+        const desired = Math.atan2(target.z - p[2], target.x - p[0]);
+        if (mode === "direct") {
+          if (heading != null) {
+            const err = normAngle(desired - heading);
+            if (Math.abs(err) > 0.22) {
+              await steerPulse(err > 0 ? "ArrowRight" : "ArrowLeft", Math.min(Math.max(Math.abs(err) * 230, 55), 320));
+            }
+          }
+        } else {
+          // Slide along the obstacle; flip side if it stays stuck too long.
+          if (Date.now() - lastImprove > 4000) { followFlip = -followFlip; lastImprove = Date.now() - 1400; }
+          await steerPulse(followFlip > 0 ? "ArrowRight" : "ArrowLeft", 170);
+        }
+        prev = p;
       }
-      stuck = 0;
-
-      const heading = Math.atan2(after[2] - before[2], after[0] - before[0]);
-      const desired = Math.atan2(target.z - after[2], target.x - after[0]);
-      const err = normAngle(desired - heading);
-      // Self-calibrate turn direction if a turn made the heading worse.
-      if (ai._lastErr != null && ai._lastTurned && Math.abs(err) > Math.abs(ai._lastErr) + 0.25) {
-        ai.turnSign = -ai.turnSign;
-      }
-      if (Math.abs(err) > 0.3) {
-        await turnBy(err * ai.turnSign);
-        ai._lastTurned = true;
-      } else {
-        await holdMove("forward", 420 + Math.floor(Math.random() * 700)); // facing it: run a stride
-        ai._lastTurned = false;
-      }
-      ai._lastErr = err;
-      if (Math.random() < 0.1) await sleep(180 + Math.floor(Math.random() * 420)); // human micro-pause
+      return false;
+    } finally {
+      holdForward(false);
     }
-    return false;
+  }
+
+  function holdForward(on) {
+    dispatchKeyEvent(on ? "keydown" : "keyup", "KeyW", "w");
+  }
+
+  // Pulse a camera turn key briefly while W stays held (smooth steering).
+  async function steerPulse(arrowKey, ms) {
+    dispatchKeyEvent("keydown", arrowKey, arrowKey);
+    try {
+      await sleep(ms);
+    } finally {
+      dispatchKeyEvent("keyup", arrowKey, arrowKey);
+    }
   }
 
   // Turn the character by ~rad radians using the camera turn keys (ArrowLeft/Right).
@@ -2195,5 +2210,7 @@
       dispatchKeyEvent("keyup", mapping.code, mapping.key);
     }
     dispatchKeyEvent("keyup", "Space", " ");
+    dispatchKeyEvent("keyup", "ArrowLeft", "ArrowLeft");
+    dispatchKeyEvent("keyup", "ArrowRight", "ArrowRight");
   }
 })();
