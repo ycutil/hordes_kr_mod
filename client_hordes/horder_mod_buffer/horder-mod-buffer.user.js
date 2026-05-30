@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.5
+// @version      0.3.6
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.5";
+  const MOD_VERSION = "0.3.6";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -64,6 +64,22 @@
     left: { code: "KeyA", key: "a" },
     right: { code: "KeyD", key: "d" },
   };
+
+  // Learned town maps (single map, absolute x,z). center + sightseeing spots (NPCs/landmarks).
+  // Surveyed via CDP; the bot anchors to the nearest known town and strolls these spots.
+  const KNOWN_TOWN_RADIUS = 95;
+  const KNOWN_TOWNS = [
+    { name: "Guardstone", cx: 3210, cz: 1234, spots: [
+      [3208,1235],[3218,1261],[3199,1226],[3209,1258],[3212,1250],[3180,1235],
+      [3242,1235],[3237,1245],[3235,1247],[3239,1243],[3240,1240],[3258,1245],[3267,1234],[3266,1229],
+    ] },
+    { name: "Faivel Grove", cx: 4257, cz: 4197, spots: [
+      [4259,4199],[4244,4176],[4236,4190],[4234,4188],[4263,4191],[4269,4207],
+    ] },
+    { name: "Headless Landing", cx: 1996, cz: 3629, spots: [
+      [1998,3630],[1985,3635],[2009,3625],[2010,3602],
+    ] },
+  ];
 
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -114,6 +130,8 @@
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
     homeWorld: "",
+    townName: "",          // nearest known town (Guardstone/Faivel/Headless) when in one
+    knownSpots: null,      // baked sightseeing spots for the current known town
     waypoints: loadWaypoints(),  // learned static landmark positions (persisted)
     leg: null,             // current stroll target {x,z}
     lastPos: null,         // for teleport detection
@@ -128,10 +146,31 @@
   };
 
   if (isPlayPage()) {
+    installAntiIdle();
     installGameClientRuntimeHook();
     installHotkey();
     whenDomReady(initPanel);
     startAiController();
+  }
+
+  // Keep the game "visible" so a backgrounded bot tab never goes "Browser is idle"
+  // (which disconnects the world). Spoofs the Page Visibility API to always-visible.
+  function installAntiIdle() {
+    if (pageWindow.__horderAntiIdleInstalled) return;
+    pageWindow.__horderAntiIdleInstalled = true;
+    try {
+      const force = (obj, prop, value) => {
+        try { Object.defineProperty(obj, prop, { configurable: true, get: () => value }); } catch { /* ignore */ }
+      };
+      force(document, "hidden", false);
+      force(document, "visibilityState", "visible");
+      force(document, "webkitHidden", false);
+      force(document, "webkitVisibilityState", "visible");
+      // Any visibilitychange the browser fires will now read "visible", so the
+      // game's idle handler never disconnects. (Getter override alone suffices.)
+    } catch {
+      // Anti-idle is best-effort.
+    }
   }
 
   pageWindow.HorderModBuffer = {
@@ -1924,8 +1963,18 @@
       ai.home = null; ai.leg = null;
     }
     if (!ai.home) {
-      const conjurer = findNearestConjurer(runtime);
-      ai.home = (conjurer && conjurer.pos) || pos || null;
+      // Prefer a known surveyed town (anchor to its center, use its baked spots).
+      const town = pos ? nearestKnownTown(pos) : null;
+      if (town) {
+        ai.home = [town.cx, (pos ? pos[1] : 0), town.cz];
+        ai.knownSpots = town.spots;
+        ai.townName = town.name;
+      } else {
+        const conjurer = findNearestConjurer(runtime);
+        ai.home = (conjurer && conjurer.pos) || pos || null;
+        ai.knownSpots = null;
+        ai.townName = "";
+      }
       ai.homeWorld = world || "";
     }
     if (!ai.home || !pos) { await sleep(800); return; }
@@ -1944,13 +1993,27 @@
     ai.leg = null;
   }
 
+  function nearestKnownTown(pos) {
+    let best = null, bestD = KNOWN_TOWN_RADIUS;
+    for (const t of KNOWN_TOWNS) {
+      const d = Math.hypot(pos[0] - t.cx, pos[2] - t.cz);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
+  }
+
   function pickRoamTarget() {
     const r = Math.random();
-    if (r < 0.5 && ai.waypoints.length) {
+    // Prefer baked town spots (real NPCs/landmarks) when in a known town.
+    if (ai.knownSpots && ai.knownSpots.length && r < 0.7) {
+      const s = ai.knownSpots[Math.floor(Math.random() * ai.knownSpots.length)];
+      return { x: s[0] + (Math.random() - 0.5) * 5, z: s[1] + (Math.random() - 0.5) * 5 };
+    }
+    if (!ai.knownSpots && ai.waypoints.length && r < 0.5) {
       const w = ai.waypoints[Math.floor(Math.random() * ai.waypoints.length)];
       return { x: w.x + (Math.random() - 0.5) * 6, z: w.z + (Math.random() - 0.5) * 6 };
     }
-    if (r < 0.82 || !ai.home) {
+    if (r < 0.9 || !ai.home) {
       const ang = Math.random() * Math.PI * 2;
       const rad = 8 + Math.random() * ROAM_RADIUS;
       return { x: ai.home[0] + Math.cos(ang) * rad, z: ai.home[2] + Math.sin(ang) * rad };
