@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.1
+// @version      0.4.2
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.1";
+  const MOD_VERSION = "0.4.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -1797,29 +1797,38 @@
     return Math.round(lo + Math.random() * (hi - lo));
   }
 
-  // Idle/rest duration: sampled from the human's pause distribution when learned.
+  // Idle/rest duration: sampled from the human's pause distribution, but floored to a
+  // town-natural minimum (so farming's very short loot-pauses don't make town frantic).
   function idleDuration(fallbackMs) {
-    if (ai.profile && ai.profile.pauseHist) { const v = sampleHist(ai.profile.pauseHist); if (v) return v; }
+    if (ai.profile && ai.profile.pauseHist) {
+      const v = sampleHist(ai.profile.pauseHist);
+      if (v) return Math.max(v, Math.round(humanPause(fallbackMs) * 0.6)); // keeps real long breaks, floors tiny ones
+    }
     return humanPause(fallbackMs);
   }
 
-  // Activity level (0..1): from the human's learned hour rhythm, else persona*rhythm.
+  // Activity level (0..1): take the daily SHAPE of the human's rhythm (when active vs not)
+  // but remap intensity to a town-appropriate band — farming intensity != town pacing.
   function activityLevel() {
     const p = ai.profile;
     if (p && p.hourActive) {
       const h = p.hourActive[(new Date().getUTCHours() + 9) % 24];
-      if (h && h.t > 30000) return Math.max(0.1, Math.min(0.95, h.a / h.t));
+      if (h && h.t > 30000) return 0.22 + Math.min(1, h.a / h.t) * 0.5; // 0.22..0.72, preserves the shape
     }
     const persona = ensurePersona();
     return (persona ? persona.activity : 0.6) * rhythmFactor();
   }
 
-  // AFK probability per idle, blended from the human's AFK fraction.
+  // AFK probability per idle. Solo-farming has few AFKs, so blend toward a town baseline.
   function afkChance() {
-    const p = ai.profile;
-    if (p && p.totalMs > 120000) return Math.max(0.02, Math.min(0.4, (p.afkMs / p.totalMs) * 1.5));
     const persona = ensurePersona();
-    return (persona ? persona.afk : 0.08) * (2 - rhythmFactor());
+    const base = (persona ? persona.afk : 0.08) * (2 - rhythmFactor());
+    const p = ai.profile;
+    if (p && p.totalMs > 120000) {
+      const learned = Math.max(0.02, Math.min(0.4, (p.afkMs / p.totalMs) * 1.5));
+      return base * 0.5 + learned * 0.5; // average human-learned AFK with town baseline
+    }
+    return base;
   }
 
   function stateForPanel() {
