@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.0
+// @version      0.3.2
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.0";
+  const MOD_VERSION = "0.3.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -48,7 +48,7 @@
   const OBELISK_WINDOW_END_MIN = 20;    // obelisk window active from HH:00 to HH:END
   const OBELISK_REBUFF_MS = 240000;     // re-run buff route every 4 min during window
   const WANDER_RADIUS = 12;             // stay within this many units of the town anchor
-  const NEAR_CONJURER_DIST = 6;         // close enough to interact with the Conjurer
+  const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
   const RECALL_FAR_DIST = 40;           // farther than this from a Conjurer => use town recall
   const RECALL_WAIT_MS = 9000;          // wait for recall cast + zone load
   const RECALL_SKILL_ID = 40;           // universal "recall to town" skill (Rk, engineOnly, 5s cast)
@@ -518,6 +518,7 @@
       "__hmbRt.getActiveWorld=function(){try{return typeof Gr!=='undefined'?__hmbRt.readStore(Gr):''}catch(e){return ''}};",
       "__hmbRt.useSkillbarSlot=function(slot){slot=Number(slot);try{if(!Number.isInteger(slot)||slot<1)throw new Error('invalid slot');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var skill=bar&&bar[slot-1];if(!skill||Number(skill.id)<0)throw new Error('empty skillbar slot '+slot);var info=Array.isArray(skill.info)?skill.info.slice():[];if(skill.item&&player.inventory&&typeof player.inventory.findFirstSlotOfType==='function'){var invSlot=player.inventory.findFirstSlotOfType(skill.item.type,skill.item.tier);if(invSlot===void 0)throw new Error('item for slot '+slot+' not found');info[0]=invSlot}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(skill.id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(skill.id,def.range,def.envCast);return {ok:true,slot:slot,id:skill.id,env:true}}Io(Mt.clientPlayerSkill.packData({id:skill.id,info:info}));return {ok:true,slot:slot,id:skill.id,env:false}}catch(e){return {ok:false,slot:slot,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.useSkill=function(id){id=Number(id);try{if(!Number.isFinite(id))throw new Error('invalid id');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(id,def.range,def.envCast);return {ok:true,id:id,env:true}}Io(Mt.clientPlayerSkill.packData({id:id,info:[]}));return {ok:true,id:id,env:false}}catch(e){return {ok:false,id:id,reason:(e&&e.message)||String(e)}}};",
+      "__hmbRt.rotateCamera=function(dy){try{dy=Number(dy)||0;if(typeof so==='undefined'||!so)return {ok:false,reason:'no camera'};so[0]=(typeof Qa==='function')?Qa(so[0]+dy):(so[0]+dy);return {ok:true,yaw:so[0]}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.update();",
       "setInterval(function(){try{__hmbRt.update()}catch(e){}},250);",
       "}catch(e){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.errors=r.errors||[];r.errors.push('install:'+((e&&e.message)||e))}catch(_){}}",
@@ -1715,14 +1716,18 @@
     for (const entry of result.commands) {
       const command = String(entry.command || "").toLowerCase();
       if (command === "buff") {
-        ai.pendingBuff = { id: entry.id };
+        ai.pendingBuff = { id: entry.id, dest: entry.payload || "" };
       } else if (command === "recall") {
         ai.pendingRecall = { id: entry.id };
       } else if (command === "stop") {
         ai.stopped = true;
         ackNow.push(entry.id);
-      } else if (command === "resume" || command === "wander" || command === "start") {
+      } else if (command === "start" || command === "enable" || command === "resume" || command === "wander") {
+        setAiEnabled(true); // remote one-click activation of autonomous mode
         ai.stopped = false;
+        ackNow.push(entry.id);
+      } else if (command === "disable") {
+        setAiEnabled(false);
         ackNow.push(entry.id);
       } else {
         ackNow.push(entry.id);
@@ -1774,10 +1779,14 @@
       return;
     }
     if (ai.pendingBuff) {
-      ai.mode = "버프";
+      const wasWandering = ai.enabled;     // item 5: a buff command turns wander OFF
+      const dest = ai.pendingBuff.dest || "";
+      setAiEnabled(false);
       ai.stopped = false;
+      ai.mode = "버프";
       releaseAllMoveKeys();
-      await goBuff(runtime);
+      // item 6: if it was wandering, force recall -> move to NPC -> run buff route
+      await goBuff(runtime, dest, wasWandering);
       const id = ai.pendingBuff.id;
       ai.pendingBuff = null;
       await ackCommands([id]);
@@ -1809,12 +1818,18 @@
     await wanderStep(runtime);
   }
 
-  async function goBuff(runtime) {
+  async function goBuff(runtime, dest, forceRecall) {
     releaseAllMoveKeys();
-    await maybeRecallToTown(runtime);
+    if (forceRecall) {
+      ai.mode = "리콜";
+      castRecall(runtime);
+      await sleep(RECALL_WAIT_MS);
+    } else {
+      await maybeRecallToTown(runtime);
+    }
     await ensureNearConjurer(runtime, false);
     if (!state.running) {
-      await runBufferFlow(ai.finalDest || "Guardstone");
+      await runBufferFlow(dest || ai.finalDest || "Guardstone");
     }
     ai.lastBuffAt = Date.now();
   }
@@ -1917,20 +1932,48 @@
       await navTowardPos(runtime, ai.anchor, WANDER_RADIUS * 0.4, 6000);
       return;
     }
-    const roll = Math.random();
-    if (roll < 0.2) {
-      await sleep(900 + Math.floor(Math.random() * 2600));
+    // Pan the camera (real view rotation) so wandering looks human and explores new directions.
+    if (Math.random() < 0.5 && typeof runtime.rotateCamera === "function") {
+      await panCamera(runtime, (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 1.0));
+    }
+    // Rare short idle (humans pause briefly, not for long stretches).
+    if (Math.random() < 0.08) {
+      await sleep(600 + Math.floor(Math.random() * 1600));
       return;
     }
-    const dirs = ["forward", "back", "left", "right"];
-    const dir = dirs[Math.floor(Math.random() * dirs.length)];
-    await holdMove(dir, 300 + Math.floor(Math.random() * 900));
-    if (Math.random() < 0.12) {
+    // Move: forward-biased, often diagonal (two keys), with longer holds = covers more ground.
+    const primary = Math.random() < 0.62 ? "forward" : ["back", "left", "right"][Math.floor(Math.random() * 3)];
+    const dur = 650 + Math.floor(Math.random() * 1500);
+    if (Math.random() < 0.4) {
+      await holdMoveMulti([primary, Math.random() < 0.5 ? "left" : "right"], dur);
+    } else {
+      await holdMove(primary, dur);
+    }
+    if (Math.random() < 0.1) {
       dispatchKeyEvent("keydown", "Space", " ");
       await sleep(120);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    await sleep(300 + Math.floor(Math.random() * 1500));
+    await sleep(120 + Math.floor(Math.random() * 600));
+  }
+
+  async function panCamera(runtime, totalRad) {
+    const steps = 6 + Math.floor(Math.random() * 9);
+    const per = totalRad / steps;
+    for (let i = 0; i < steps; i++) {
+      try { runtime.rotateCamera(per); } catch { /* ignore */ }
+      await sleep(18 + Math.floor(Math.random() * 26));
+    }
+  }
+
+  async function holdMoveMulti(dirs, ms) {
+    const maps = dirs.map((d) => MOVE_KEYS[d]).filter(Boolean);
+    for (const mapping of maps) dispatchKeyEvent("keydown", mapping.code, mapping.key);
+    try {
+      await sleep(ms);
+    } finally {
+      for (const mapping of maps) dispatchKeyEvent("keyup", mapping.code, mapping.key);
+    }
   }
 
   async function holdMove(dir, ms) {
