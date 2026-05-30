@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.7
+// @version      0.3.8
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.7";
+  const MOD_VERSION = "0.3.8";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -51,6 +51,13 @@
   const ARRIVE_DIST = 3.2;             // "reached" a stroll target
   const TURN_MS_PER_RAD = 320;         // ArrowLeft/Right hold time per radian of turn (~700ms=120°)
   const TELEPORT_DIST = 80;            // pos jump beyond this => treat as teleport, re-anchor home
+  // Occupancy map / A* pathfinding (learned live from the engine collision mesh)
+  const OCC_R = 92;                    // half-extent of the learned occupancy grid (covers a town)
+  const OCC_CELL = 1.0;                // grid cell size
+  const OCC_INFLATE = 0.3;             // wall clearance
+  const OCC_NY_MAX = 0.35;             // |normal.y| below this = steep wall (else walkable slope)
+  const OCC_STEP = 1.0;                // surfaces up to this above local floor are steppable (walkable)
+  const OCC_BODY = 1.8;                // walls reaching into this band above floor block the body
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -132,6 +139,7 @@
     homeWorld: "",
     townName: "",          // nearest known town (Guardstone/Faivel/Headless) when in one
     knownSpots: null,      // baked sightseeing spots for the current known town
+    occ: null,             // cached occupancy grid (learned walkable map) for A* routing
     waypoints: loadWaypoints(),  // learned static landmark positions (persisted)
     leg: null,             // current stroll target {x,z}
     lastPos: null,         // for teleport detection
@@ -1912,7 +1920,7 @@
       if (idleAfter) await sleep(800);
       return;
     }
-    await navTowardPos(runtime, conjurer.pos, NEAR_CONJURER_DIST, 12000);
+    await navTo(runtime, { x: conjurer.pos[0], z: conjurer.pos[2] }, NEAR_CONJURER_DIST, 14000);
     if (idleAfter) await sleep(800 + Math.floor(Math.random() * 1200));
   }
 
@@ -1956,11 +1964,11 @@
     const pos = playerPos();
     // Detect a teleport (recall / move-NPC jump on the single map) and re-anchor home.
     if (ai.lastPos && pos && Math.hypot(pos[0] - ai.lastPos[0], pos[2] - ai.lastPos[2]) > TELEPORT_DIST) {
-      ai.home = null; ai.leg = null;
+      ai.home = null; ai.leg = null; ai.occ = null;
     }
     ai.lastPos = pos;
     if (ai.home && ai.homeWorld && world && world !== ai.homeWorld) {
-      ai.home = null; ai.leg = null;
+      ai.home = null; ai.leg = null; ai.occ = null;
     }
     if (!ai.home) {
       // Prefer a known surveyed town (anchor to its center, use its baked spots).
@@ -1987,8 +1995,9 @@
     }
     if (!ai.leg) ai.leg = pickRoamTarget();
 
-    // Stroll to the chosen spot (turn to face, run forward), then look around + rest.
-    const reached = await walkTo(runtime, ai.leg, ARRIVE_DIST, 14000);
+    // Route to the spot via the learned walkable map (A*), following it with smooth
+    // steering — no walls hit. Then look around + rest.
+    const reached = await navTo(runtime, ai.leg, ARRIVE_DIST, 16000);
     if (reached) await lookAround(runtime);
     ai.leg = null;
   }
@@ -2079,6 +2088,144 @@
       await sleep(ms);
     } finally {
       dispatchKeyEvent("keyup", arrowKey, arrowKey);
+    }
+  }
+
+  // ===== Learned walkable map + A* routing (so the bot never walks into walls) =====
+
+  // Build an occupancy grid around (cx,cz) directly from the engine collision mesh:
+  // steep wall triangles that rise above step height into the body band => blocked cells.
+  function buildOccupancy(runtime, cx, cz) {
+    try {
+      const eng = runtime && runtime.engine;
+      if (!eng || !eng.triangleGrid || typeof eng.getHeight !== "function") return null;
+      const tg = eng.triangleGrid;
+      if (typeof tg.queryAABB !== "function") return null;
+      const R = OCC_R, CELL = OCC_CELL, N = Math.ceil((2 * R) / CELL), X0 = cx - R, Z0 = cz - R;
+      const grid = new Uint8Array(N * N);
+      const tris = tg.queryAABB([X0, 400, Z0, X0 + 2 * R, 700, Z0 + 2 * R]);
+      const markR = Math.ceil(OCC_INFLATE / CELL);
+      for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        const ny = t[3] ? t[3][1] : 0;
+        if (Math.abs(ny) >= OCC_NY_MAX) continue;
+        const ccx = (t[0][0] + t[1][0] + t[2][0]) / 3;
+        const ccz = (t[0][2] + t[1][2] + t[2][2]) / 3;
+        const lf = eng.getHeight(ccx, ccz);
+        const mn = Math.min(t[0][1], t[1][1], t[2][1]);
+        const mx = Math.max(t[0][1], t[1][1], t[2][1]);
+        if (mx <= lf + OCC_STEP || mn > lf + OCC_BODY) continue;
+        const edges = [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]];
+        for (let ei = 0; ei < 3; ei++) {
+          const a = edges[ei][0], b = edges[ei][1];
+          const len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+          const steps = Math.max(1, Math.ceil(len / (CELL * 0.6)));
+          for (let s = 0; s <= steps; s++) {
+            const f = s / steps;
+            const ix = Math.round((a[0] + (b[0] - a[0]) * f - X0) / CELL);
+            const iz = Math.round((a[2] + (b[2] - a[2]) * f - Z0) / CELL);
+            for (let aa = -markR; aa <= markR; aa++) {
+              for (let bb = -markR; bb <= markR; bb++) {
+                const x = ix + aa, z = iz + bb;
+                if (x >= 0 && x < N && z >= 0 && z < N) grid[x * N + z] = 1;
+              }
+            }
+          }
+        }
+      }
+      return { grid, N, X0, Z0, CELL, cx, cz, R };
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureOccupancy(runtime) {
+    const me = playerPos();
+    if (!me) return null;
+    if (ai.occ && Math.hypot(me[0] - ai.occ.cx, me[2] - ai.occ.cz) < ai.occ.R * 0.55) return ai.occ;
+    ai.occ = buildOccupancy(runtime, me[0], me[2]);
+    return ai.occ;
+  }
+
+  // A* over the occupancy grid; returns world-coord waypoints [[x,z],...] or null.
+  function findPath(occ, sx, sz, gx, gz) {
+    const { grid, N, X0, Z0, CELL } = occ;
+    const idx = (i, j) => i * N + j;
+    const free = (i, j) => i >= 0 && i < N && j >= 0 && j < N && !grid[idx(i, j)];
+    const snap = (x, z) => {
+      let i = Math.round((x - X0) / CELL), j = Math.round((z - Z0) / CELL);
+      if (free(i, j)) return [i, j];
+      for (let r = 1; r < 24; r++) for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) if (free(i + a, j + b)) return [i + a, j + b];
+      return null;
+    };
+    const S = snap(sx, sz), G = snap(gx, gz);
+    if (!S || !G) return null;
+    const total = N * N;
+    const gscore = new Float32Array(total).fill(1e9);
+    const came = new Int32Array(total).fill(-1);
+    const heap = [];
+    const push = (f, k) => { heap.push([f, k]); let c = heap.length - 1; while (c > 0) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; const tmp = heap[p]; heap[p] = heap[c]; heap[c] = tmp; c = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let c = 0; for (;;) { const l = 2 * c + 1, r = 2 * c + 2; let s = c; if (l < heap.length && heap[l][0] < heap[s][0]) s = l; if (r < heap.length && heap[r][0] < heap[s][0]) s = r; if (s === c) break; const tmp = heap[s]; heap[s] = heap[c]; heap[c] = tmp; c = s; } } return top; };
+    const h = (k) => Math.hypot(Math.floor(k / N) - G[0], (k % N) - G[1]);
+    const goalK = idx(G[0], G[1]);
+    const startK = idx(S[0], S[1]);
+    gscore[startK] = 0; push(h(startK), startK);
+    const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.41], [1, -1, 1.41], [-1, 1, 1.41], [-1, -1, 1.41]];
+    let it = 0;
+    while (heap.length && it++ < 300000) {
+      const cur = pop(); const k = cur[1];
+      if (k === goalK) {
+        const path = []; let c = k;
+        while (c !== -1) { path.push([X0 + Math.floor(c / N) * CELL, Z0 + (c % N) * CELL]); c = came[c]; }
+        return path.reverse();
+      }
+      const ci = Math.floor(k / N), cj = k % N;
+      for (let di = 0; di < 8; di++) {
+        const dd = dirs[di], ni = ci + dd[0], nj = cj + dd[1];
+        if (!free(ni, nj)) continue;
+        if (dd[0] && dd[1] && (!free(ci + dd[0], cj) || !free(ci, cj + dd[1]))) continue;
+        const nk = idx(ni, nj), ng = gscore[k] + dd[2];
+        if (ng < gscore[nk]) { gscore[nk] = ng; came[nk] = k; push(ng + h(nk), nk); }
+      }
+    }
+    return null;
+  }
+
+  // Route to target via A* on the learned map, following waypoints with smooth steering.
+  // Falls back to direct smooth movement if no map/path is available.
+  async function navTo(runtime, target, withinDist, maxMs) {
+    const me = playerPos();
+    const occ = ensureOccupancy(runtime);
+    const path = (occ && me) ? findPath(occ, me[0], me[2], target.x, target.z) : null;
+    if (!path || path.length < 2) return walkTo(runtime, target, withinDist, maxMs);
+    const wp = path.filter((_, i) => i % 3 === 0 || i === path.length - 1);
+    ai.mode = "배회";
+    holdForward(true);
+    try {
+      let wi = 0, prev = me, best = 1e9, lastImprove = Date.now();
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < maxMs && wi < wp.length) {
+        if (ai.stopped || !ai.enabled || ai.pendingBuff || ai.pendingRecall) return false;
+        await sleep(200);
+        const p = playerPos();
+        if (!p) return false;
+        if (dist2(p, target) <= withinDist) return true;
+        const tw = wp[wi];
+        const dwp = Math.hypot(p[0] - tw[0], p[2] - tw[1]);
+        if (dwp < 2.5) { wi++; best = 1e9; lastImprove = Date.now(); continue; }
+        if (dwp < best - 0.5) { best = dwp; lastImprove = Date.now(); }
+        else if (Date.now() - lastImprove > 2600) { wi++; best = 1e9; lastImprove = Date.now(); continue; } // skip a snagged waypoint
+        const moved = Math.hypot(p[0] - prev[0], p[2] - prev[2]);
+        const heading = moved > 0.4 ? Math.atan2(p[2] - prev[2], p[0] - prev[0]) : null;
+        if (heading != null) {
+          const err = normAngle(Math.atan2(tw[1] - p[2], tw[0] - p[0]) - heading);
+          if (Math.abs(err) > 0.2) await steerPulse(err > 0 ? "ArrowRight" : "ArrowLeft", Math.min(Math.max(Math.abs(err) * 230, 55), 300));
+        }
+        prev = p;
+      }
+      return dist2(playerPos(), target) <= withinDist + 2;
+    } finally {
+      holdForward(false);
     }
   }
 
