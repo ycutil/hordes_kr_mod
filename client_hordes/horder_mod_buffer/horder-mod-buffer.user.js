@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.2";
+  const MOD_VERSION = "0.3.3";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -100,7 +100,7 @@
 
   const ai = {
     started: false,
-    enabled: readStoredBoolean(STORAGE_AI_ENABLED_KEY, false),
+    enabled: readStoredBoolean(STORAGE_AI_ENABLED_KEY, true),
     recallSlot: readStoredNumber(STORAGE_RECALL_SLOT_KEY, 3),
     finalDest: readStoredString(STORAGE_FINAL_DEST_KEY, "Guardstone"),
     stopped: false,
