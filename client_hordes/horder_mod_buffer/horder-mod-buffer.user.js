@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.3.9
+// @version      0.4.0
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.3.9";
+  const MOD_VERSION = "0.4.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -135,6 +135,7 @@
     mode: "꺼짐",
     activity: "",          // current one-line "thought" (granular action narration)
     brain: [],             // rolling decision log [{t, m}]
+    persona: null,         // stable per-bot personality (activity/radius/rest/social/afk...)
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -223,6 +224,7 @@
       stopped: ai.stopped,
       mode: ai.mode,
       activity: ai.activity,
+      persona: ai.persona,
       brain: ai.brain.slice(-15).map((e) => formatBrainTime(e.t) + " " + e.m),
       account: ai.account,
       klass: ai.klass,
@@ -1727,11 +1729,55 @@
     }
   }
 
+  // ===== Human-likeness: per-bot persona, realistic timing, daily rhythm =====
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // A stable, distinct "personality" per bot derived from the account name.
+  function ensurePersona() {
+    if (ai.persona || !ai.account) return ai.persona;
+    let h = 2166136261;
+    for (let i = 0; i < ai.account.length; i++) { h ^= ai.account.charCodeAt(i); h = Math.imul(h, 16777619); }
+    const rng = mulberry32(h >>> 0);
+    ai.persona = {
+      activity: 0.45 + rng() * 0.45,   // higher => roams more, idles less
+      radiusMul: 0.7 + rng() * 0.8,    // personal wander radius
+      restMul: 0.7 + rng() * 1.2,      // how long it lingers
+      browse: 0.18 + rng() * 0.5,      // chance to actually interact with / browse an NPC
+      social: rng(),                   // how much it reacts to nearby players
+      afk: 0.05 + rng() * 0.12,        // chance to go AFK for a while
+      hesitate: rng() * 0.5,           // extra little pauses
+    };
+    return ai.persona;
+  }
+
+  // Daily activity multiplier by KST hour (evening busy, late night idle).
+  function rhythmFactor() {
+    const kh = (new Date().getUTCHours() + 9) % 24;
+    if (kh >= 2 && kh < 7) return 0.4;     // deep night: mostly idle/afk
+    if (kh >= 9 && kh < 17) return 0.7;    // daytime
+    if (kh >= 19 && kh < 24) return 1.0;   // evening: most active
+    return 0.85;
+  }
+
+  // Skewed human pause (ms): mostly short, occasionally long. base = typical value.
+  function humanPause(baseMs) {
+    const skew = Math.pow(Math.random(), 2.2); // bias toward short
+    return Math.round(baseMs * (0.4 + skew * 2.8));
+  }
+
   function stateForPanel() {
     const mode = ai.mode || "";
     if (ai.stopped) return "stopped";
     if (mode.indexOf("버프") >= 0) return "buffing";
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
+    if (mode.indexOf("AFK") >= 0) return "afk";
     if (mode.indexOf("배회") >= 0 || mode.indexOf("구경") >= 0) return "wander";
     if (mode.indexOf("수동") >= 0) return "idle";
     return "idle";
@@ -2023,6 +2069,14 @@
     if (!ai.home || !pos) { await sleep(800); return; }
 
     learnWaypoints(runtime); // remember nearby static landmarks (town NPCs) for sightseeing
+    const persona = ensurePersona();
+    const act = (persona ? persona.activity : 0.6) * rhythmFactor();
+
+    // Often just hang around instead of always striking off somewhere (idle / AFK / people-watch).
+    if (!ai.leg && Math.random() > act) {
+      await idleBehavior(runtime, persona);
+      return;
+    }
 
     // Leash: if we somehow drifted off, head back toward town.
     if (dist2(pos, { x: ai.home[0], z: ai.home[2] }) > ROAM_HARD_LIMIT) {
@@ -2030,17 +2084,104 @@
     }
     if (!ai.leg) ai.leg = pickRoamTarget();
 
-    think("🎯 " + (ai.townName || "이 동네") + "에서 (" + Math.round(ai.leg.x) + "," + Math.round(ai.leg.z) + ") 구경하러 가는 중");
-    // Route to the spot via the learned walkable map (A*), following it with smooth
-    // steering — no walls hit. Then look around + rest.
+    think("🎯 " + (ai.townName || "이 동네") + " (" + Math.round(ai.leg.x) + "," + Math.round(ai.leg.z) + ") 쪽으로 가는 중");
     const reached = await navTo(runtime, ai.leg, ARRIVE_DIST, 16000);
     if (reached) {
-      think("👀 도착 — 두리번거리는 중");
+      if (persona && Math.random() < persona.browse) await browseNpc(runtime); // browse the NPC sometimes
+      think("👀 도착 — 둘러보는 중");
       await lookAround(runtime);
     } else {
-      think("…경로 막힘, 다른 곳으로");
+      think("…길이 막혀서 다른 데로");
     }
     ai.leg = null;
+  }
+
+  // Hang-around behaviors when not heading somewhere: AFK, people-watching, or fidgeting.
+  async function idleBehavior(runtime, persona) {
+    if (persona && Math.random() < persona.afk * (2 - rhythmFactor())) {
+      const ms = 20000 + Math.floor(Math.random() * 95000);
+      ai.mode = "AFK";
+      think("💤 잠수 (" + Math.round(ms / 1000) + "초)");
+      releaseAllMoveKeys();
+      await sleep(ms);
+      return;
+    }
+    if (persona && Math.random() < persona.social * 0.5 && (await reactToNearbyPlayer(runtime))) return;
+    ai.mode = "구경";
+    think("🧍 가만히 서서 구경");
+    const turns = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < turns; i++) {
+      if (ai.stopped || !ai.enabled || ai.pendingBuff) return;
+      await turnBy((Math.random() < 0.5 ? -1 : 1) * (0.4 + Math.random() * 1.4));
+      await sleep(humanPause(1400));
+    }
+    if (Math.random() < 0.15) { dispatchKeyEvent("keydown", "Space", " "); await sleep(140); dispatchKeyEvent("keyup", "Space", " "); }
+    await sleep(humanPause(1800 * (persona ? persona.restMul : 1)));
+  }
+
+  // Notice a nearby player and turn to look at them (like a curious passer-by).
+  async function reactToNearbyPlayer(runtime) {
+    try {
+      const ents = typeof runtime.listEntities === "function" ? runtime.listEntities() : [];
+      const p = playerPos();
+      if (!p) return false;
+      let best = null, bd = 16;
+      for (const e of ents) {
+        if (!e || e.type !== 0 || !e.name || e.name === ai.account || !Array.isArray(e.pos)) continue;
+        const d = Math.hypot(e.pos[0] - p[0], e.pos[2] - p[2]);
+        if (d < bd) { bd = d; best = e; }
+      }
+      if (!best) return false;
+      ai.mode = "구경";
+      think("👀 근처 " + String(best.name).slice(0, 16) + " 쳐다봄");
+      await faceWorldDir(runtime, Math.atan2(best.pos[2] - p[2], best.pos[0] - p[0]));
+      await sleep(humanPause(2400));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Rotate the character to face a world-space direction (sample heading, correct).
+  async function faceWorldDir(runtime, desired) {
+    const before = playerPos();
+    if (!before) return;
+    dispatchKeyEvent("keydown", "KeyW", "w");
+    await sleep(220);
+    dispatchKeyEvent("keyup", "KeyW", "w");
+    await sleep(120);
+    const after = playerPos();
+    if (!after) return;
+    if (Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.4) return;
+    const heading = Math.atan2(after[2] - before[2], after[0] - before[0]);
+    const err = normAngle(desired - heading);
+    if (Math.abs(err) > 0.25) await turnBy(err);
+  }
+
+  // Walk up to an NPC and briefly open its dialog, like browsing a shop, then leave.
+  async function browseNpc(runtime) {
+    try {
+      const p = playerPos();
+      if (!p) return;
+      const ents = typeof runtime.listEntities === "function" ? runtime.listEntities() : [];
+      let npc = null, bd = 6;
+      for (const e of ents) {
+        if (!e || !e.static || !e.name || !Array.isArray(e.pos)) continue;
+        const d = Math.hypot(e.pos[0] - p[0], e.pos[2] - p[2]);
+        if (d < bd) { bd = d; npc = e; }
+      }
+      if (!npc) return;
+      ai.mode = "구경";
+      think("🛍️ " + String(npc.name).slice(0, 16) + " 구경 중");
+      try { runtime.changeTarget(npc.id); await sleep(180); runtime.sendInteract(npc.id); } catch { /* ignore */ }
+      await sleep(humanPause(2600));
+      dispatchKeyEvent("keydown", "Escape", "Escape");
+      await sleep(80);
+      dispatchKeyEvent("keyup", "Escape", "Escape");
+      await sleep(humanPause(600));
+    } catch {
+      // ignore
+    }
   }
 
   function nearestKnownTown(pos) {
@@ -2065,7 +2206,7 @@
     }
     if (r < 0.9 || !ai.home) {
       const ang = Math.random() * Math.PI * 2;
-      const rad = 8 + Math.random() * ROAM_RADIUS;
+      const rad = 8 + Math.random() * ROAM_RADIUS * (ai.persona ? ai.persona.radiusMul : 1);
       return { x: ai.home[0] + Math.cos(ang) * rad, z: ai.home[2] + Math.sin(ang) * rad };
     }
     return { x: ai.home[0], z: ai.home[2] }; // amble back toward town center
@@ -2296,18 +2437,19 @@
 
   async function lookAround(runtime) {
     ai.mode = "구경";
-    const turns = 2 + Math.floor(Math.random() * 3);
+    const restMul = ai.persona ? ai.persona.restMul : 1;
+    const turns = 1 + Math.floor(Math.random() * 3);
     for (let i = 0; i < turns; i++) {
       if (ai.stopped || !ai.enabled || ai.pendingBuff) return;
       await turnBy((Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 1.3)); // look around
-      await sleep(800 + Math.floor(Math.random() * 1900)); // observe
+      await sleep(humanPause(1100)); // observe (skewed: usually short, sometimes a long stare)
     }
-    if (Math.random() < 0.25) {
+    if (Math.random() < 0.2) {
       dispatchKeyEvent("keydown", "Space", " ");
       await sleep(150);
       dispatchKeyEvent("keyup", "Space", " ");
     }
-    const restMs = 900 + Math.floor(Math.random() * 3200);
+    const restMs = humanPause(1600 * restMul);
     think("😌 잠깐 쉬는 중 (" + (restMs / 1000).toFixed(1) + "초)");
     await sleep(restMs); // rest a while, like a person
   }
