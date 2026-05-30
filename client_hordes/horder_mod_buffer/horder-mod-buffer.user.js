@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.2.2
-// @description  One-button buffer route helper for Hordes.io.
+// @version      0.3.0
+// @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
 // @match        https://www.hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.2.2";
+  const MOD_VERSION = "0.3.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -35,6 +35,30 @@
   const HEADLESS_HOTKEY_CODE = "Digit2";
   const STORAGE_MINIMIZED_KEY = "horder_mod_buffer_minimized";
   const STORAGE_USE_SLOT4_KEY = "horder_mod_buffer_use_slot4";
+  const STORAGE_AI_ENABLED_KEY = "horder_mod_buffer_ai_enabled";
+  const STORAGE_RECALL_SLOT_KEY = "horder_mod_buffer_recall_slot";
+  const STORAGE_FINAL_DEST_KEY = "horder_mod_buffer_final_dest";
+
+  // --- Panel-driven AI controller config ---
+  const PANEL_BASE_URL = "https://kbr1.cafe24.com/hordes_panel";
+  const PANEL_TOKEN = "f091c884e74edd251d897ceb23ce6f5d";
+  const PANEL_POLL_MS = 6000;            // heartbeat + command poll interval
+  const AI_TICK_MS = 1400;              // behavior loop tick
+  const OBELISK_HOURS_KST = [3, 6, 9, 12];
+  const OBELISK_WINDOW_END_MIN = 20;    // obelisk window active from HH:00 to HH:END
+  const OBELISK_REBUFF_MS = 240000;     // re-run buff route every 4 min during window
+  const WANDER_RADIUS = 12;             // stay within this many units of the town anchor
+  const NEAR_CONJURER_DIST = 6;         // close enough to interact with the Conjurer
+  const RECALL_FAR_DIST = 40;           // farther than this from a Conjurer => use town recall
+  const RECALL_WAIT_MS = 9000;          // wait for recall cast + zone load
+  const RECALL_SKILL_ID = 40;           // universal "recall to town" skill (Rk, engineOnly, 5s cast)
+  const MOVE_PULSE_MS = 360;            // single navigation key-hold pulse
+  const MOVE_KEYS = {
+    forward: { code: "KeyW", key: "w" },
+    back: { code: "KeyS", key: "s" },
+    left: { code: "KeyA", key: "a" },
+    right: { code: "KeyD", key: "d" },
+  };
 
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
@@ -74,10 +98,29 @@
     shadow: null,
   };
 
+  const ai = {
+    started: false,
+    enabled: readStoredBoolean(STORAGE_AI_ENABLED_KEY, false),
+    recallSlot: readStoredNumber(STORAGE_RECALL_SLOT_KEY, 3),
+    finalDest: readStoredString(STORAGE_FINAL_DEST_KEY, "Guardstone"),
+    stopped: false,
+    mode: "꺼짐",
+    account: "",
+    klass: "",
+    anchor: null,
+    anchorWorld: "",
+    lastBuffAt: 0,
+    pendingBuff: null,
+    pendingRecall: null,
+    lastPollAt: 0,
+    lastPollOk: false,
+  };
+
   if (isPlayPage()) {
     installGameClientRuntimeHook();
     installHotkey();
     whenDomReady(initPanel);
+    startAiController();
   }
 
   pageWindow.HorderModBuffer = {
@@ -102,6 +145,27 @@
     debugText: () => buildDebugText(),
     showDebug: () => showDebugReport(),
     copyDebug: () => copyDebugReport(),
+    setAi: (value) => setAiEnabled(value),
+    setRecallSlot: (slot) => setRecallSlot(slot),
+    setFinalDest: (dest) => setFinalDest(dest),
+    setPanelToken: (value) => {
+      writeStoredString("horder_mod_buffer_panel_token", String(value || ""));
+      setStatus("패널 토큰 갱신됨");
+    },
+    aiStatus: () => ({
+      enabled: ai.enabled,
+      stopped: ai.stopped,
+      mode: ai.mode,
+      account: ai.account,
+      klass: ai.klass,
+      recallSlot: ai.recallSlot,
+      finalDest: ai.finalDest,
+      anchor: ai.anchor,
+      lastPollOk: ai.lastPollOk,
+      lastPollAt: ai.lastPollAt,
+      pendingBuff: Boolean(ai.pendingBuff),
+      pendingRecall: Boolean(ai.pendingRecall),
+    }),
   };
 
   function isPlayPage() {
@@ -453,6 +517,7 @@
       "__hmbRt.sendInteract=function(id){id=Number(id);try{return Io(Mt.clientPlayerInteract.packData({id:id}))}catch(e){throw new Error('sendInteract failed: '+((e&&e.message)||e))}};",
       "__hmbRt.getActiveWorld=function(){try{return typeof Gr!=='undefined'?__hmbRt.readStore(Gr):''}catch(e){return ''}};",
       "__hmbRt.useSkillbarSlot=function(slot){slot=Number(slot);try{if(!Number.isInteger(slot)||slot<1)throw new Error('invalid slot');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var skill=bar&&bar[slot-1];if(!skill||Number(skill.id)<0)throw new Error('empty skillbar slot '+slot);var info=Array.isArray(skill.info)?skill.info.slice():[];if(skill.item&&player.inventory&&typeof player.inventory.findFirstSlotOfType==='function'){var invSlot=player.inventory.findFirstSlotOfType(skill.item.type,skill.item.tier);if(invSlot===void 0)throw new Error('item for slot '+slot+' not found');info[0]=invSlot}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(skill.id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(skill.id,def.range,def.envCast);return {ok:true,slot:slot,id:skill.id,env:true}}Io(Mt.clientPlayerSkill.packData({id:skill.id,info:info}));return {ok:true,slot:slot,id:skill.id,env:false}}catch(e){return {ok:false,slot:slot,reason:(e&&e.message)||String(e)}}};",
+      "__hmbRt.useSkill=function(id){id=Number(id);try{if(!Number.isFinite(id))throw new Error('invalid id');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(id,def.range,def.envCast);return {ok:true,id:id,env:true}}Io(Mt.clientPlayerSkill.packData({id:id,info:[]}));return {ok:true,id:id,env:false}}catch(e){return {ok:false,id:id,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.update();",
       "setInterval(function(){try{__hmbRt.update()}catch(e){}},250);",
       "}catch(e){try{var r=window.__HORDER_MOD_BUFFER_RUNTIME__=window.__HORDER_MOD_BUFFER_RUNTIME__||{};r.errors=r.errors||[];r.errors.push('install:'+((e&&e.message)||e))}catch(_){}}",
@@ -647,6 +712,16 @@
             <input id="use-slot4" type="checkbox">
             <span>4번도 사용</span>
           </label>
+          <label class="option">
+            <input id="ai-enabled" type="checkbox">
+            <span>AI 자동(배회/오벨)</span>
+          </label>
+          <label class="option">
+            <span>리콜 슬롯</span>
+            <input id="recall-slot" type="number" min="0" max="12" style="width:46px;height:22px;text-align:center">
+            <span style="opacity:.6">0=끔</span>
+          </label>
+          <div id="ai-status" class="status">AI: 꺼짐</div>
           <button id="stop" class="stop" type="button">중지</button>
           <div class="debug-buttons">
             <button id="debug" type="button">진단</button>
@@ -665,6 +740,8 @@
     shadow.getElementById("copy-debug").addEventListener("click", copyDebugReport);
     shadow.getElementById("minimize").addEventListener("click", togglePanelMinimized);
     shadow.getElementById("use-slot4").addEventListener("change", (event) => setUseSlot4(Boolean(event.target.checked)));
+    shadow.getElementById("ai-enabled").addEventListener("change", (event) => setAiEnabled(Boolean(event.target.checked)));
+    shadow.getElementById("recall-slot").addEventListener("change", (event) => setRecallSlot(Number(event.target.value)));
     updatePanel();
     setInterval(updatePanel, 600);
   }
@@ -1316,6 +1393,18 @@
     if (body) body.classList.toggle("collapsed", state.minimized);
     if (minimize) minimize.textContent = state.minimized ? "+" : "-";
     if (useSlot4) useSlot4.checked = state.useSlot4;
+
+    const aiEnabled = state.shadow.getElementById("ai-enabled");
+    const recallSlot = state.shadow.getElementById("recall-slot");
+    const aiStatus = state.shadow.getElementById("ai-status");
+    if (aiEnabled) aiEnabled.checked = ai.enabled;
+    if (recallSlot && state.shadow.activeElement !== recallSlot) recallSlot.value = String(ai.recallSlot || 0);
+    if (aiStatus) {
+      const poll = ai.lastPollAt ? (ai.lastPollOk ? "패널OK" : "패널?") : "패널대기";
+      const head = ai.enabled ? (ai.mode || "대기") : (ai.stopped ? "정지" : "수동");
+      aiStatus.textContent = "AI: " + head + (ai.account ? " · " + ai.account : "") + " · " + poll;
+    }
+
     if (debugOutput) {
       debugOutput.classList.toggle("open", state.debugVisible);
       if (state.debugVisible && state.lastDebugText && debugOutput.value !== state.lastDebugText) {
@@ -1439,5 +1528,438 @@
 
   function throwIfCancelled(token) {
     if (token && token.cancelled) throw new Error("cancelled");
+  }
+
+  // =====================================================================
+  // Panel-driven autonomous controller
+  //   - heartbeat + command polling against the PHP panel (always on)
+  //   - executes remote commands: buff / recall / stop / resume
+  //   - when "AI 자동" is enabled: wander near town, auto-buff on obelisk windows
+  // =====================================================================
+
+  function readStoredNumber(key, fallback) {
+    try {
+      const value = pageWindow.localStorage && pageWindow.localStorage.getItem(key);
+      if (value !== null && value !== "" && !isNaN(Number(value))) return Number(value);
+    } catch {
+      // Ignore storage access errors.
+    }
+    return fallback;
+  }
+
+  function writeStoredNumber(key, value) {
+    try {
+      if (pageWindow.localStorage) pageWindow.localStorage.setItem(key, String(value));
+    } catch {
+      // Ignore storage access errors.
+    }
+  }
+
+  function readStoredString(key, fallback) {
+    try {
+      const value = pageWindow.localStorage && pageWindow.localStorage.getItem(key);
+      if (value) return value;
+    } catch {
+      // Ignore storage access errors.
+    }
+    return fallback;
+  }
+
+  function writeStoredString(key, value) {
+    try {
+      if (pageWindow.localStorage) pageWindow.localStorage.setItem(key, String(value));
+    } catch {
+      // Ignore storage access errors.
+    }
+  }
+
+  function setAiEnabled(value) {
+    ai.enabled = Boolean(value);
+    writeStoredBoolean(STORAGE_AI_ENABLED_KEY, ai.enabled);
+    if (!ai.enabled) {
+      ai.anchor = null;
+      releaseAllMoveKeys();
+    } else {
+      ai.stopped = false;
+    }
+    setStatus(ai.enabled ? "AI 자동 켜짐" : "AI 자동 꺼짐");
+  }
+
+  function setRecallSlot(slot) {
+    let value = Number(slot);
+    if (!Number.isFinite(value) || value < 0) value = 0;
+    ai.recallSlot = Math.floor(value);
+    writeStoredNumber(STORAGE_RECALL_SLOT_KEY, ai.recallSlot);
+    setStatus("리콜 슬롯: " + (ai.recallSlot ? ai.recallSlot : "끔"));
+  }
+
+  function setFinalDest(dest) {
+    ai.finalDest = String(dest || "Guardstone");
+    writeStoredString(STORAGE_FINAL_DEST_KEY, ai.finalDest);
+    setStatus("버프 후 이동: " + ai.finalDest);
+  }
+
+  function classLabel(value) {
+    const map = { 0: "Warrior", 1: "Warrior", 2: "Archer", 3: "Mage", 4: "Shaman", 5: "Necromancer" };
+    if (value === undefined || value === null || value === "") return "";
+    return map[value] || ("class" + value);
+  }
+
+  function aiAccountInfo() {
+    const runtime = getRuntime();
+    const player = runtime && runtime.player ? runtime.player : null;
+    const info = runtime && typeof runtime.getPlayerInfo === "function"
+      ? safeCall(() => runtime.getPlayerInfo(), null)
+      : null;
+    const name = (player && player.name) || (info && info.name) || "";
+    const klass = classLabel(player ? player.class : (info ? info.type : undefined));
+    const pos = (info && Array.isArray(info.pos) && info.pos)
+      || (player && (player.pos || player.visualPosition))
+      || [0, 0, 0];
+    const world = runtime && typeof runtime.getActiveWorld === "function"
+      ? safeCall(() => runtime.getActiveWorld(), "")
+      : "";
+    return { name, klass, pos, world: world || "" };
+  }
+
+  function playerPos() {
+    const runtime = getRuntime();
+    const info = runtime && typeof runtime.getPlayerInfo === "function"
+      ? safeCall(() => runtime.getPlayerInfo(), null)
+      : null;
+    if (info && Array.isArray(info.pos)) return info.pos;
+    const player = runtime && runtime.player;
+    if (player && Array.isArray(player.pos)) return player.pos;
+    return null;
+  }
+
+  function stateForPanel() {
+    const mode = ai.mode || "";
+    if (ai.stopped) return "stopped";
+    if (mode.indexOf("obelisk") >= 0 || mode.indexOf("오벨") >= 0) return "obelisk_buff";
+    if (mode.indexOf("버프") >= 0) return "buffing";
+    if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
+    if (mode.indexOf("배회") >= 0) return "wander";
+    if (mode.indexOf("수동") >= 0) return "idle";
+    return "idle";
+  }
+
+  function obeliskWindow() {
+    const now = new Date();
+    const kstHour = (now.getUTCHours() + 9) % 24;
+    const kstMin = now.getUTCMinutes();
+    for (const hour of OBELISK_HOURS_KST) {
+      if (kstHour === hour && kstMin < OBELISK_WINDOW_END_MIN) return { active: true, hour };
+    }
+    return { active: false, hour: -1 };
+  }
+
+  // The embedded token is a default. If this script is published publicly, set a
+  // private token per install with HorderModBuffer.setPanelToken("...") (stored in
+  // localStorage) and use the same value in the panel's config.php.
+  function panelToken() {
+    return readStoredString("horder_mod_buffer_panel_token", PANEL_TOKEN);
+  }
+
+  async function fetchJson(url, options) {
+    const fetchImpl = originalFetch || pageWindow.fetch;
+    if (!fetchImpl) throw new Error("fetch unavailable");
+    const response = await fetchImpl(url, options || { credentials: "omit", cache: "no-store" });
+    if (!response.ok) throw new Error("http " + response.status);
+    return await response.json();
+  }
+
+  function startAiController() {
+    if (ai.started) return;
+    ai.started = true;
+    pollPanelLoop();
+    aiBehaviorLoop();
+  }
+
+  async function pollPanelLoop() {
+    for (;;) {
+      try {
+        await pollPanelOnce();
+      } catch {
+        ai.lastPollOk = false;
+      }
+      await sleep(PANEL_POLL_MS);
+    }
+  }
+
+  async function pollPanelOnce() {
+    const runtime = getRuntime();
+    if (!runtime || !runtime.ready) return;
+    const account = aiAccountInfo();
+    if (!account.name) return;
+    ai.account = account.name;
+    ai.klass = account.klass;
+
+    const params = new URLSearchParams({
+      action: "poll",
+      token: panelToken(),
+      account: account.name,
+      class: account.klass || "",
+      state: stateForPanel(),
+      world: account.world || "",
+      x: String(Math.round(account.pos[0] || 0)),
+      y: String(Math.round(account.pos[1] || 0)),
+      z: String(Math.round(account.pos[2] || 0)),
+    });
+    const result = await fetchJson(PANEL_BASE_URL + "/api.php?" + params.toString());
+    ai.lastPollAt = Date.now();
+    ai.lastPollOk = Boolean(result && result.ok);
+    if (!result || !result.ok || !Array.isArray(result.commands)) return;
+
+    const ackNow = [];
+    for (const entry of result.commands) {
+      const command = String(entry.command || "").toLowerCase();
+      if (command === "buff") {
+        ai.pendingBuff = { id: entry.id };
+      } else if (command === "recall") {
+        ai.pendingRecall = { id: entry.id };
+      } else if (command === "stop") {
+        ai.stopped = true;
+        ackNow.push(entry.id);
+      } else if (command === "resume" || command === "wander" || command === "start") {
+        ai.stopped = false;
+        ackNow.push(entry.id);
+      } else {
+        ackNow.push(entry.id);
+      }
+    }
+    if (ackNow.length) await ackCommands(ackNow);
+  }
+
+  async function ackCommands(ids) {
+    const list = ids.filter((id) => id !== undefined && id !== null);
+    if (!list.length) return;
+    try {
+      await fetchJson(PANEL_BASE_URL + "/api.php?action=ack&token=" + panelToken() + "&ids=" + list.join(","));
+    } catch {
+      // Ack failures are non-fatal; the command is already marked sent server-side.
+    }
+  }
+
+  async function aiBehaviorLoop() {
+    for (;;) {
+      try {
+        await aiStep();
+      } catch {
+        // Never let a controller error escape into the game.
+      }
+      await sleep(AI_TICK_MS);
+    }
+  }
+
+  async function aiStep() {
+    const runtime = getRuntime();
+    if (!runtime || !runtime.ready) {
+      ai.mode = "연결대기";
+      return;
+    }
+    if (state.running) {
+      ai.mode = "버프중";
+      return;
+    }
+
+    // Explicit remote commands run regardless of the auto toggle.
+    if (ai.pendingRecall) {
+      ai.mode = "귀환";
+      releaseAllMoveKeys();
+      await doRecall(runtime);
+      const id = ai.pendingRecall.id;
+      ai.pendingRecall = null;
+      await ackCommands([id]);
+      return;
+    }
+    if (ai.pendingBuff) {
+      ai.mode = "버프";
+      ai.stopped = false;
+      releaseAllMoveKeys();
+      await goBuff(runtime);
+      const id = ai.pendingBuff.id;
+      ai.pendingBuff = null;
+      await ackCommands([id]);
+      return;
+    }
+
+    if (ai.stopped) {
+      ai.mode = "정지";
+      releaseAllMoveKeys();
+      return;
+    }
+    if (!ai.enabled) {
+      ai.mode = "수동(폴링만)";
+      return;
+    }
+
+    const window = obeliskWindow();
+    if (window.active) {
+      ai.mode = "오벨리스크";
+      if (Date.now() - ai.lastBuffAt > OBELISK_REBUFF_MS) {
+        await goBuff(runtime);
+      } else {
+        await ensureNearConjurer(runtime, true);
+      }
+      return;
+    }
+
+    ai.mode = "배회";
+    await wanderStep(runtime);
+  }
+
+  async function goBuff(runtime) {
+    releaseAllMoveKeys();
+    await maybeRecallToTown(runtime);
+    await ensureNearConjurer(runtime, false);
+    if (!state.running) {
+      await runBufferFlow(ai.finalDest || "Guardstone");
+    }
+    ai.lastBuffAt = Date.now();
+  }
+
+  // Returns the recall cast result. Prefers a user-bound skillbar slot; otherwise
+  // casts the universal town-recall skill (id 40) directly — works for every class
+  // with no manual binding required.
+  function castRecall(runtime) {
+    try {
+      if (ai.recallSlot && ai.recallSlot >= 1) {
+        if (typeof runtime.useSkillbarSlot === "function") return runtime.useSkillbarSlot(ai.recallSlot);
+        pressKey(String(ai.recallSlot));
+        return { ok: true, slot: ai.recallSlot };
+      }
+      if (typeof runtime.useSkill === "function") return runtime.useSkill(RECALL_SKILL_ID);
+    } catch {
+      // Fall through; navigation will still be attempted by the caller.
+    }
+    return { ok: false };
+  }
+
+  async function doRecall(runtime) {
+    ai.mode = "리콜";
+    castRecall(runtime);
+    await sleep(RECALL_WAIT_MS);
+    await ensureNearConjurer(runtime, true);
+  }
+
+  async function maybeRecallToTown(runtime) {
+    const conjurer = findNearestConjurer(runtime);
+    const pos = playerPos();
+    const far = !conjurer || !pos || distance3(pos, conjurer.pos || []) > RECALL_FAR_DIST;
+    if (!far) return; // already near a Conjurer / in town
+    ai.mode = "리콜";
+    castRecall(runtime);
+    await sleep(RECALL_WAIT_MS);
+  }
+
+  async function ensureNearConjurer(runtime, idleAfter) {
+    const conjurer = findNearestConjurer(runtime);
+    if (!conjurer) {
+      ai.mode = "Conjurer 탐색";
+      if (idleAfter) await sleep(800);
+      return;
+    }
+    await navTowardPos(runtime, conjurer.pos, NEAR_CONJURER_DIST, 12000);
+    if (idleAfter) await sleep(800 + Math.floor(Math.random() * 1200));
+  }
+
+  async function navTowardPos(runtime, target, withinDist, maxMs) {
+    if (!Array.isArray(target)) return false;
+    const startedAt = Date.now();
+    const order = ["forward", "right", "back", "left"];
+    let index = 0;
+    let prevDist = curDistTo(target);
+    while (Date.now() - startedAt < maxMs) {
+      if (ai.stopped) break;
+      const dist = curDistTo(target);
+      if (dist === null) break;
+      if (dist <= withinDist) {
+        releaseAllMoveKeys();
+        return true;
+      }
+      await holdMove(order[index % order.length], MOVE_PULSE_MS);
+      await sleep(70);
+      const nextDist = curDistTo(target);
+      if (nextDist === null) break;
+      if (nextDist >= prevDist - 0.25) index += 1; // no progress: rotate to next direction
+      prevDist = nextDist;
+    }
+    releaseAllMoveKeys();
+    return false;
+  }
+
+  function curDistTo(target) {
+    const pos = playerPos();
+    if (!pos || !Array.isArray(target)) return null;
+    return distance3(pos, target);
+  }
+
+  async function wanderStep(runtime) {
+    const world = typeof runtime.getActiveWorld === "function"
+      ? safeCall(() => runtime.getActiveWorld(), "")
+      : "";
+    if (ai.anchor && ai.anchorWorld && world && world !== ai.anchorWorld) {
+      ai.anchor = null; // changed zone (e.g. teleported by a buff route): re-anchor here
+    }
+    if (!ai.anchor) {
+      const conjurer = findNearestConjurer(runtime);
+      const pos = playerPos();
+      ai.anchor = (conjurer && conjurer.pos) || pos || null;
+      ai.anchorWorld = world || "";
+    }
+    const pos = playerPos();
+    if (!pos) {
+      await sleep(900);
+      return;
+    }
+    if (ai.anchor && distance3(pos, ai.anchor) > WANDER_RADIUS) {
+      await navTowardPos(runtime, ai.anchor, WANDER_RADIUS * 0.4, 6000);
+      return;
+    }
+    const roll = Math.random();
+    if (roll < 0.2) {
+      await sleep(900 + Math.floor(Math.random() * 2600));
+      return;
+    }
+    const dirs = ["forward", "back", "left", "right"];
+    const dir = dirs[Math.floor(Math.random() * dirs.length)];
+    await holdMove(dir, 300 + Math.floor(Math.random() * 900));
+    if (Math.random() < 0.12) {
+      dispatchKeyEvent("keydown", "Space", " ");
+      await sleep(120);
+      dispatchKeyEvent("keyup", "Space", " ");
+    }
+    await sleep(300 + Math.floor(Math.random() * 1500));
+  }
+
+  async function holdMove(dir, ms) {
+    const mapping = MOVE_KEYS[dir];
+    if (!mapping) return;
+    dispatchKeyEvent("keydown", mapping.code, mapping.key);
+    try {
+      await sleep(ms);
+    } finally {
+      dispatchKeyEvent("keyup", mapping.code, mapping.key);
+    }
+  }
+
+  function dispatchKeyEvent(type, code, key) {
+    const targets = [document.querySelector("canvas"), document.body, document, pageWindow].filter(Boolean);
+    for (const target of targets) {
+      try {
+        target.dispatchEvent(new KeyboardEvent(type, { key, code, bubbles: true, cancelable: true, composed: true }));
+      } catch {
+        // Continue dispatching to other targets.
+      }
+    }
+  }
+
+  function releaseAllMoveKeys() {
+    for (const dir of Object.keys(MOVE_KEYS)) {
+      const mapping = MOVE_KEYS[dir];
+      dispatchKeyEvent("keyup", mapping.code, mapping.key);
+    }
+    dispatchKeyEvent("keyup", "Space", " ");
   }
 })();
