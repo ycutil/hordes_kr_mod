@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.151-local
+// @version      0.9.152-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.151-local";
+  const BOOT_VERSION = "0.9.152-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -330,6 +330,23 @@
   const BUFF_SPIKE_WINDOW_MS = 1500;     // count the increase within this rolling window
   const BUFF_SPIKE_DISPLAY_MS = 4000;    // keep the warning up this long after a spike
   const BUFF_SPIKE_TRACKER_TTL_MS = 20000; // drop trackers for entities not seen for this long
+  // Class "tell" buffs to surface as icons on watched enemies. Matched by the buff's
+  // logic.icon (a buff's icon == its source skill's icon — verified live in a Gloom
+  // raid). Charms match by icon prefix items/charm/charm{N}_q{quality}.
+  const KEY_BUFF_ICON_MAP = {
+    "ui/skills/17": { label: "Enrage", cls: "전사", ally: false },
+    "ui/skills/16": { label: "Hypothermic Frenzy (히포)", cls: "마법사", ally: false },
+    "ui/skills/27": { label: "Pathfinding (패스파인더)", cls: "궁수", ally: true },
+    "ui/skills/11": { label: "Invigorate (invi)", cls: "궁수", ally: false },
+    "ui/skills/28": { label: "Canine Howl (캐니언)", cls: "주술사", ally: true },
+  };
+  const KEY_BUFF_CHARM_MAP = {
+    "items/charm/charm1_": { label: "Hardened Egg (egg)" },
+    "items/charm/charm11_": { label: "Ghost Candles (candle)" },
+    "items/charm/charm2_": { label: "Tattooed Skull (skull)" },
+    "items/charm/charm13_": { label: "Orc Skull (skull)" },
+  };
+  const KEY_BUFF_MAX_ICONS = 6; // cap icons shown next to one target
   // Status dashboard: small draggable HUD showing runtime/feature health at a glance.
   const DASHBOARD_REFRESH_MS = 700;
   const DASHBOARD_ACTIVE_WINDOW_MS = 2500; // "recent activity" window for a feature to count as live
@@ -10785,6 +10802,22 @@
         align-items: center !important;
         gap: 4px !important;
       }
+      .hordes-kr-runtime-name-label .key-buff-icon {
+        width: 17px !important;
+        height: 17px !important;
+        flex: 0 0 17px !important;
+        object-fit: contain !important;
+        border-radius: 3px !important;
+        box-shadow: 0 0 0 1px rgba(255, 90, 90, 0.9), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+      }
+      .hordes-kr-runtime-name-label .key-buff-icon.ally {
+        box-shadow: 0 0 0 1px rgba(90, 209, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+      }
+      .hordes-kr-runtime-name-label.normal-highlight.has-key-buff {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+      }
       .hordes-kr-runtime-name-label .buff-spike-badge {
         color: #5ad1ff !important;
         font-size: 0.86em !important;
@@ -11426,6 +11459,50 @@
     }
   }
 
+  function buildDataAssetUrl(path) {
+    const version = getGameAssetVersion();
+    return `/data/${path}.avif${version ? `?v=${encodeURIComponent(version)}` : ""}`;
+  }
+
+  function matchKeyBuffIcon(icon) {
+    if (!icon) return null;
+    const direct = KEY_BUFF_ICON_MAP[icon];
+    if (direct) return direct;
+    for (const prefix in KEY_BUFF_CHARM_MAP) {
+      if (icon.indexOf(prefix) === 0) return KEY_BUFF_CHARM_MAP[prefix];
+    }
+    return null;
+  }
+
+  // Read a watched enemy's currently-active "tell" buffs as displayable icons.
+  // Each buff lives at entity.buffs.buffs.get(id) (a Map caster->instance); the
+  // instance's logic.icon is the icon path. Matched against the key-buff maps.
+  function getEntityKeyBuffIcons(entity) {
+    const out = [];
+    try {
+      const map = entity && entity.buffs && entity.buffs.buffs;
+      if (!map || typeof map.forEach !== "function") return out;
+      const seen = new Set();
+      map.forEach((inner) => {
+        let icon = "";
+        try {
+          const inst = inner && typeof inner.values === "function" ? inner.values().next().value : inner;
+          icon = inst && inst.logic && inst.logic.icon || "";
+        } catch {
+          icon = "";
+        }
+        if (!icon || seen.has(icon)) return;
+        const match = matchKeyBuffIcon(icon);
+        if (!match) return;
+        seen.add(icon);
+        out.push({ iconUrl: buildDataAssetUrl(icon), label: match.label, ally: !!match.ally });
+      });
+    } catch {
+      // entity buffs may be unreadable mid-transition
+    }
+    return out.slice(0, KEY_BUFF_MAX_ICONS);
+  }
+
   // ===== Status dashboard (small draggable HUD) =====
   // Shows the runtime bridge + feature health at a glance. The runtime row goes red
   // when the engine bridge is missing (the transient drop the user kept hitting), and
@@ -11719,9 +11796,9 @@
       for (const candidate of dedupeRuntimeOverlayCandidates(candidates).sort(sortRuntimeOverlayCandidateForDisplay)) {
         // Track buff state for every loaded watched/highlighted enemy (even off-screen
         // ones) so a baseline exists before they pop; flag the ones that just spiked.
-        candidate.buffSpike = buffSpikeOn
-          && isHostileEntity(candidate.entity, runtime)
-          && updateBuffSpikeForEntity(candidate.entity, now);
+        const hostile = isHostileEntity(candidate.entity, runtime);
+        candidate.buffSpike = buffSpikeOn && hostile && updateBuffSpikeForEntity(candidate.entity, now);
+        candidate.keyBuffs = buffSpikeOn && hostile ? getEntityKeyBuffIcons(candidate.entity) : [];
 
         const point = (candidate.incomingSkill || candidate.incomingTargetWatch)
           ? projectRuntimeIncomingWarningPoint(candidate, runtime)
@@ -13890,6 +13967,7 @@
       label.classList.toggle("incoming-watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
       label.classList.toggle("normal-highlight", !candidate.incomingSkill && !candidate.incomingTargetWatch);
       label.classList.toggle("buff-spike", Boolean(candidate.buffSpike));
+      label.classList.toggle("has-key-buff", Boolean(candidate.keyBuffs && candidate.keyBuffs.length));
       renderRuntimeNameOverlayLabelContent(label, candidate);
 
       const left = `${Math.round(candidate.screen.x)}px`;
@@ -13982,12 +14060,27 @@
       candidate.relation ? candidate.relation.type : "",
       candidate.watchTargetField || "",
       candidate.buffSpike ? "buff" : "",
+      (candidate.keyBuffs || []).map((b) => b.label).join(","),
     ].join("|");
     if (label.dataset.hordesKrSignature === signature) return;
 
     label.dataset.hordesKrSignature = signature;
     label.dataset.hordesKrName = candidate.name;
     label.replaceChildren();
+
+    const appendKeyBuffIcons = () => {
+      const list = candidate.keyBuffs || [];
+      for (const buff of list) {
+        const icon = document.createElement("img");
+        icon.className = buff.ally ? "key-buff-icon ally" : "key-buff-icon";
+        icon.alt = "";
+        icon.decoding = "async";
+        icon.src = buff.iconUrl;
+        icon.title = buff.label + (buff.ally ? " — 아군 버프" : "");
+        icon.addEventListener("error", () => icon.remove(), { once: true });
+        label.appendChild(icon);
+      }
+    };
 
     const appendBuffSpikeBadge = () => {
       if (!candidate.buffSpike) return;
@@ -13998,13 +14091,16 @@
     };
 
     if (!candidate.incomingSkill && !candidate.incomingTargetWatch) {
-      if (candidate.buffSpike) {
+      const hasExtras = candidate.buffSpike || (candidate.keyBuffs && candidate.keyBuffs.length);
+      if (hasExtras) {
+        appendKeyBuffIcons();
         appendBuffSpikeBadge();
         const nameOnly = document.createElement("span");
         nameOnly.className = "name";
         nameOnly.textContent = candidate.name;
         label.appendChild(nameOnly);
-        label.title = `${candidate.name} — 버프 활성화 감지 (교전 징조)`;
+        const buffLabels = (candidate.keyBuffs || []).map((b) => b.label).join(", ");
+        label.title = `${candidate.name}${buffLabels ? " — " + buffLabels : ""}${candidate.buffSpike ? " (버프 활성화 감지)" : ""}`;
       } else {
         label.textContent = candidate.name;
         label.title = candidate.name;
@@ -14044,12 +14140,14 @@
       label.appendChild(distance);
     }
 
+    appendKeyBuffIcons();
     appendBuffSpikeBadge();
 
     label.title = joinStatusParts([
       `${candidate.name} -> 나`,
       candidate.skillId ? `skill ${candidate.skillId}` : "",
       candidate.incomingTargetWatch ? "주시" : "",
+      (candidate.keyBuffs || []).map((b) => b.label).join(", "),
       candidate.buffSpike ? "버프 활성화(교전 징조)" : "",
       candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
       candidate.relation ? `관계 ${candidate.relation.type}` : "",
