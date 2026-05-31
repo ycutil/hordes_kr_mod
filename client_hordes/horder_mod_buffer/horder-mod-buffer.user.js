@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.4
+// @version      0.6.5
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.4";
+  const MOD_VERSION = "0.6.5";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -71,6 +71,8 @@
   const FARM_SKILL_SLOTS = [1, 2, 4, 5, 6, 7, 8, 9];
   const HP_RES_IDX = 6;                // resource/stat index for HP
   const FARM_BURST_MS = 8000;          // length of one tight combat burst before yielding to the outer AI loop
+  const FARM_RANGED_MIN = 12;          // a skill with range >= this marks the class as ranged (kite, don't melee)
+  const FARM_KITE_MIN = 7;             // ranged: step back when a mob closes inside this
   const LEVEL_FOLLOW_RADIUS = 16;      // when rejoining, stop this close to the party cluster
   const LEVEL_REJOIN_DIST = 24;        // drift past this from the party centroid -> go back to it
   const PARTY_CHECK_MS = 60000;        // re-verify level-band party membership at most this often
@@ -171,6 +173,7 @@
     _rotPlan: null,        // cooldown-aware skill rotation (built from getSkillbar)
     _rotPlanAt: 0,         // when the rotation plan was last built
     _skillLast: {},        // slot -> last cast time (ms) for per-skill cooldown tracking
+    _atkRange: 0,          // engagement distance derived from the skillbar (ranged vs melee)
     leveling: false,       // leveling-party mode: follow the band party cluster + farm
     _band: null,           // { party, zone, min, max } of my current level band
     _partyAt: 0,           // last band-membership check time
@@ -254,6 +257,8 @@
     setLeveling: (value) => { ai.leveling = Boolean(value); if (ai.leveling) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai.obelisk = false; ai._partyAt = 0; } else releaseAllMoveKeys(); setStatus(ai.leveling ? "렙업 파티 모드 ON" : "렙업 모드 OFF"); },
     setObelisk: (value) => { ai.obelisk = Boolean(value); if (ai.obelisk) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai.leveling = false; ai._obAt = 0; } else releaseAllMoveKeys(); setStatus(ai.obelisk ? "오벨리스크 모드 ON(윈도우 대기)" : "오벨리스크 모드 OFF"); },
     zoneLog: () => ai._zoneLog,
+    respawn: () => { const rt = getRuntime(); return rt && typeof rt.respawn === "function" ? rt.respawn() : { ok: false, reason: "no runtime" }; },
+    skillbar: () => { const rt = getRuntime(); return rt && typeof rt.getSkillbar === "function" ? rt.getSkillbar() : null; },
     setRecallSlot: (slot) => setRecallSlot(slot),
     setFinalDest: (dest) => setFinalDest(dest),
     setPanelToken: (value) => {
@@ -640,7 +645,10 @@
       "__hmbRt.changeTarget=function(id){id=Number(id);try{if(typeof vr==='function')return vr(id)}catch(e){}try{return Io(Mt.clientPlayerChangeTarget.packData({target:id}))}catch(e){throw new Error('changeTarget failed: '+((e&&e.message)||e))}};",
       "__hmbRt.sendInteract=function(id){id=Number(id);try{return Io(Mt.clientPlayerInteract.packData({id:id}))}catch(e){throw new Error('sendInteract failed: '+((e&&e.message)||e))}};",
       "__hmbRt.getActiveWorld=function(){try{return typeof Gr!=='undefined'?__hmbRt.readStore(Gr):''}catch(e){return ''}};",
-      "__hmbRt.getSkillbar=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)return out;var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];if(!bar)return out;for(var i=0;i<bar.length;i++){var s=bar[i];if(!s||Number(s.id)<0){out.push(null);continue;}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(s.id):null;var mp=0;try{if(def&&typeof def.costMp==='function')mp=def.costMp(1)||0}catch(e){}out.push({slot:i+1,id:Number(s.id),cd:def?Number(def.cd)||0:0,gcd:def&&def.gcd!==void 0?Number(def.gcd):1.5,targetMode:def?Number(def.targetMode)||0:0,costMp:mp,envCast:def?Number(def.envCast)||0:0,minlevel:def?Number(def.minlevel)||0,item:!!(s&&s.item)});}}catch(e){}return out;};",
+      "__hmbRt.getSkillbar=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)return out;var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];if(!bar)return out;for(var i=0;i<bar.length;i++){var s=bar[i];if(!s||Number(s.id)<0){out.push(null);continue;}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(s.id):null;var mp=0;try{if(def&&typeof def.costMp==='function')mp=def.costMp(1)||0}catch(e){}out.push({slot:i+1,id:Number(s.id),cd:def?Number(def.cd)||0:0,gcd:def&&def.gcd!==void 0?Number(def.gcd):1.5,targetMode:def?Number(def.targetMode)||0:0,range:def?Number(def.range)||0:0,costMp:mp,envCast:def?Number(def.envCast)||0:0,minlevel:def?Number(def.minlevel)||0,item:!!(s&&s.item)});}}catch(e){}return out;};",
+      "__hmbRt.sendCommand=function(cmd,str){try{return Io(Mt.clientCommand.packData({command:String(cmd),string:(str==null?'':str)+''}))}catch(e){throw new Error('sendCommand failed: '+((e&&e.message)||e))}};",
+      "__hmbRt.respawn=function(){try{Io(Mt.clientCommand.packData({command:'respawn',string:''}));return {ok:true}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
+      "__hmbRt.useEnvSkillAt=function(slot,x,z){try{slot=Number(slot);var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var s=bar&&bar[slot-1];if(!s||Number(s.id)<0)throw new Error('empty slot '+slot);var y=0;try{if(engine&&typeof engine.getHeight==='function')y=engine.getHeight(x,z)}catch(e){}if(!y&&player.pos)y=player.pos[1]||0;Io(Mt.clientPlayerEnvSkill.packData({id:Number(s.id),info:[],pos:[Number(x),Number(y),Number(z)]}));return {ok:true,id:Number(s.id)}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.useSkillbarSlot=function(slot){slot=Number(slot);try{if(!Number.isInteger(slot)||slot<1)throw new Error('invalid slot');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var skill=bar&&bar[slot-1];if(!skill||Number(skill.id)<0)throw new Error('empty skillbar slot '+slot);var info=Array.isArray(skill.info)?skill.info.slice():[];if(skill.item&&player.inventory&&typeof player.inventory.findFirstSlotOfType==='function'){var invSlot=player.inventory.findFirstSlotOfType(skill.item.type,skill.item.tier);if(invSlot===void 0)throw new Error('item for slot '+slot+' not found');info[0]=invSlot}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(skill.id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(skill.id,def.range,def.envCast);return {ok:true,slot:slot,id:skill.id,env:true}}Io(Mt.clientPlayerSkill.packData({id:skill.id,info:info}));return {ok:true,slot:slot,id:skill.id,env:false}}catch(e){return {ok:false,slot:slot,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.useSkill=function(id){id=Number(id);try{if(!Number.isFinite(id))throw new Error('invalid id');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(id,def.range,def.envCast);return {ok:true,id:id,env:true}}Io(Mt.clientPlayerSkill.packData({id:id,info:[]}));return {ok:true,id:id,env:false}}catch(e){return {ok:false,id:id,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.rotateCamera=function(dy){try{dy=Number(dy)||0;if(typeof so==='undefined'||!so)return {ok:false,reason:'no camera'};so[0]=(typeof Qa==='function')?Qa(so[0]+dy):(so[0]+dy);return {ok:true,yaw:so[0]}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
@@ -1889,7 +1897,7 @@
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
     if (ai.obelisk || mode.indexOf("오벨") >= 0) return "obelisk";
     if (ai.leveling || mode.indexOf("파티") >= 0 || mode.indexOf("솔로파밍") >= 0) return "level";
-    if (ai.farm || mode.indexOf("전투") >= 0 || mode.indexOf("접근") >= 0 || mode.indexOf("후퇴") >= 0 || mode.indexOf("몹") >= 0 || mode.indexOf("루팅") >= 0 || mode.indexOf("회복") >= 0) return "farm";
+    if (ai.farm || mode.indexOf("전투") >= 0 || mode.indexOf("접근") >= 0 || mode.indexOf("후퇴") >= 0 || mode.indexOf("몹") >= 0 || mode.indexOf("루팅") >= 0 || mode.indexOf("회복") >= 0 || mode.indexOf("카이팅") >= 0 || mode.indexOf("사망") >= 0) return "farm";
     if (mode.indexOf("AFK") >= 0) return "afk";
     if (mode.indexOf("배회") >= 0 || mode.indexOf("구경") >= 0) return "wander";
     if (mode.indexOf("수동") >= 0) return "idle";
@@ -2636,8 +2644,11 @@
     for (let i = 0; i < 16; i++) {
       me = runtime.engine && runtime.engine.player;
       if (!isDead(me)) { think("✨ 부활 완료 — 복귀"); ai._tgtId = 0; ai._tgtStuck = 0; ai._warTarget = false; return true; }
-      const btn = findChoiceElement("Respawn");
-      if (btn) clickLikeUser(btn);
+      // Prefer the respawn packet (works regardless of the death panel's render state);
+      // fall back to clicking the panel's "Respawn" button on older bridges.
+      let sent = false;
+      try { if (typeof runtime.respawn === "function") { const r = runtime.respawn(); sent = !!(r && r.ok); } } catch { /* ignore */ }
+      if (!sent) { const btn = findChoiceElement("Respawn"); if (btn) clickLikeUser(btn); }
       await sleep(1500);
     }
     return true; // give up this cycle; outer loop will retry
@@ -2653,12 +2664,16 @@
     const me = runtime.engine && runtime.engine.player;
     const lvl = (me && me.level) || 99;
     const dmg = [], buffs = [];
+    let maxRange = 0;
     for (const s of bar) {
-      if (!s || s.id === 40 || s.id === 102 || s.item || s.envCast > 0) continue; // recall/mount/basic/ground
+      if (!s || s.id === 40 || s.id === 102 || s.item) continue; // recall/mount/basic-weapon
       if (s.minlevel && s.minlevel > lvl) continue;
-      (s.targetMode === 16 ? buffs : dmg).push(s); // 16 = self-buff
+      if (s.targetMode === 16 && s.envCast === 0) { buffs.push(s); continue; } // self-buff
+      dmg.push(s); // damage (single-target or ground-placed AoE)
+      if (s.range > maxRange) maxRange = s.range;
     }
     dmg.sort((a, b) => b.cd - a.cd); // dots/big nukes (long cd) before low-cd fillers
+    ai._atkRange = maxRange >= FARM_RANGED_MIN ? Math.max(maxRange - 6, FARM_RANGED_MIN) : FARM_RANGE;
     return dmg.concat(buffs);
   }
 
@@ -2666,7 +2681,7 @@
   // priority skill whose cooldown has elapsed (tracked locally per slot) — so dots/
   // nukes fire on cooldown and buffs weave in on theirs. Without a plan (old bridge),
   // fall back to cycling FARM_SKILL_SLOTS, skipping empty slots.
-  function castNextSkill(runtime) {
+  function castNextSkill(runtime, target) {
     const plan = ai._rotPlan;
     if (plan && plan.length) {
       const now = Date.now();
@@ -2676,7 +2691,14 @@
       }
       if (!chosen) chosen = plan[ai._rot % plan.length]; // everything on cd — keep pressure on
       ai._rot = (ai._rot + 1) % 1000;
-      try { runtime.useSkillbarSlot(chosen.slot); ai._skillLast[chosen.slot] = now; } catch { /* ignore */ }
+      try {
+        if (chosen.envCast > 0 && target && target.pos && typeof runtime.useEnvSkillAt === "function") {
+          runtime.useEnvSkillAt(chosen.slot, target.pos[0], target.pos[2]); // ground-placed AoE on the mob
+        } else {
+          runtime.useSkillbarSlot(chosen.slot);
+        }
+        ai._skillLast[chosen.slot] = now;
+      } catch { /* ignore */ }
       return;
     }
     for (let tries = 0; tries < FARM_SKILL_SLOTS.length; tries++) {
@@ -2734,8 +2756,10 @@
 
         try { if (me.target !== target.id) runtime.changeTarget(target.id); } catch { /* ignore */ }
         const d = Math.hypot(target.pos[0] - me.pos[0], target.pos[2] - me.pos[2]);
+        const atkRange = ai._atkRange || FARM_RANGE;
+        const ranged = atkRange > FARM_RANGE + 2;
 
-        if (d > FARM_RANGE) {
+        if (d > atkRange) {
           // Approach: hold W and steer toward the mob using measured heading.
           if (!holding) { holdForward(true); holding = true; }
           ai.mode = "접근";
@@ -2756,13 +2780,24 @@
           continue;
         }
 
+        // Ranged classes: a mob has closed into melee — back off a step (S) so we keep
+        // casting from distance instead of tanking hits (the cause of Mage deaths).
+        if (ranged && d < FARM_KITE_MIN) {
+          if (holding) { holdForward(false); holding = false; }
+          ai.mode = "카이팅";
+          dispatchKeyEvent("keydown", "KeyS", "s");
+          await sleep(280);
+          dispatchKeyEvent("keyup", "KeyS", "s");
+          prev = playerPos();
+        }
+
         // In range: stop and attack on the GCD.
         if (holding) { holdForward(false); holding = false; }
         ai.mode = "전투";
         const sk = eng.player.skills;
         if (!sk || typeof sk.gcdEnd !== "number" || eng.time >= sk.gcdEnd) {
           think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
-          castNextSkill(runtime);
+          castNextSkill(runtime, target);
         }
         await sleep(180);
         const th = hpFracOf(target);
