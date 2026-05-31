@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.5
+// @version      0.6.6
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.5";
+  const MOD_VERSION = "0.6.6";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -2648,7 +2648,7 @@
       // fall back to clicking the panel's "Respawn" button on older bridges.
       let sent = false;
       try { if (typeof runtime.respawn === "function") { const r = runtime.respawn(); sent = !!(r && r.ok); } } catch { /* ignore */ }
-      if (!sent) { const btn = findChoiceElement("Respawn"); if (btn) clickLikeUser(btn); }
+      if (!sent) { const btn = findChoiceElement("부활") || findChoiceElement("Respawn"); if (btn) clickLikeUser(btn); } // button text is localized (KR "부활")
       await sleep(1500);
     }
     return true; // give up this cycle; outer loop will retry

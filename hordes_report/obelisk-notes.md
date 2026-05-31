@@ -26,7 +26,8 @@
 
 ## 사망/부활 (라이브 검증, 전투봇 필수)
 - 사망 판정: `player.stats.alive===false` (HP getResource(6)=0). 죽으면 전투루프가 무한 "회복대기"로 멈춤 → v0.6.2에서 자동부활 추가.
-- 부활 UI = **우측 DOM 패널**("You have died." / "Press the button to be resurrected at the nearest conjurer." / **"Respawn"** 버튼). 캔버스 아님 — `findChoiceElement("Respawn")`+`clickLikeUser`로 클릭. 화면 중앙 아님(우측 x≈82%) 주의. 부활 시 **가장 가까운 Conjurer(마을)**에서 리스폰.
+- **부활 = clientCommand 패킷** (라이브 검증): `yt("respawn","")` = `Io(Mt.clientCommand.packData({command:"respawn",string:""}))`. 브리지 `respawn()`/`sendCommand()`로 직송 — **언어/패널상태 무관, 가장 견고** (v0.6.5+).
+- 부활 UI = 우측 DOM 패널이지만 **버튼 텍스트가 현지화됨**: 영어 "Respawn", **한국어 "부활"**. `findChoiceElement("Respawn")`만 쓰면 KR 클라에서 못 찾음 → "부활"도 매칭해야 함(v0.6.6). 화면 우측(x≈80%, 중앙 아님). 부활 시 **가장 가까운 Conjurer(마을)**에서 리스폰.
 - 운영 주의: **탭 리로드 금지** — hordes.io/ 랜딩(로그아웃)으로 빠지고, 재입장은 캐릭터 선택(이 계정: Dharu Lv24 Mage + lNFlNlTY Lv32 Warrior) → 카드 선택 후 "Enter World" 필요. 죽은 채로 재입장하면 여전히 사망 상태(부활 버튼 클릭해야 함).
 - 교훈: 무인 그라인딩은 **사망복구 + 과레벨 몹 회피(>+5렙 스킵) + 조기 후퇴** 없으면 강한 몹/멀티 어그로에 죽어 멈춤. v0.6.2 반영.
 
