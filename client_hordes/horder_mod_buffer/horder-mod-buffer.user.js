@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.1
+// @version      0.6.2
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.1";
+  const MOD_VERSION = "0.6.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -2604,6 +2604,7 @@
       if (!e || !e.pos || !e.stats || e.id === me.id) continue;
       const enemyPlayer = ai._warTarget && e.type === 0 && e.faction !== me.faction; // war: enemy faction
       if (!enemyPlayer && e.type !== 1 && e.type !== 10) continue;
+      if (!enemyPlayer && e.level && me.level && e.level > me.level + 5) continue; // too dangerous to solo
       if (hpFracOf(e) <= 0) continue;
       const skip = ai._skipMobs[e.id];
       if (skip) { if (skip > now) continue; delete ai._skipMobs[e.id]; }
@@ -2614,12 +2615,33 @@
     return best || alt;
   }
 
+  function isDead(me) { try { return !!(me && me.stats && me.stats.alive === false); } catch { return false; } }
+
+  // Death recovery: the death panel's "Respawn" button is a DOM element (resurrects
+  // at the nearest conjurer). Without this the combat loop would wait forever at HP 0.
+  async function respawnIfDead(runtime) {
+    let me = runtime.engine && runtime.engine.player;
+    if (!isDead(me)) return false;
+    ai.mode = "사망";
+    releaseAllMoveKeys();
+    think("💀 사망 — 부활 시도");
+    for (let i = 0; i < 16; i++) {
+      me = runtime.engine && runtime.engine.player;
+      if (!isDead(me)) { think("✨ 부활 완료 — 복귀"); ai._tgtId = 0; ai._tgtStuck = 0; ai._warTarget = false; return true; }
+      const btn = findChoiceElement("Respawn");
+      if (btn) clickLikeUser(btn);
+      await sleep(1500);
+    }
+    return true; // give up this cycle; outer loop will retry
+  }
+
   // One farmStep runs a self-contained combat burst (~8s) at ~200ms cadence so
   // attacks land fast — the outer AI loop's per-tick sleep is far too slow for
   // melee. Interrupts (stop/buff/recall) are checked every iteration.
   async function farmStep(runtime) {
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats || typeof me.stats.getResource !== "function") { ai.mode = "전투대기"; await sleep(700); return; }
+    if (await respawnIfDead(runtime)) return;
 
     const burstEnd = Date.now() + FARM_BURST_MS;
     let holding = false;
@@ -2789,6 +2811,7 @@
   async function levelingStep(runtime) {
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats) { await sleep(700); return; }
+    if (await respawnIfDead(runtime)) return;
     if (!ai._zoneLoaded) { ai._zoneLog = loadZoneLog(); ai._zoneLoaded = true; }
 
     // Periodically confirm we're in the right level-band party (applies on level-up).
@@ -2870,6 +2893,7 @@
   async function obeliskStep(runtime) {
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats) { await sleep(700); return; }
+    if (await respawnIfDead(runtime)) return;
 
     if (inWarInstance(runtime)) {
       ai.mode = "오벨전투";
