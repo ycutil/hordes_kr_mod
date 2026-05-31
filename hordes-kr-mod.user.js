@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.149-local
+// @version      0.9.150-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.149-local";
+  const BOOT_VERSION = "0.9.150-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -324,6 +324,12 @@
   const SWIFTSHOT_TURBO_COMPANION_WATCH_MS = 10;
   const RUNTIME_OVERLAY_INTERVAL_MS = 100;
   const RUNTIME_NAME_OVERLAY_REFRESH_MS = 100;
+  // Buff-spike warning: when a watched/highlighted enemy suddenly turns on several
+  // buffs at once (popping cooldowns before engaging), flag it on the overlay.
+  const BUFF_SPIKE_THRESHOLD = 2;        // +N distinct active buffs within the window = a "pop"
+  const BUFF_SPIKE_WINDOW_MS = 1500;     // count the increase within this rolling window
+  const BUFF_SPIKE_DISPLAY_MS = 4000;    // keep the warning up this long after a spike
+  const BUFF_SPIKE_TRACKER_TTL_MS = 20000; // drop trackers for entities not seen for this long
   const MINIMAP_OVERLAY_REFRESH_MS = 100;
   const PRESET_QUICKBAR_REFRESH_MS = 500;
   const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
@@ -620,6 +626,7 @@
     targetDistanceEnabled: true,
     incomingSkillOverlayEnabled: true,
     incomingTargetWatchEnabled: false,
+    buffSpikeWarnEnabled: true,
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
@@ -631,6 +638,7 @@
   FEATURE_CONFIG.targetDistanceEnabled = FEATURE_CONFIG.targetDistanceEnabled !== false;
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
   FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
+  FEATURE_CONFIG.buffSpikeWarnEnabled = FEATURE_CONFIG.buffSpikeWarnEnabled !== false;
   if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
     FEATURE_CONFIG.incomingTargetWatchEnabled = true;
     try {
@@ -937,6 +945,7 @@
   const HIGHLIGHT_STATE = {
     observer: null,
     pending: false,
+    buffSpikeTracker: new Map(),
     canvasInstalled: false,
     canvasHits: 0,
     canvasImageHits: 0,
@@ -3097,6 +3106,15 @@
       updateRuntimeNameOverlay();
       renderStatusUi();
       return FEATURE_CONFIG.incomingTargetWatchEnabled;
+    },
+    toggleBuffSpikeWarn() {
+      FEATURE_CONFIG.buffSpikeWarnEnabled = !isBuffSpikeWarnEnabled();
+      saveFeatureConfig();
+      if (!FEATURE_CONFIG.buffSpikeWarnEnabled) HIGHLIGHT_STATE.buffSpikeTracker.clear();
+      updateRuntimeNameOverlay();
+      return FEATURE_CONFIG.buffSpikeWarnEnabled
+        ? "버프 활성화 경고 켜짐 (강조/주시 대상이 버프를 한꺼번에 켜면 ⚡버프 표시)"
+        : "버프 활성화 경고 꺼짐";
     },
     toggleChatTranslation() {
       return setChatTranslationEnabled(!isChatTranslationEnabled());
@@ -10739,6 +10757,25 @@
       .hordes-kr-runtime-name-label.incoming-watch .distance {
         color: #fff3b0 !important;
       }
+      .hordes-kr-runtime-name-label.normal-highlight.buff-spike {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+      }
+      .hordes-kr-runtime-name-label .buff-spike-badge {
+        color: #5ad1ff !important;
+        font-size: 0.86em !important;
+        font-weight: 1000 !important;
+        -webkit-text-stroke: 0.6px rgba(2, 12, 26, 0.98) !important;
+        text-shadow:
+          0 0 6px rgba(90, 209, 255, 0.95),
+          0 2px 2px rgba(0, 0, 0, 0.9) !important;
+        animation: hordesKrBuffSpikePulse 0.7s ease-in-out infinite !important;
+      }
+      @keyframes hordesKrBuffSpikePulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
       /* Minimap labels and highlight list */
       .hordes-kr-minimap-name-label {
         position: fixed !important;
@@ -11297,6 +11334,75 @@
     return host;
   }
 
+  function isBuffSpikeWarnEnabled() {
+    return FEATURE_CONFIG.buffSpikeWarnEnabled !== false;
+  }
+
+  function isHostileEntity(entity, runtime) {
+    try {
+      const me = runtime && (runtime.player || (runtime.engine && runtime.engine.player));
+      const myFaction = me && me.faction;
+      const theirFaction = entity && entity.faction;
+      if (myFaction === undefined || myFaction === null || theirFaction === undefined || theirFaction === null) {
+        return true; // faction unknown -> don't suppress the warning
+      }
+      return theirFaction !== myFaction;
+    } catch {
+      return true;
+    }
+  }
+
+  // Distinct active buffs on an entity. The engine keeps each entity's buffs in a
+  // Map (buffId -> Map(casterId -> instance)); its size is the live distinct-buff
+  // count, kept in sync for nearby-loaded entities. -1 = unreadable.
+  function readEntityBuffCount(entity) {
+    try {
+      const controller = entity && entity.buffs;
+      const map = controller && controller.buffs;
+      if (map && typeof map.size === "number") return map.size;
+    } catch {
+      // entity may not expose buffs (not loaded yet)
+    }
+    return -1;
+  }
+
+  // Track each entity's buff count and report whether a "buff pop" (a fast rise of
+  // >= BUFF_SPIKE_THRESHOLD distinct buffs within BUFF_SPIKE_WINDOW_MS) is active.
+  // The first sighting only seeds the baseline so initial load doesn't false-alarm.
+  function updateBuffSpikeForEntity(entity, now) {
+    const id = getRuntimeEntityId(entity);
+    if (id === undefined || id === null) return false;
+    const size = readEntityBuffCount(entity);
+    if (size < 0) return false;
+
+    const tracker = HIGHLIGHT_STATE.buffSpikeTracker;
+    let rec = tracker.get(id);
+    if (!rec) {
+      tracker.set(id, { baseline: size, baselineAt: now, spikeUntil: 0, seenAt: now, tick: now });
+      return false;
+    }
+    rec.seenAt = now;
+    if (rec.tick === now) return now < rec.spikeUntil; // already processed this tick
+    rec.tick = now;
+
+    if (size < rec.baseline || now - rec.baselineAt > BUFF_SPIKE_WINDOW_MS) {
+      rec.baseline = size;
+      rec.baselineAt = now;
+    } else if (size - rec.baseline >= BUFF_SPIKE_THRESHOLD) {
+      rec.spikeUntil = now + BUFF_SPIKE_DISPLAY_MS;
+      rec.baseline = size;     // re-anchor so the same pop doesn't keep retriggering
+      rec.baselineAt = now;
+    }
+    return now < rec.spikeUntil;
+  }
+
+  function pruneBuffSpikeTracker(now) {
+    const tracker = HIGHLIGHT_STATE.buffSpikeTracker;
+    for (const [id, rec] of tracker) {
+      if (now - (rec && rec.seenAt || 0) > BUFF_SPIKE_TRACKER_TTL_MS) tracker.delete(id);
+    }
+  }
+
   function updateRuntimeNameOverlay() {
     const now = Date.now();
     if (now - TARGET_DISTANCE_STATE.lastOverlayTickAt >= TARGET_DISTANCE_OVERLAY_REFRESH_MS) {
@@ -11353,8 +11459,15 @@
         ),
       ];
       const projected = [];
+      const buffSpikeOn = isBuffSpikeWarnEnabled();
 
       for (const candidate of dedupeRuntimeOverlayCandidates(candidates).sort(sortRuntimeOverlayCandidateForDisplay)) {
+        // Track buff state for every loaded watched/highlighted enemy (even off-screen
+        // ones) so a baseline exists before they pop; flag the ones that just spiked.
+        candidate.buffSpike = buffSpikeOn
+          && isHostileEntity(candidate.entity, runtime)
+          && updateBuffSpikeForEntity(candidate.entity, now);
+
         const point = (candidate.incomingSkill || candidate.incomingTargetWatch)
           ? projectRuntimeIncomingWarningPoint(candidate, runtime)
           : projectRuntimeEntityToScreen(candidate, runtime);
@@ -11363,6 +11476,7 @@
         projected.push({ ...candidate, screen: point, offScreen: Boolean(point.offScreen) });
         if (projected.length >= 18) break;
       }
+      if (buffSpikeOn) pruneBuffSpikeTracker(now);
 
       renderRuntimeNameOverlayLabels(host, projected);
       HIGHLIGHT_STATE.lastRuntimeOverlayMatches = projected.slice(0, 8).map((candidate) => ({
@@ -13520,6 +13634,7 @@
       label.classList.toggle("incoming-skill", Boolean(candidate.incomingSkill));
       label.classList.toggle("incoming-watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
       label.classList.toggle("normal-highlight", !candidate.incomingSkill && !candidate.incomingTargetWatch);
+      label.classList.toggle("buff-spike", Boolean(candidate.buffSpike));
       renderRuntimeNameOverlayLabelContent(label, candidate);
 
       const left = `${Math.round(candidate.screen.x)}px`;
@@ -13611,6 +13726,7 @@
       candidate.distanceText || "",
       candidate.relation ? candidate.relation.type : "",
       candidate.watchTargetField || "",
+      candidate.buffSpike ? "buff" : "",
     ].join("|");
     if (label.dataset.hordesKrSignature === signature) return;
 
@@ -13618,9 +13734,26 @@
     label.dataset.hordesKrName = candidate.name;
     label.replaceChildren();
 
+    const appendBuffSpikeBadge = () => {
+      if (!candidate.buffSpike) return;
+      const badge = document.createElement("span");
+      badge.className = "buff-spike-badge";
+      badge.textContent = "⚡버프";
+      label.appendChild(badge);
+    };
+
     if (!candidate.incomingSkill && !candidate.incomingTargetWatch) {
-      label.textContent = candidate.name;
-      label.title = candidate.name;
+      if (candidate.buffSpike) {
+        appendBuffSpikeBadge();
+        const nameOnly = document.createElement("span");
+        nameOnly.className = "name";
+        nameOnly.textContent = candidate.name;
+        label.appendChild(nameOnly);
+        label.title = `${candidate.name} — 버프 활성화 감지 (교전 징조)`;
+      } else {
+        label.textContent = candidate.name;
+        label.title = candidate.name;
+      }
       return;
     }
 
@@ -13656,10 +13789,13 @@
       label.appendChild(distance);
     }
 
+    appendBuffSpikeBadge();
+
     label.title = joinStatusParts([
       `${candidate.name} -> 나`,
       candidate.skillId ? `skill ${candidate.skillId}` : "",
       candidate.incomingTargetWatch ? "주시" : "",
+      candidate.buffSpike ? "버프 활성화(교전 징조)" : "",
       candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
       candidate.relation ? `관계 ${candidate.relation.type}` : "",
     ]);
