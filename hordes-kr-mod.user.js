@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.148-local
+// @version      0.9.149-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.148-local";
+  const BOOT_VERSION = "0.9.149-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -1054,13 +1054,21 @@
     return FOV_CAP_DEFAULT;
   }
 
-  // "시야각"/"Field of view" 라벨이 붙은 range 입력인지 판정. 입력에서 위로 올라가며
-  // 라벨 텍스트를 가진 첫 조상을 찾되, 그 조상이 슬라이더를 정확히 하나(=이 입력)만
-  // 품고 있을 때만 fov 행으로 인정한다(여러 슬라이더를 묶은 패널이면 라벨이 다른 행의
-  // 것이므로 거부). 텍스트가 너무 길어지면 행을 벗어난 것이므로 중단.
+  // "시야각"/"Field of view" 라벨이 붙은 range 입력인지 판정. 게임 설정창은
+  // [라벨 div][input] 의 평평한 형제 구조라(라벨 div 안에 값 span 포함), 라벨은
+  // 입력의 "바로 앞 형제"다. 평평한 부모엔 슬라이더가 여럿이므로 조상이 아니라
+  // 앞 형제 라벨로 찾는다. 혹시 행으로 감싼 구조면 단일-슬라이더 조상을 폴백으로 본다.
   function isFovSlider(input) {
-    let el = input && input.parentElement;
-    for (let depth = 0; depth < 5 && el; depth++, el = el.parentElement) {
+    if (!input) return false;
+    let sibling = input.previousElementSibling;
+    for (let i = 0; i < 3 && sibling; i++, sibling = sibling.previousElementSibling) {
+      if (sibling.tagName === "INPUT") break; // 앞 필드의 입력에 도달 → 라벨 못 찾음
+      const text = (sibling.textContent || "").trim();
+      if (/시야각|field\s*of\s*view/i.test(text)) return true;
+      if (text) break; // 매칭 안 되는 라벨이 이 입력의 라벨 → fov 아님
+    }
+    let el = input.parentElement;
+    for (let depth = 0; depth < 4 && el; depth++, el = el.parentElement) {
       const text = (el.textContent || "").trim();
       if (/시야각|field\s*of\s*view/i.test(text)) {
         const ranges = el.querySelectorAll('input[type="range"]');
@@ -1069,6 +1077,34 @@
       if (text.length > 60) break;
     }
     return false;
+  }
+
+  function findFovSliderInput() {
+    const inputs = document.querySelectorAll('input[type="range"]');
+    for (const input of inputs) {
+      if (input.type === "range" && isFovSlider(input)) return input;
+    }
+    return null;
+  }
+
+  // 콘솔에서 시야각 값을 직접 적용(설정창이 열려 슬라이더가 DOM에 있어야 함).
+  // 슬라이더 max를 먼저 올린 뒤 값을 넣고 input/change 이벤트를 쏴 게임 핸들러가
+  // 카메라 fov 스토어(Yr)에 반영하게 한다.
+  function setFovValue(value) {
+    const next = Math.round(Number(value));
+    if (!Number.isFinite(next) || next < 1 || next > FOV_CAP_LIMIT) {
+      return `시야각 값은 1~${FOV_CAP_LIMIT} 사이여야 합니다.`;
+    }
+    const input = findFovSliderInput();
+    if (!input) {
+      return "시야각 슬라이더를 찾지 못했습니다. 게임 설정창(시야각 항목이 보이는 화면)을 연 상태에서 다시 실행하세요.";
+    }
+    const cap = Math.max(next, fovCap);
+    if (Number(input.max) < cap) input.max = String(cap);
+    input.value = String(next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return `시야각 = ${next} 적용됨`;
   }
 
   function raiseFovSlider(input) {
@@ -2942,6 +2978,13 @@
     version: MOD_VERSION,
     setFovCap(value) {
       return setFovCapValue(value);
+    },
+    setFov(value) {
+      return setFovValue(value);
+    },
+    findFovSlider() {
+      const input = findFovSliderInput();
+      return input ? { found: true, max: input.max, value: input.value } : { found: false };
     },
     enable() {
       return setTranslationEnabled(true);
