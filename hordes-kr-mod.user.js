@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.146-local
+// @version      0.9.147-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.146-local";
+  const BOOT_VERSION = "0.9.147-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -1033,6 +1033,93 @@
   }
 
   initGameScriptRuntimeHook();
+
+  // === 시야각(FOV) 슬라이더 상한 해제 ===
+  // 게임은 시야각 슬라이더를 max=100으로 제한하지만, 슬라이더 값 파서(Gt)에는
+  // 클램프가 없고 카메라는 슬라이더가 내보내는 값을 그대로 적용한다(Yr.subscribe →
+  // gt.fov). 따라서 슬라이더의 max만 올리면 100 이상도 선택 가능. 미니파이 변수명에
+  // 의존하지 않도록 소스 패치 대신 DOM에서 "시야각" 라벨의 range 입력을 찾아 조정한다.
+  const FOV_CAP_KEY = "hordes_kr_fov_cap";
+  const FOV_CAP_DEFAULT = 150;
+  const FOV_CAP_MIN = 100;   // 게임 기본 상한(100) 밑으로는 절대 낮추지 않음
+  const FOV_CAP_LIMIT = 200; // 과도한 어안 왜곡 방지용 안전 상한
+
+  function readFovCap() {
+    try {
+      const value = Number(localStorage.getItem(FOV_CAP_KEY));
+      if (Number.isFinite(value) && value >= FOV_CAP_MIN && value <= FOV_CAP_LIMIT) return value;
+    } catch {
+      // localStorage 접근 불가 시 기본값 사용
+    }
+    return FOV_CAP_DEFAULT;
+  }
+
+  // "시야각"/"Field of view" 라벨이 붙은 range 입력인지 판정. 입력에서 위로 올라가며
+  // 라벨 텍스트를 가진 첫 조상을 찾되, 그 조상이 슬라이더를 정확히 하나(=이 입력)만
+  // 품고 있을 때만 fov 행으로 인정한다(여러 슬라이더를 묶은 패널이면 라벨이 다른 행의
+  // 것이므로 거부). 텍스트가 너무 길어지면 행을 벗어난 것이므로 중단.
+  function isFovSlider(input) {
+    let el = input && input.parentElement;
+    for (let depth = 0; depth < 5 && el; depth++, el = el.parentElement) {
+      const text = (el.textContent || "").trim();
+      if (/시야각|field\s*of\s*view/i.test(text)) {
+        const ranges = el.querySelectorAll('input[type="range"]');
+        return ranges.length === 1 && ranges[0] === input;
+      }
+      if (text.length > 60) break;
+    }
+    return false;
+  }
+
+  function raiseFovSlider(input) {
+    if (!input || input.type !== "range" || !isFovSlider(input)) return;
+    if (Number(input.max) >= fovCap) return;
+    input.max = String(fovCap);
+    input.dataset.krFovUncapped = String(fovCap);
+  }
+
+  function scanForFovSliders(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (node.matches && node.matches('input[type="range"]')) raiseFovSlider(node);
+    if (node.querySelectorAll) node.querySelectorAll('input[type="range"]').forEach(raiseFovSlider);
+  }
+
+  function installFovUncap() {
+    try {
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) scanForFovSliders(node);
+        }
+      });
+      const start = () => {
+        if (!document.body) return false;
+        scanForFovSliders(document.body);
+        observer.observe(document.body, { childList: true, subtree: true });
+        return true;
+      };
+      if (!start()) document.addEventListener("DOMContentLoaded", start, { once: true });
+    } catch (error) {
+      console.warn("[Hordes KR Mod] 시야각 상한 해제 설치 실패:", error && error.message);
+    }
+  }
+
+  function setFovCapValue(value) {
+    const next = Math.round(Number(value));
+    if (!Number.isFinite(next) || next < FOV_CAP_MIN || next > FOV_CAP_LIMIT) {
+      return `시야각 상한은 ${FOV_CAP_MIN}~${FOV_CAP_LIMIT} 사이여야 합니다.`;
+    }
+    fovCap = next;
+    try { localStorage.setItem(FOV_CAP_KEY, String(next)); } catch {
+      // 저장 실패해도 이번 세션엔 적용됨
+    }
+    document.querySelectorAll('input[type="range"]').forEach((input) => {
+      if (isFovSlider(input)) input.max = String(next);
+    });
+    return `시야각 슬라이더 상한 = ${next} (설정창에서 그만큼까지 올릴 수 있습니다)`;
+  }
+
+  let fovCap = readFovCap();
+  installFovUncap();
 
   const KO_PATCH = {
     factions: {
@@ -2853,6 +2940,9 @@
 
   pageWindow.HordesKrMod = {
     version: MOD_VERSION,
+    setFovCap(value) {
+      return setFovCapValue(value);
+    },
     enable() {
       return setTranslationEnabled(true);
     },
