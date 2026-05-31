@@ -24,4 +24,10 @@
 3. **전쟁 중**: 친군집(같은 faction type-0 = AI봇 zerg) centroid 추종 → 목표지 도달, **적진영(type-0 faction≠나) + 몹**을 가장 가까운 순으로 전투(기존 farmStep 일반화). 점령 서클 안 체류로 contributors 기여.
 4. **검증 필요(윈도우에서)**: 전쟁월드 진입 신호, 오벨 엔티티/서클 좌표, contributors 반영, 입장 queue 동작, 사망/리스폰 처리.
 
+## 사망/부활 (라이브 검증, 전투봇 필수)
+- 사망 판정: `player.stats.alive===false` (HP getResource(6)=0). 죽으면 전투루프가 무한 "회복대기"로 멈춤 → v0.6.2에서 자동부활 추가.
+- 부활 UI = **우측 DOM 패널**("You have died." / "Press the button to be resurrected at the nearest conjurer." / **"Respawn"** 버튼). 캔버스 아님 — `findChoiceElement("Respawn")`+`clickLikeUser`로 클릭. 화면 중앙 아님(우측 x≈82%) 주의. 부활 시 **가장 가까운 Conjurer(마을)**에서 리스폰.
+- 운영 주의: **탭 리로드 금지** — hordes.io/ 랜딩(로그아웃)으로 빠지고, 재입장은 캐릭터 선택(이 계정: Dharu Lv24 Mage + lNFlNlTY Lv32 Warrior) → 카드 선택 후 "Enter World" 필요. 죽은 채로 재입장하면 여전히 사망 상태(부활 버튼 클릭해야 함).
+- 교훈: 무인 그라인딩은 **사망복구 + 과레벨 몹 회피(>+5렙 스킵) + 조기 후퇴** 없으면 강한 몹/멀티 어그로에 죽어 멈춤. v0.6.2 반영.
+
 관련: [[hordes-leveling-party-system]], [[hordes-mob-entity-types]], [[hordes-skill-cast-gcd-mechanics]].
