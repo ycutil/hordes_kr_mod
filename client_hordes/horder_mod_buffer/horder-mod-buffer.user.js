@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.3
+// @version      0.4.4
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.3";
+  const MOD_VERSION = "0.4.4";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -66,6 +66,7 @@
   const FARM_LOOT_RADIUS = 14;         // pick up drops within this after a kill
   const FARM_SKILL_SLOTS = [1, 2, 3, 4, 5, 6]; // cast these in rotation when GCD is ready
   const HP_RES_IDX = 6;                // resource/stat index for HP
+  const FARM_BURST_MS = 8000;          // length of one tight combat burst before yielding to the outer AI loop
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -2559,83 +2560,81 @@
     return best;
   }
 
+  // One farmStep runs a self-contained combat burst (~8s) at ~200ms cadence so
+  // attacks land fast — the outer AI loop's per-tick sleep is far too slow for
+  // melee. Interrupts (stop/buff/recall) are checked every iteration.
   async function farmStep(runtime) {
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats || typeof me.stats.getResource !== "function") { ai.mode = "전투대기"; await sleep(700); return; }
 
-    const myHp = hpFracOf(me);
-    if (myHp >= 0 && myHp < FARM_RETREAT_HP) {
-      ai.mode = "후퇴";
-      think("🩸 HP " + Math.round(myHp * 100) + "% — 후퇴/회복");
-      await farmRetreat(runtime);
-      return;
+    const burstEnd = Date.now() + FARM_BURST_MS;
+    let holding = false;
+    let prev = playerPos();
+    try {
+      while (Date.now() < burstEnd) {
+        if (ai.stopped || !ai.enabled || !ai.farm || ai.pendingBuff || ai.pendingRecall) return;
+
+        const myHp = hpFracOf(me);
+        if (myHp >= 0 && myHp < FARM_RETREAT_HP) {
+          if (holding) { holdForward(false); holding = false; }
+          ai.mode = "후퇴";
+          think("🩸 HP " + Math.round(myHp * 100) + "% — 후퇴/회복");
+          await farmRetreat(runtime);
+          return;
+        }
+
+        let target = eng.entities.array.find((e) => e && e.id === me.target && (e.type === 1 || e.type === 10) && hpFracOf(e) > 0);
+        if (!target) target = nearestMobEntity(eng, me, FARM_RADIUS);
+        if (!target) {
+          if (holding) { holdForward(false); holding = false; }
+          ai.mode = "몹탐색";
+          think("🔎 주변에 몹 없음 — 이동");
+          await lootNearby(runtime);
+          await navTo(runtime, pickRoamTarget(), 4, 7000);
+          return;
+        }
+
+        try { if (me.target !== target.id) runtime.changeTarget(target.id); } catch { /* ignore */ }
+        const d = Math.hypot(target.pos[0] - me.pos[0], target.pos[2] - me.pos[2]);
+
+        if (d > FARM_RANGE) {
+          // Approach: hold W and steer toward the mob using measured heading.
+          if (!holding) { holdForward(true); holding = true; }
+          ai.mode = "접근";
+          think("🏃 " + String(target.name).slice(0, 14) + " 접근 (" + Math.round(d) + ")");
+          const before = prev || playerPos();
+          await sleep(200);
+          const after = playerPos();
+          if (before && after) {
+            const moved = Math.hypot(after[0] - before[0], after[2] - before[2]);
+            if (moved > 0.4) {
+              const err = normAngle(Math.atan2(target.pos[2] - after[2], target.pos[0] - after[0]) - Math.atan2(after[2] - before[2], after[0] - before[0]));
+              if (Math.abs(err) > 0.25) await steerPulse(err > 0 ? "ArrowRight" : "ArrowLeft", Math.min(Math.max(Math.abs(err) * 220, 55), 280));
+            } else {
+              await steerPulse(Math.random() < 0.5 ? "ArrowRight" : "ArrowLeft", 150); // unstick
+            }
+            prev = after;
+          }
+          continue;
+        }
+
+        // In range: stop and attack on the GCD.
+        if (holding) { holdForward(false); holding = false; }
+        ai.mode = "전투";
+        const sk = eng.player.skills;
+        if (!sk || typeof sk.gcdEnd !== "number" || eng.time >= sk.gcdEnd) {
+          think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
+          const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
+          ai._rot = (ai._rot + 1) % 1000;
+          try { if (typeof runtime.useSkillbarSlot === "function") runtime.useSkillbarSlot(slot); } catch { /* ignore */ }
+        }
+        await sleep(180);
+        if (hpFracOf(target) <= 0) { ai.kills++; await lootNearby(runtime); }
+        prev = playerPos();
+      }
+    } finally {
+      if (holding) holdForward(false);
     }
-
-    let target = eng.entities.array.find((e) => e && e.id === me.target && (e.type === 1 || e.type === 10) && hpFracOf(e) > 0);
-    if (!target) target = nearestMobEntity(eng, me, FARM_RADIUS);
-    if (!target) {
-      ai.mode = "몹탐색";
-      think("🔎 주변에 몹 없음 — 이동");
-      holdForward(false);
-      await lootNearby(runtime);
-      await navTo(runtime, pickRoamTarget(), 4, 7000);
-      return;
-    }
-
-    try { runtime.changeTarget(target.id); } catch { /* ignore */ }
-    const d = Math.hypot(target.pos[0] - me.pos[0], target.pos[2] - me.pos[2]);
-    if (d > FARM_RANGE) {
-      ai.mode = "접근";
-      think("🏃 " + String(target.name).slice(0, 14) + " 접근 (" + Math.round(d) + ")");
-      await approachTarget(runtime, target);
-      return;
-    }
-
-    // In range: stop, face, attack.
-    holdForward(false);
-    ai.mode = "전투";
-    think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
-    await faceEntity(runtime, target);
-    await castRotation(runtime);
-    if (hpFracOf(target) <= 0) { ai.kills++; await lootNearby(runtime); }
-  }
-
-  async function approachTarget(runtime, target) {
-    holdForward(true);
-    const before = playerPos();
-    await sleep(230);
-    const after = playerPos();
-    if (!before || !after) return;
-    const moved = Math.hypot(after[0] - before[0], after[2] - before[2]);
-    if (moved > 0.4) {
-      const heading = Math.atan2(after[2] - before[2], after[0] - before[0]);
-      const err = normAngle(Math.atan2(target.pos[2] - after[2], target.pos[0] - after[0]) - heading);
-      if (Math.abs(err) > 0.25) await steerPulse(err > 0 ? "ArrowRight" : "ArrowLeft", Math.min(Math.max(Math.abs(err) * 220, 55), 280));
-    } else {
-      await steerPulse(Math.random() < 0.5 ? "ArrowRight" : "ArrowLeft", 160); // nudge if stuck
-    }
-  }
-
-  async function faceEntity(runtime, target) {
-    const before = playerPos();
-    if (!before) return;
-    dispatchKeyEvent("keydown", "KeyW", "w");
-    await sleep(150);
-    dispatchKeyEvent("keyup", "KeyW", "w");
-    await sleep(80);
-    const after = playerPos();
-    if (!after || Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.3) return;
-    const err = normAngle(Math.atan2(target.pos[2] - after[2], target.pos[0] - after[0]) - Math.atan2(after[2] - before[2], after[0] - before[0]));
-    if (Math.abs(err) > 0.35) await turnBy(err);
-  }
-
-  async function castRotation(runtime) {
-    const eng = runtime.engine, sk = eng.player.skills;
-    if (sk && typeof sk.gcdEnd === "number" && eng.time < sk.gcdEnd) { await sleep(110); return; }
-    const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
-    ai._rot = (ai._rot + 1) % 1000;
-    try { if (typeof runtime.useSkillbarSlot === "function") runtime.useSkillbarSlot(slot); } catch { /* ignore */ }
-    await sleep(150);
   }
 
   async function farmRetreat(runtime) {
