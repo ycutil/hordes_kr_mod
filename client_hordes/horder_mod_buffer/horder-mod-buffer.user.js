@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.3
+// @version      0.6.4
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.3";
+  const MOD_VERSION = "0.6.4";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -168,6 +168,9 @@
     _tgtId: 0,             // current locked target id (for stuck/no-damage detection)
     _tgtHp: 1,             // last seen HP fraction of the locked target
     _tgtStuck: 0,          // consecutive casts with no HP progress on the locked target
+    _rotPlan: null,        // cooldown-aware skill rotation (built from getSkillbar)
+    _rotPlanAt: 0,         // when the rotation plan was last built
+    _skillLast: {},        // slot -> last cast time (ms) for per-skill cooldown tracking
     leveling: false,       // leveling-party mode: follow the band party cluster + farm
     _band: null,           // { party, zone, min, max } of my current level band
     _partyAt: 0,           // last band-membership check time
@@ -637,6 +640,7 @@
       "__hmbRt.changeTarget=function(id){id=Number(id);try{if(typeof vr==='function')return vr(id)}catch(e){}try{return Io(Mt.clientPlayerChangeTarget.packData({target:id}))}catch(e){throw new Error('changeTarget failed: '+((e&&e.message)||e))}};",
       "__hmbRt.sendInteract=function(id){id=Number(id);try{return Io(Mt.clientPlayerInteract.packData({id:id}))}catch(e){throw new Error('sendInteract failed: '+((e&&e.message)||e))}};",
       "__hmbRt.getActiveWorld=function(){try{return typeof Gr!=='undefined'?__hmbRt.readStore(Gr):''}catch(e){return ''}};",
+      "__hmbRt.getSkillbar=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)return out;var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];if(!bar)return out;for(var i=0;i<bar.length;i++){var s=bar[i];if(!s||Number(s.id)<0){out.push(null);continue;}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(s.id):null;var mp=0;try{if(def&&typeof def.costMp==='function')mp=def.costMp(1)||0}catch(e){}out.push({slot:i+1,id:Number(s.id),cd:def?Number(def.cd)||0:0,gcd:def&&def.gcd!==void 0?Number(def.gcd):1.5,targetMode:def?Number(def.targetMode)||0:0,costMp:mp,envCast:def?Number(def.envCast)||0:0,minlevel:def?Number(def.minlevel)||0,item:!!(s&&s.item)});}}catch(e){}return out;};",
       "__hmbRt.useSkillbarSlot=function(slot){slot=Number(slot);try{if(!Number.isInteger(slot)||slot<1)throw new Error('invalid slot');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var skill=bar&&bar[slot-1];if(!skill||Number(skill.id)<0)throw new Error('empty skillbar slot '+slot);var info=Array.isArray(skill.info)?skill.info.slice():[];if(skill.item&&player.inventory&&typeof player.inventory.findFirstSlotOfType==='function'){var invSlot=player.inventory.findFirstSlotOfType(skill.item.type,skill.item.tier);if(invSlot===void 0)throw new Error('item for slot '+slot+' not found');info[0]=invSlot}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(skill.id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(skill.id,def.range,def.envCast);return {ok:true,slot:slot,id:skill.id,env:true}}Io(Mt.clientPlayerSkill.packData({id:skill.id,info:info}));return {ok:true,slot:slot,id:skill.id,env:false}}catch(e){return {ok:false,slot:slot,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.useSkill=function(id){id=Number(id);try{if(!Number.isFinite(id))throw new Error('invalid id');var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(id):null;if(def&&def.envCast>0&&typeof gu==='function'){gu(id,def.range,def.envCast);return {ok:true,id:id,env:true}}Io(Mt.clientPlayerSkill.packData({id:id,info:[]}));return {ok:true,id:id,env:false}}catch(e){return {ok:false,id:id,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.rotateCamera=function(dy){try{dy=Number(dy)||0;if(typeof so==='undefined'||!so)return {ok:false,reason:'no camera'};so[0]=(typeof Qa==='function')?Qa(so[0]+dy):(so[0]+dy);return {ok:true,yaw:so[0]}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
@@ -2639,6 +2643,53 @@
     return true; // give up this cycle; outer loop will retry
   }
 
+  // Build a cooldown-aware rotation from the live skillbar: damage skills first
+  // (long-cd dots/nukes prioritized so they're used on cooldown), then self-buffs.
+  // Excludes recall/mount/basic-item skills and ground-placed AoE (can't aim those
+  // via the packet path). Falls back to the flat slot list if the bridge is old.
+  function buildRotationPlan(runtime) {
+    let bar = [];
+    try { bar = typeof runtime.getSkillbar === "function" ? runtime.getSkillbar() : []; } catch { bar = []; }
+    const me = runtime.engine && runtime.engine.player;
+    const lvl = (me && me.level) || 99;
+    const dmg = [], buffs = [];
+    for (const s of bar) {
+      if (!s || s.id === 40 || s.id === 102 || s.item || s.envCast > 0) continue; // recall/mount/basic/ground
+      if (s.minlevel && s.minlevel > lvl) continue;
+      (s.targetMode === 16 ? buffs : dmg).push(s); // 16 = self-buff
+    }
+    dmg.sort((a, b) => b.cd - a.cd); // dots/big nukes (long cd) before low-cd fillers
+    return dmg.concat(buffs);
+  }
+
+  // Cast the best-available skill this GCD. With a rotation plan, pick the highest
+  // priority skill whose cooldown has elapsed (tracked locally per slot) — so dots/
+  // nukes fire on cooldown and buffs weave in on theirs. Without a plan (old bridge),
+  // fall back to cycling FARM_SKILL_SLOTS, skipping empty slots.
+  function castNextSkill(runtime) {
+    const plan = ai._rotPlan;
+    if (plan && plan.length) {
+      const now = Date.now();
+      let chosen = null;
+      for (const s of plan) {
+        if (now - (ai._skillLast[s.slot] || 0) >= Math.max(s.cd * 1000, 150)) { chosen = s; break; }
+      }
+      if (!chosen) chosen = plan[ai._rot % plan.length]; // everything on cd — keep pressure on
+      ai._rot = (ai._rot + 1) % 1000;
+      try { runtime.useSkillbarSlot(chosen.slot); ai._skillLast[chosen.slot] = now; } catch { /* ignore */ }
+      return;
+    }
+    for (let tries = 0; tries < FARM_SKILL_SLOTS.length; tries++) {
+      const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
+      ai._rot = (ai._rot + 1) % 1000;
+      let res = null;
+      try { res = typeof runtime.useSkillbarSlot === "function" ? runtime.useSkillbarSlot(slot) : null; } catch { res = null; }
+      if (res && res.ok) break;
+      if (res && res.reason && /empty/i.test(res.reason)) continue;
+      break;
+    }
+  }
+
   // One farmStep runs a self-contained combat burst (~8s) at ~200ms cadence so
   // attacks land fast — the outer AI loop's per-tick sleep is far too slow for
   // melee. Interrupts (stop/buff/recall) are checked every iteration.
@@ -2646,6 +2697,13 @@
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats || typeof me.stats.getResource !== "function") { ai.mode = "전투대기"; await sleep(700); return; }
     if (await respawnIfDead(runtime)) return;
+
+    // (Re)build the cooldown-aware rotation from the live skillbar (refresh on level-up).
+    if (!ai._rotPlan || Date.now() - ai._rotPlanAt > 60000) {
+      const plan = buildRotationPlan(runtime);
+      ai._rotPlan = plan.length ? plan : null; // null => fall back to flat FARM_SKILL_SLOTS
+      ai._rotPlanAt = Date.now();
+    }
 
     const burstEnd = Date.now() + FARM_BURST_MS;
     let holding = false;
@@ -2704,18 +2762,7 @@
         const sk = eng.player.skills;
         if (!sk || typeof sk.gcdEnd !== "number" || eng.time >= sk.gcdEnd) {
           think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
-          // Advance through the rotation until a real (non-empty) skill is sent, so
-          // an empty slot doesn't waste the GCD. useSkillbarSlot returns ok:false for
-          // empty slots and ok:true once a skill packet is actually sent.
-          for (let tries = 0; tries < FARM_SKILL_SLOTS.length; tries++) {
-            const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
-            ai._rot = (ai._rot + 1) % 1000;
-            let res = null;
-            try { res = typeof runtime.useSkillbarSlot === "function" ? runtime.useSkillbarSlot(slot) : null; } catch { res = null; }
-            if (res && res.ok) break;              // a skill was actually sent
-            if (res && res.reason && /empty/i.test(res.reason)) continue; // empty slot — try next
-            break;                                 // unknown/no bridge — stop
-          }
+          castNextSkill(runtime);
         }
         await sleep(180);
         const th = hpFracOf(target);
