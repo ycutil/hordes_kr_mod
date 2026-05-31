@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.147-local
+// @version      0.9.148-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.147-local";
+  const BOOT_VERSION = "0.9.148-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -517,9 +517,9 @@
   const TARGET_ORDER_RECONNECT_MS = 3000;
   const TARGET_ORDER_ALERT_OFFSET_TOP = "22vh";
   const GEAR_PRESET_DEFAULT_NAME = "default";
-  const GEAR_PRESET_QUICK_NAMES = ["1", "2", "3"];
+  const GEAR_PRESET_QUICK_NAMES = ["1", "2", "3", "4", "5"];
   const SKILL_PRESET_DEFAULT_NAME = "default";
-  const SKILL_PRESET_QUICK_NAMES = ["1", "2", "3"];
+  const SKILL_PRESET_QUICK_NAMES = ["1", "2", "3", "4", "5"];
   const GEAR_PRESET_EQUIP_DELAY_MS = 110;
   const GEAR_PRESET_VERIFY_RETRY_DELAYS_MS = [200, 400, 800, 1400, 2200];
   const HORDES_CLIENT_COMMAND_HEADER = 5;
@@ -11779,9 +11779,14 @@
     const entity = player && player.entity || runtime && runtime.player;
     const stats = entity && safeReadValue(entity, "stats");
     const timer = stats && safeReadValue(stats, "combatTimer");
-    const frameTime = Number(runtime && safeReadValue(runtime, "frameTime"));
+    // combatTimer.end/remaining/done live on the engine clock (I.time, seconds) —
+    // that's the exact value the game itself passes (combatTimer.remaining(I.time)).
+    // The old code passed runtime.frameTime, which is the rAF timestamp in ms (a
+    // different axis), so done() was always true => the bar was stuck on "비전투".
+    const engine = runtime && safeReadValue(runtime, "engine");
+    const engineTime = Number(engine && safeReadValue(engine, "time"));
 
-    if (!timer || !Number.isFinite(frameTime)) {
+    if (!timer || !Number.isFinite(engineTime)) {
       return {
         available: false,
         inCombat: false,
@@ -11793,8 +11798,8 @@
       };
     }
 
-    const remaining = callRuntimeTimerNumber(timer, "remaining", frameTime);
-    const done = callRuntimeTimerBoolean(timer, "done", frameTime);
+    const remaining = callRuntimeTimerNumber(timer, "remaining", engineTime);
+    const done = callRuntimeTimerBoolean(timer, "done", engineTime);
     const inCombat = done === false && (!Number.isFinite(remaining) || remaining > 0);
     const safeRemaining = Number.isFinite(remaining) ? Math.max(0, remaining) : null;
     const text = inCombat
@@ -18037,6 +18042,9 @@
           .actions.three {
             grid-template-columns: repeat(3, 1fr);
           }
+          .actions.five {
+            grid-template-columns: repeat(5, 1fr);
+          }
           .input-row.three-fields {
             grid-template-columns: repeat(3, minmax(0, 1fr));
           }
@@ -18229,28 +18237,36 @@
             <details class="section">
               <summary>프리셋</summary>
               <div class="row"><span class="label">장비프리셋</span><span id="gearPresetStatus" class="value"></span></div>
-              <div class="actions three">
+              <div class="actions five">
                 <button id="saveGearPreset1" class="action" type="button">1 저장</button>
                 <button id="saveGearPreset2" class="action" type="button">2 저장</button>
                 <button id="saveGearPreset3" class="action" type="button">3 저장</button>
+                <button id="saveGearPreset4" class="action" type="button">4 저장</button>
+                <button id="saveGearPreset5" class="action" type="button">5 저장</button>
               </div>
-              <div class="actions three">
+              <div class="actions five">
                 <button id="equipGearPreset1" class="action" type="button">1 장착</button>
                 <button id="equipGearPreset2" class="action" type="button">2 장착</button>
                 <button id="equipGearPreset3" class="action" type="button">3 장착</button>
+                <button id="equipGearPreset4" class="action" type="button">4 장착</button>
+                <button id="equipGearPreset5" class="action" type="button">5 장착</button>
               </div>
               <div id="gearPresetNote" class="note"></div>
               <div class="section">
               <div class="row"><span class="label">스킬프리셋</span><span id="skillPresetStatus" class="value"></span></div>
-              <div class="actions three">
+              <div class="actions five">
                 <button id="saveSkillPreset1" class="action" type="button">1 저장</button>
                 <button id="saveSkillPreset2" class="action" type="button">2 저장</button>
                 <button id="saveSkillPreset3" class="action" type="button">3 저장</button>
+                <button id="saveSkillPreset4" class="action" type="button">4 저장</button>
+                <button id="saveSkillPreset5" class="action" type="button">5 저장</button>
               </div>
-              <div class="actions three">
+              <div class="actions five">
                 <button id="applySkillPreset1" class="action" type="button">1 적용</button>
                 <button id="applySkillPreset2" class="action" type="button">2 적용</button>
                 <button id="applySkillPreset3" class="action" type="button">3 적용</button>
+                <button id="applySkillPreset4" class="action" type="button">4 적용</button>
+                <button id="applySkillPreset5" class="action" type="button">5 적용</button>
               </div>
               <div id="skillPresetNote" class="note"></div>
               </div>
