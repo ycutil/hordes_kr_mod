@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.7.1
+// @version      0.7.2
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.7.1";
+  const MOD_VERSION = "0.7.2";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -1847,7 +1847,11 @@
   }
 
   function classLabel(value) {
-    const map = { 0: "Warrior", 1: "Warrior", 2: "Archer", 3: "Mage", 4: "Shaman", 5: "Necromancer" };
+    // Game class index (en.json `classes`, 0-indexed): 0 Warrior, 1 Mage,
+    // 2 Archer, 3 Shaman, 4 NPC, 5 Monster. player.class / pclass use this.
+    // (The old table mislabeled 1=Warrior/3=Mage, so isMageClass never fired
+    // for a real Mage like Upmo, whose pclass is 1.)
+    const map = { 0: "Warrior", 1: "Mage", 2: "Archer", 3: "Shaman", 4: "NPC", 5: "Monster" };
     if (value === undefined || value === null || value === "") return "";
     return map[value] || ("class" + value);
   }
