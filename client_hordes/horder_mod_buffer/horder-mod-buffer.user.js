@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.7.0
+// @version      0.7.1
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.7.0";
+  const MOD_VERSION = "0.7.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -656,7 +656,7 @@
       "__hmbRt.changeTarget=function(id){id=Number(id);try{if(typeof vr==='function')return vr(id)}catch(e){}try{return Io(Mt.clientPlayerChangeTarget.packData({target:id}))}catch(e){throw new Error('changeTarget failed: '+((e&&e.message)||e))}};",
       "__hmbRt.sendInteract=function(id){id=Number(id);try{return Io(Mt.clientPlayerInteract.packData({id:id}))}catch(e){throw new Error('sendInteract failed: '+((e&&e.message)||e))}};",
       "__hmbRt.getActiveWorld=function(){try{return typeof Gr!=='undefined'?__hmbRt.readStore(Gr):''}catch(e){return ''}};",
-      "__hmbRt.getSkillbar=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)return out;var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];if(!bar)return out;for(var i=0;i<bar.length;i++){var s=bar[i];if(!s||Number(s.id)<0){out.push(null);continue;}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(s.id):null;var mp=0;try{if(def&&typeof def.costMp==='function')mp=def.costMp(1)||0}catch(e){}out.push({slot:i+1,id:Number(s.id),cd:def?Number(def.cd)||0:0,gcd:def&&def.gcd!==void 0?Number(def.gcd):1.5,targetMode:def?Number(def.targetMode)||0:0,range:def?Number(def.range)||0:0,costMp:mp,envCast:def?Number(def.envCast)||0:0,minlevel:def?Number(def.minlevel)||0,item:!!(s&&s.item)});}}catch(e){}return out;};",
+      "__hmbRt.getSkillbar=function(){var out=[];try{var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)return out;var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];if(!bar)return out;for(var i=0;i<bar.length;i++){var s=bar[i];if(!s||Number(s.id)<0){out.push(null);continue;}var def=typeof zt!=='undefined'&&zt&&zt.get?zt.get(s.id):null;var mp=0;try{if(def&&typeof def.costMp==='function')mp=def.costMp(1)||0}catch(e){}out.push({slot:i+1,id:Number(s.id),cd:def?Number(def.cd)||0:0,gcd:def&&def.gcd!==void 0?Number(def.gcd):1.5,targetMode:def?Number(def.targetMode)||0:0,range:def?Number(def.range)||0:0,costMp:mp,envCast:def?Number(def.envCast)||0:0,minlevel:def?Number(def.minlevel)||0:0,item:!!(s&&s.item)});}}catch(e){}return out;};",
       "__hmbRt.sendCommand=function(cmd,str){try{return Io(Mt.clientCommand.packData({command:String(cmd),string:(str==null?'':str)+''}))}catch(e){throw new Error('sendCommand failed: '+((e&&e.message)||e))}};",
       "__hmbRt.respawn=function(){try{Io(Mt.clientCommand.packData({command:'respawn',string:''}));return {ok:true}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
       "__hmbRt.useEnvSkillAt=function(slot,x,z){try{slot=Number(slot);var runtime=window.__HORDER_MOD_BUFFER_RUNTIME__||{};var engine=typeof I!=='undefined'&&I?I:runtime.engine||null;var player=engine&&engine.player||runtime.player||null;if(!player)throw new Error('player not ready');var settings=typeof fe!=='undefined'&&fe&&fe.skillbarsettings;var bar=settings&&settings[player.name];var s=bar&&bar[slot-1];if(!s||Number(s.id)<0)throw new Error('empty slot '+slot);var y=0;try{if(engine&&typeof engine.getHeight==='function')y=engine.getHeight(x,z)}catch(e){}if(!y&&player.pos)y=player.pos[1]||0;Io(Mt.clientPlayerEnvSkill.packData({id:Number(s.id),info:[],pos:[Number(x),Number(y),Number(z)]}));return {ok:true,id:Number(s.id)}}catch(e){return {ok:false,reason:(e&&e.message)||String(e)}}};",
