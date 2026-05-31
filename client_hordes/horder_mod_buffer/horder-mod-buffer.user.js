@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.2
+// @version      0.6.3
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.2";
+  const MOD_VERSION = "0.6.3";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -64,7 +64,11 @@
   const FARM_RETREAT_HP = 0.3;         // retreat & heal below this HP fraction
   const FARM_RESUME_HP = 0.75;         // re-engage once healed back to here
   const FARM_LOOT_RADIUS = 14;         // pick up drops within this after a kill
-  const FARM_SKILL_SLOTS = [1, 2, 3, 4, 5, 6]; // cast these in rotation when GCD is ready
+  const FARM_LOOT = false;             // walk onto drops after a kill (off: an auto-loot pet handles it)
+  // Rotate these skillbar slots in combat. Excludes slot 3 (recall — would teleport
+  // the bot to town mid-fight) and 10 (mount). Empty/on-cd slots are skipped, so one
+  // list works for every class: Warrior dmg on 1/2/4/5/6, Mage q/e/r/f/cc on 4/6/7/8/9.
+  const FARM_SKILL_SLOTS = [1, 2, 4, 5, 6, 7, 8, 9];
   const HP_RES_IDX = 6;                // resource/stat index for HP
   const FARM_BURST_MS = 8000;          // length of one tight combat burst before yielding to the outer AI loop
   const LEVEL_FOLLOW_RADIUS = 16;      // when rejoining, stop this close to the party cluster
@@ -2665,7 +2669,7 @@
           if (holding) { holdForward(false); holding = false; }
           ai.mode = "몹탐색";
           think("🔎 주변에 몹 없음 — 이동");
-          await lootNearby(runtime);
+          if (FARM_LOOT) await lootNearby(runtime);
           await navTo(runtime, pickRoamTarget(), 4, 7000);
           return;
         }
@@ -2700,13 +2704,22 @@
         const sk = eng.player.skills;
         if (!sk || typeof sk.gcdEnd !== "number" || eng.time >= sk.gcdEnd) {
           think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
-          const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
-          ai._rot = (ai._rot + 1) % 1000;
-          try { if (typeof runtime.useSkillbarSlot === "function") runtime.useSkillbarSlot(slot); } catch { /* ignore */ }
+          // Advance through the rotation until a real (non-empty) skill is sent, so
+          // an empty slot doesn't waste the GCD. useSkillbarSlot returns ok:false for
+          // empty slots and ok:true once a skill packet is actually sent.
+          for (let tries = 0; tries < FARM_SKILL_SLOTS.length; tries++) {
+            const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
+            ai._rot = (ai._rot + 1) % 1000;
+            let res = null;
+            try { res = typeof runtime.useSkillbarSlot === "function" ? runtime.useSkillbarSlot(slot) : null; } catch { res = null; }
+            if (res && res.ok) break;              // a skill was actually sent
+            if (res && res.reason && /empty/i.test(res.reason)) continue; // empty slot — try next
+            break;                                 // unknown/no bridge — stop
+          }
         }
         await sleep(180);
         const th = hpFracOf(target);
-        if (th <= 0) { ai.kills++; ai._tgtId = 0; ai._tgtStuck = 0; await lootNearby(runtime); prev = playerPos(); continue; }
+        if (th <= 0) { ai.kills++; ai._tgtId = 0; ai._tgtStuck = 0; if (FARM_LOOT) await lootNearby(runtime); prev = playerPos(); continue; }
         // No-damage guard: if HP won't budge after several casts, it's a critter or
         // an unreachable mob — blacklist it briefly and move on to a real target.
         if (target.id === ai._tgtId) { if (th >= ai._tgtHp - 0.002) ai._tgtStuck++; else ai._tgtStuck = 0; }
