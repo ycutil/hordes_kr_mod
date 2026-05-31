@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.5
+// @version      0.5.0
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.5";
+  const MOD_VERSION = "0.5.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -67,6 +67,9 @@
   const FARM_SKILL_SLOTS = [1, 2, 3, 4, 5, 6]; // cast these in rotation when GCD is ready
   const HP_RES_IDX = 6;                // resource/stat index for HP
   const FARM_BURST_MS = 8000;          // length of one tight combat burst before yielding to the outer AI loop
+  const LEVEL_FOLLOW_RADIUS = 16;      // when rejoining, stop this close to the party cluster
+  const LEVEL_REJOIN_DIST = 24;        // drift past this from the party centroid -> go back to it
+  const PARTY_CHECK_MS = 60000;        // re-verify level-band party membership at most this often
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -154,6 +157,10 @@
     _tgtId: 0,             // current locked target id (for stuck/no-damage detection)
     _tgtHp: 1,             // last seen HP fraction of the locked target
     _tgtStuck: 0,          // consecutive casts with no HP progress on the locked target
+    leveling: false,       // leveling-party mode: follow the band party cluster + farm
+    _band: null,           // { party, zone, min, max } of my current level band
+    _partyAt: 0,           // last band-membership check time
+    _zoneLog: {},          // band party id -> { zone, x, z } learned farming-spot coords
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -225,7 +232,9 @@
     showDebug: () => showDebugReport(),
     copyDebug: () => copyDebugReport(),
     setAi: (value) => setAiEnabled(value),
-    setFarm: (value) => { ai.farm = Boolean(value); if (ai.farm) { setAiEnabled(true); ai.stopped = false; } else releaseAllMoveKeys(); setStatus(ai.farm ? "전투 파밍 ON" : "전투 파밍 OFF"); },
+    setFarm: (value) => { ai.farm = Boolean(value); if (ai.farm) { setAiEnabled(true); ai.stopped = false; ai.leveling = false; } else releaseAllMoveKeys(); setStatus(ai.farm ? "전투 파밍 ON" : "전투 파밍 OFF"); },
+    setLeveling: (value) => { ai.leveling = Boolean(value); if (ai.leveling) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai._partyAt = 0; } else releaseAllMoveKeys(); setStatus(ai.leveling ? "렙업 파티 모드 ON" : "렙업 모드 OFF"); },
+    zoneLog: () => ai._zoneLog,
     setRecallSlot: (slot) => setRecallSlot(slot),
     setFinalDest: (dest) => setFinalDest(dest),
     setPanelToken: (value) => {
@@ -244,6 +253,8 @@
       mode: ai.mode,
       activity: ai.activity,
       farm: ai.farm,
+      leveling: ai.leveling,
+      band: ai._band,
       kills: ai.kills,
       persona: ai.persona,
       brain: ai.brain.slice(-15).map((e) => formatBrainTime(e.t) + " " + e.m),
@@ -1855,6 +1866,7 @@
     if (ai.stopped) return "stopped";
     if (mode.indexOf("버프") >= 0) return "buffing";
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
+    if (ai.leveling || mode.indexOf("파티") >= 0 || mode.indexOf("솔로파밍") >= 0) return "level";
     if (ai.farm || mode.indexOf("전투") >= 0 || mode.indexOf("접근") >= 0 || mode.indexOf("후퇴") >= 0 || mode.indexOf("몹") >= 0 || mode.indexOf("루팅") >= 0 || mode.indexOf("회복") >= 0) return "farm";
     if (mode.indexOf("AFK") >= 0) return "afk";
     if (mode.indexOf("배회") >= 0 || mode.indexOf("구경") >= 0) return "wander";
@@ -1936,17 +1948,23 @@
       } else if (command === "start" || command === "enable" || command === "resume" || command === "wander") {
         setAiEnabled(true); // remote one-click activation of autonomous mode
         ai.stopped = false;
-        ai.farm = false;
+        ai.farm = false; ai.leveling = false;
         ackNow.push(entry.id);
       } else if (command === "disable") {
         setAiEnabled(false);
-        ai.farm = false;
+        ai.farm = false; ai.leveling = false;
         ackNow.push(entry.id);
       } else if (command === "farm") {
-        setAiEnabled(true); ai.stopped = false; ai.farm = true;
+        setAiEnabled(true); ai.stopped = false; ai.farm = true; ai.leveling = false;
         ackNow.push(entry.id);
       } else if (command === "farmoff" || command === "farmstop") {
         ai.farm = false; releaseAllMoveKeys();
+        ackNow.push(entry.id);
+      } else if (command === "level" || command === "leveling") {
+        setAiEnabled(true); ai.stopped = false; ai.leveling = true; ai.farm = false; ai._partyAt = 0;
+        ackNow.push(entry.id);
+      } else if (command === "leveloff") {
+        ai.leveling = false; releaseAllMoveKeys();
         ackNow.push(entry.id);
       } else {
         ackNow.push(entry.id);
@@ -2026,6 +2044,7 @@
       return;
     }
 
+    if (ai.leveling) { await levelingStep(runtime); return; } // follow band party + farm
     if (ai.farm) { await farmStep(runtime); return; } // combat farming (leveling)
 
     // Obelisk auto-buff removed by request (handled manually via the panel button).
@@ -2584,7 +2603,7 @@
     let prev = playerPos();
     try {
       while (Date.now() < burstEnd) {
-        if (ai.stopped || !ai.enabled || !ai.farm || ai.pendingBuff || ai.pendingRecall) return;
+        if (ai.stopped || !ai.enabled || (!ai.farm && !ai.leveling) || ai.pendingBuff || ai.pendingRecall) return;
 
         const myHp = hpFracOf(me);
         if (myHp >= 0 && myHp < FARM_RETREAT_HP) {
@@ -2666,7 +2685,7 @@
     if (ai.home) await navTo(runtime, { x: ai.home[0], z: ai.home[2] }, 5, 9000);
     const me = runtime.engine && runtime.engine.player;
     for (let i = 0; i < 30; i++) {
-      if (ai.stopped || !ai.farm || ai.pendingBuff) return;
+      if (ai.stopped || (!ai.farm && !ai.leveling) || ai.pendingBuff) return;
       if (!me || hpFracOf(me) >= FARM_RESUME_HP) return;
       think("🧘 회복 대기 (HP " + Math.round(hpFracOf(me) * 100) + "%)");
       await sleep(1000);
@@ -2684,11 +2703,80 @@
     }
     loot.sort((a, b) => a.d - b.d);
     for (const it of loot.slice(0, 3)) {
-      if (ai.stopped || !ai.farm || ai.pendingBuff || ai.pendingRecall) return;
+      if (ai.stopped || (!ai.farm && !ai.leveling) || ai.pendingBuff || ai.pendingRecall) return;
       ai.mode = "루팅";
       think("💰 줍기: " + String(it.e.name || "").slice(0, 14));
       await navTo(runtime, { x: it.e.pos[0], z: it.e.pos[2] }, 1.5, 4000); // walk over it
     }
+  }
+
+  // ===== Leveling-party mode — behave like the server's AI leveling bots =====
+  // The game runs 9 listed "leveling" parties (one per level band) whose bot
+  // members physically cluster at a level-appropriate farming zone. We ensure
+  // membership in the band for our level, follow the cluster, and farm with it.
+  function partyMembers(eng, me) {
+    const out = [];
+    const arr = eng.entities && eng.entities.array;
+    if (!arr || !me.party) return out;
+    for (const e of arr) {
+      if (!e || e.type !== 0 || !e.pos || e.id === me.id) continue;
+      if (e.party === me.party) out.push(e);
+    }
+    return out;
+  }
+
+  function partyCentroid(eng, me) {
+    const m = partyMembers(eng, me);
+    if (!m.length) return null;
+    let sx = 0, sz = 0;
+    for (const e of m) { sx += e.pos[0]; sz += e.pos[2]; }
+    return { x: sx / m.length, z: sz / m.length, n: m.length };
+  }
+
+  // Fetch the listed leveling parties and make sure we're in the one whose level
+  // band contains us; apply to join if not. Same-origin fetch carries the session
+  // cookie, so this works straight from the page context.
+  async function ensureBandParty(runtime) {
+    const me = runtime.engine && runtime.engine.player;
+    if (!me) return;
+    try {
+      const r = await fetch("/api/party/getlistedparties", { method: "POST", body: "{}" });
+      const list = await r.json();
+      if (!Array.isArray(list)) return;
+      const band = list.find((p) => me.level >= p.minlevel && me.level <= p.maxlevel && p.faction === me.faction);
+      if (!band) { think("🧭 내 레벨대(" + me.level + ") 파티 없음"); return; }
+      ai._band = { party: band.party, zone: band.message, min: band.minlevel, max: band.maxlevel };
+      if (me.party === band.party) return; // already in the right band
+      think("🤝 " + band.message + " 파티(Lv" + band.minlevel + "-" + band.maxlevel + ") 가입 신청");
+      await fetch("/api/party/makeapplication", { method: "POST", body: JSON.stringify({ party: band.party, message: "" }) });
+    } catch { /* network hiccup — try again next cycle */ }
+  }
+
+  async function levelingStep(runtime) {
+    const eng = runtime.engine, me = eng && eng.player;
+    if (!me || !me.stats) { await sleep(700); return; }
+
+    // Periodically confirm we're in the right level-band party.
+    if (Date.now() - ai._partyAt > PARTY_CHECK_MS) { ai._partyAt = Date.now(); await ensureBandParty(runtime); }
+
+    // Learn this band's farming-spot coords from where the party is clustered.
+    const cen = partyCentroid(eng, me);
+    if (cen && ai._band) ai._zoneLog[ai._band.party] = { zone: ai._band.zone, x: Math.round(cen.x), z: Math.round(cen.z) };
+
+    // Drifted away from the group (or a no-mob lull pulled us off)? Rejoin them.
+    if (cen) {
+      const d = Math.hypot(cen.x - me.pos[0], cen.z - me.pos[2]);
+      if (d > LEVEL_REJOIN_DIST) {
+        ai.mode = "파티합류";
+        think("🏃 파티(" + cen.n + "명) 따라가기 (" + Math.round(d) + ")");
+        await navTo(runtime, { x: cen.x, z: cen.z }, LEVEL_FOLLOW_RADIUS, 8000);
+        return;
+      }
+    }
+
+    // Near the party (or solo if none visible): fight the local mobs.
+    if (!cen) ai.mode = "솔로파밍";
+    await farmStep(runtime);
   }
 
   function learnWaypoints(runtime) {

@@ -1,0 +1,16 @@
+{
+  "_note": "Hordes.io 서버 운영 AI 렙업 파티 사다리. /api/party/getlistedparties 로 라이브 조회(POST, body '{}'). leadername=null=서버봇. 멤버는 type-0 player 엔티티로 party===partyId. 같은 밴드 봇들이 사냥터에 물리적으로 뭉쳐 farm. 가입: /api/party/makeapplication {party,message}. faction 1(블루) 기준 — 진영별로 별도 존재 가능.",
+  "discoveredAt": "2026-05-31",
+  "faction": 1,
+  "bands": [
+    { "party": 10001, "min": 3,  "max": 8,  "zone": "Bandit Camp",            "coords": null },
+    { "party": 10017, "min": 9,  "max": 13, "zone": "Wolves / Spiders",       "coords": null },
+    { "party": 10002, "min": 14, "max": 18, "zone": "Bee / Ant / Shroomling", "coords": null },
+    { "party": 10005, "min": 19, "max": 23, "zone": "Stoneback Turtles",      "coords": null },
+    { "party": 10007, "min": 24, "max": 27, "zone": "Lizards / Sand Worms",   "coords": null },
+    { "party": 10008, "min": 28, "max": 32, "zone": "Crocodile Beach",        "coords": [1632, 4088], "mobs": ["River Crocodile", "Cacklepaw Hyena"] },
+    { "party": 10010, "min": 33, "max": 37, "zone": "Lion / Giftfang Recluse","coords": null },
+    { "party": 10012, "min": 38, "max": 41, "zone": "Blackmane Bear / Wolves","coords": null },
+    { "party": 10015, "min": 42, "max": 44, "zone": "Moose / Tarantula",      "coords": null }
+  ]
+}
