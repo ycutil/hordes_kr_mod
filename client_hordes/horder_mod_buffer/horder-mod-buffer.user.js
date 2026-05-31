@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.0";
+  const MOD_VERSION = "0.6.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -76,6 +76,7 @@
   const OBELISK_FOLLOW_DIST = 22;      // regroup with the friendly zerg if farther than this
   const OBELISK_RETRY_MS = 60000;      // re-attempt entry at most this often
   const WAR_CONJURER_POS = { x: 4244, z: 4176 }; // Faivel War Conjurer (obelisk port)
+  const OBELISK_MIN_LEVEL = 35;        // Faivel (the War Conjurer's town) gates teleport at Lv.35+ (verified live)
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -2884,6 +2885,15 @@
       }
       ai._warTarget = true;        // combat targets enemy players + mobs
       try { await farmStep(runtime); } finally { ai._warTarget = false; }
+      return;
+    }
+
+    // The War Conjurer lives in Faivel, whose teleport requires Lv.35+ — below that
+    // we can't even reach the obelisk entrance, so don't try (keep leveling instead).
+    if (me.level < OBELISK_MIN_LEVEL) {
+      ai.mode = "오벨대기";
+      think("🔒 오벨리스크는 Lv" + OBELISK_MIN_LEVEL + "+ 필요 (현재 " + me.level + ") — 렙업 먼저");
+      await sleep(6000);
       return;
     }
 

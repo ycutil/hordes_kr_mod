@@ -3,7 +3,9 @@
 > 2026-05-31 KST 20:24 기준 **비활성**(전쟁 엔티티 없음). 점령/contributor 메커니즘은 **활성 윈도우에서만 라이브 관찰 가능**.
 
 ## 입장
-- **War Conjurer**(Faivel ≈ 4244,4176)의 대화 → 오벨리스크 포트로 입장. 클라이언트 이펙트 `conjurer_obeliskport`(Dk) 존재.
+- **⚠️ Lv.35+ 필수 (라이브 검증)**: Conjurer 텔포 선택지 "Teleport to Faivel. **(Lv. 35+)**". War Conjurer가 Faivel에 있으므로 **Lv35 미만은 오벨 입구(Faivel)에 도달 불가**. 테스트 캐릭 Lv32로 Faivel 클릭 시 위치 변화 없음(거부). → 봇은 Lv35까지 렙업 후 오벨 참여 가능. 유저스크립트에 `OBELISK_MIN_LEVEL=35` 가드 추가.
+- 리콜(skill 40)은 **현재 바인딩된 마을 Conjurer 옆**으로 복귀(테스트: Crocodile Beach(1625,4091)→ Headless계열 Conjurer(1713,3597)). 일반 Conjurer 대화 = Guardstone(Lv1+)·Faivel(Lv35+) 텔포 + 파티/EXP레이트 표시.
+- **War Conjurer**(Faivel ≈ 4244,4176)의 대화 → 오벨리스크 포트로 입장. 클라이언트 이펙트 `conjurer_obeliskport`(Dk) 존재. (대화 선택지 텍스트는 Lv35+ 캐릭으로 실측 필요)
 - 입장 시 **queue** 가능: `serverQueue` 패킷 → "Queue Position: N" 상태 표시(state machine).
 - 텔포 클릭은 일반 Conjurer와 동일하게 대화창 `.btn` 풀 포인터시퀀스 필요(기존 `openConjurer` 인프라 재사용 가능).
 
