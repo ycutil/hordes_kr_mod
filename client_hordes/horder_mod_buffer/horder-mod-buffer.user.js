@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.5.0
+// @version      0.5.1
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.5.0";
+  const MOD_VERSION = "0.5.1";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -161,6 +161,7 @@
     _band: null,           // { party, zone, min, max } of my current level band
     _partyAt: 0,           // last band-membership check time
     _zoneLog: {},          // band party id -> { zone, x, z } learned farming-spot coords
+    _zoneLoaded: false,    // whether _zoneLog has been hydrated from localStorage yet
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -2752,16 +2753,54 @@
     } catch { /* network hiccup — try again next cycle */ }
   }
 
+  // Zone coords are server-side (party messages), not in the client — so we learn
+  // each band's farming spot from the cluster and remember it across reloads. One
+  // seed (Crocodile Beach) bootstraps the band the test char already farms.
+  const ZONE_KEY = "horderModZoneLog";
+  const ZONE_SEED = { 10008: { zone: "Crocodile Beach", x: 1632, z: 4096 } };
+  function loadZoneLog() {
+    try { return Object.assign({}, ZONE_SEED, JSON.parse(localStorage.getItem(ZONE_KEY) || "{}")); }
+    catch { return Object.assign({}, ZONE_SEED); }
+  }
+  function saveZoneLog() { try { localStorage.setItem(ZONE_KEY, JSON.stringify(ai._zoneLog)); } catch { /* ignore */ } }
+
   async function levelingStep(runtime) {
     const eng = runtime.engine, me = eng && eng.player;
     if (!me || !me.stats) { await sleep(700); return; }
+    if (!ai._zoneLoaded) { ai._zoneLog = loadZoneLog(); ai._zoneLoaded = true; }
 
-    // Periodically confirm we're in the right level-band party.
+    // Periodically confirm we're in the right level-band party (applies on level-up).
     if (Date.now() - ai._partyAt > PARTY_CHECK_MS) { ai._partyAt = Date.now(); await ensureBandParty(runtime); }
 
-    // Learn this band's farming-spot coords from where the party is clustered.
     const cen = partyCentroid(eng, me);
-    if (cen && ai._band) ai._zoneLog[ai._band.party] = { zone: ai._band.zone, x: Math.round(cen.x), z: Math.round(cen.z) };
+
+    // Band transition: we leveled out of our band, so our band's party is no longer
+    // the cluster around us. Being physically at the right zone matters more than the
+    // formal membership, so travel to where that band farms (known) or scout for it.
+    if (ai._band && me.party !== ai._band.party) {
+      const z = ai._zoneLog[ai._band.party];
+      if (z) {
+        const dz = Math.hypot(z.x - me.pos[0], z.z - me.pos[2]);
+        if (dz > LEVEL_REJOIN_DIST) {
+          ai.mode = "존이동";
+          think("🧭 " + ai._band.zone + "(으)로 이동 (" + Math.round(dz) + ")");
+          await navTo(runtime, { x: z.x, z: z.z }, LEVEL_FOLLOW_RADIUS, 12000);
+          return;
+        }
+        // Arrived at the band's zone; fall through to farm until its members stream in.
+      } else if (!cen) {
+        ai.mode = "존탐색";
+        think("🧭 " + ai._band.zone + " 위치 미학습 — 탐색");
+        await navTo(runtime, pickRoamTarget(), 4, 7000);
+        return;
+      }
+    }
+
+    // Learn / refresh this band's spot from the cluster we're actually grouped with.
+    if (cen && ai._band && me.party === ai._band.party) {
+      ai._zoneLog[ai._band.party] = { zone: ai._band.zone, x: Math.round(cen.x), z: Math.round(cen.z) };
+      saveZoneLog();
+    }
 
     // Drifted away from the group (or a no-mob lull pulled us off)? Rejoin them.
     if (cen) {
