@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.150-local
+// @version      0.9.151-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.150-local";
+  const BOOT_VERSION = "0.9.151-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -330,6 +330,10 @@
   const BUFF_SPIKE_WINDOW_MS = 1500;     // count the increase within this rolling window
   const BUFF_SPIKE_DISPLAY_MS = 4000;    // keep the warning up this long after a spike
   const BUFF_SPIKE_TRACKER_TTL_MS = 20000; // drop trackers for entities not seen for this long
+  // Status dashboard: small draggable HUD showing runtime/feature health at a glance.
+  const DASHBOARD_REFRESH_MS = 700;
+  const DASHBOARD_ACTIVE_WINDOW_MS = 2500; // "recent activity" window for a feature to count as live
+  const DASHBOARD_POS_KEY = "hordesKrMod.dashboard.pos";
   const MINIMAP_OVERLAY_REFRESH_MS = 100;
   const PRESET_QUICKBAR_REFRESH_MS = 500;
   const TARGET_DISTANCE_OVERLAY_REFRESH_MS = 100;
@@ -627,6 +631,7 @@
     incomingSkillOverlayEnabled: true,
     incomingTargetWatchEnabled: false,
     buffSpikeWarnEnabled: true,
+    dashboardEnabled: true,
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
@@ -639,6 +644,7 @@
   FEATURE_CONFIG.incomingSkillOverlayEnabled = FEATURE_CONFIG.incomingSkillOverlayEnabled !== false;
   FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
   FEATURE_CONFIG.buffSpikeWarnEnabled = FEATURE_CONFIG.buffSpikeWarnEnabled !== false;
+  FEATURE_CONFIG.dashboardEnabled = FEATURE_CONFIG.dashboardEnabled !== false;
   if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
     FEATURE_CONFIG.incomingTargetWatchEnabled = true;
     try {
@@ -942,6 +948,15 @@
     lockedTarget: null,
     deepSearchCache: new Map(),
   };
+  const DASHBOARD_STATE = {
+    host: null,
+    body: null,
+    timer: null,
+    rows: new Map(),
+    dragging: null,
+    styleInstalled: false,
+  };
+
   const HIGHLIGHT_STATE = {
     observer: null,
     pending: false,
@@ -1042,6 +1057,7 @@
   }
 
   initGameScriptRuntimeHook();
+  installStatusDashboard();
 
   // === 시야각(FOV) 슬라이더 상한 해제 ===
   // 게임은 시야각 슬라이더를 max=100으로 제한하지만, 슬라이더 값 파서(Gt)에는
@@ -3115,6 +3131,13 @@
       return FEATURE_CONFIG.buffSpikeWarnEnabled
         ? "버프 활성화 경고 켜짐 (강조/주시 대상이 버프를 한꺼번에 켜면 ⚡버프 표시)"
         : "버프 활성화 경고 꺼짐";
+    },
+    toggleDashboard() {
+      const enabled = setDashboardEnabled(!isDashboardEnabled());
+      return enabled ? "상태 대시보드 켜짐" : "상태 대시보드 꺼짐";
+    },
+    showDashboard() {
+      return setDashboardEnabled(true) ? "상태 대시보드 켜짐" : "상태 대시보드 꺼짐";
     },
     toggleChatTranslation() {
       return setChatTranslationEnabled(!isChatTranslationEnabled());
@@ -11401,6 +11424,238 @@
     for (const [id, rec] of tracker) {
       if (now - (rec && rec.seenAt || 0) > BUFF_SPIKE_TRACKER_TTL_MS) tracker.delete(id);
     }
+  }
+
+  // ===== Status dashboard (small draggable HUD) =====
+  // Shows the runtime bridge + feature health at a glance. The runtime row goes red
+  // when the engine bridge is missing (the transient drop the user kept hitting), and
+  // every runtime-dependent feature then shows "런타임 대기" so it's obvious why the
+  // overlays paused.
+  function isDashboardEnabled() {
+    return FEATURE_CONFIG.dashboardEnabled !== false;
+  }
+
+  function getDashboardRuntimeState() {
+    let summary;
+    try { summary = getExposedRuntimeSummary(); } catch { summary = null; }
+    if (!summary || !summary.exposed) return { dot: "err", text: "끊김", healthy: false };
+    if (!summary.hasEngine || !summary.hasPlayer) return { dot: "warn", text: "로딩/전환", healthy: false };
+    if (!summary.hasProjectionMatrix) return { dot: "warn", text: "카메라 대기", healthy: false };
+    if (Number.isFinite(summary.frameLoopSeenAgoMs) && summary.frameLoopSeenAgoMs > 2000) {
+      return { dot: "warn", text: "프레임 멈춤", healthy: false };
+    }
+    return { dot: "ok", text: "연결됨", healthy: true };
+  }
+
+  function dashboardFeatureRow(enabled, needsRuntime, runtimeHealthy, active, liveText, idleText) {
+    if (!enabled) return { dot: "off", text: "꺼짐" };
+    if (needsRuntime && !runtimeHealthy) return { dot: "warn", text: "런타임 대기" };
+    return { dot: "ok", text: active ? liveText : idleText };
+  }
+
+  function computeDashboardRows() {
+    const rt = getDashboardRuntimeState();
+    const healthy = rt.healthy;
+    const now = Date.now();
+    const recent = (ts) => Boolean(ts) && now - ts < DASHBOARD_ACTIVE_WINDOW_MS;
+
+    return [
+      { key: "runtime", label: "런타임", dot: rt.dot, text: rt.text },
+      {
+        key: "highlight",
+        label: "강조표시",
+        ...dashboardFeatureRow(
+          HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0,
+          true, healthy, recent(HIGHLIGHT_STATE.lastRuntimeOverlayAt), "표시중", "대기"
+        ),
+      },
+      {
+        key: "list",
+        label: "강조목록",
+        ...dashboardFeatureRow(HIGHLIGHT_CONFIG.minimapListEnabled, true, healthy, recent(HIGHLIGHT_STATE.lastMinimapOverlayAt), "켜짐", "대기"),
+      },
+      {
+        key: "dist",
+        label: "타겟거리",
+        ...dashboardFeatureRow(isTargetDistanceEnabled(), true, healthy, healthy, "켜짐", "대기"),
+      },
+      {
+        key: "cast",
+        label: "시전/주시",
+        ...dashboardFeatureRow(
+          isIncomingSkillOverlayEnabled() || isIncomingTargetWatchEnabled(),
+          true, healthy, recent(HIGHLIGHT_STATE.lastIncomingSkillOverlayAt), "감지중", "대기"
+        ),
+      },
+      {
+        key: "buff",
+        label: "버프경고",
+        ...dashboardFeatureRow(isBuffSpikeWarnEnabled(), true, healthy, healthy, "켜짐", "대기"),
+      },
+      {
+        key: "trans",
+        label: "번역",
+        ...dashboardFeatureRow(FEATURE_CONFIG.domTranslationEnabled !== false, false, healthy, MOD_STATUS.domReplacedCount > 0, "적용", "대기"),
+      },
+    ];
+  }
+
+  function ensureDashboardStyle() {
+    if (DASHBOARD_STATE.styleInstalled) return;
+    const style = document.createElement("style");
+    style.textContent = [
+      "#hkr-dashboard{position:fixed;left:8px;top:8px;z-index:2147483600;font:600 11px/1.45 -apple-system,'Segoe UI',sans-serif;color:#e8eef6;background:rgba(14,18,26,0.82);border:1px solid rgba(120,140,170,0.35);border-radius:7px;padding:4px 7px 5px;min-width:120px;box-shadow:0 3px 12px rgba(0,0,0,0.5);-webkit-user-select:none;user-select:none}",
+      "#hkr-dashboard .hkr-dash-header{display:flex;align-items:center;gap:5px;cursor:move;margin-bottom:3px;padding-bottom:3px;border-bottom:1px solid rgba(120,140,170,0.2)}",
+      "#hkr-dashboard .hkr-dash-title{flex:1;letter-spacing:0.3px;opacity:0.92}",
+      "#hkr-dashboard .hkr-dash-hide{cursor:pointer;opacity:0.5;padding:0 2px}",
+      "#hkr-dashboard .hkr-dash-hide:hover{opacity:1}",
+      "#hkr-dashboard .hkr-dash-row{display:flex;align-items:center;gap:5px;padding:1px 0}",
+      "#hkr-dashboard .hkr-dash-lbl{flex:1;opacity:0.86}",
+      "#hkr-dashboard .hkr-dash-val{opacity:0.7;font-weight:500;font-size:10px}",
+      "#hkr-dashboard .hkr-dash-dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px;background:#5a6470}",
+      "#hkr-dashboard .hkr-dash-dot.dot-ok{background:#37d67a;box-shadow:0 0 5px rgba(55,214,122,0.7)}",
+      "#hkr-dashboard .hkr-dash-dot.dot-warn{background:#f5c042;box-shadow:0 0 5px rgba(245,192,66,0.6)}",
+      "#hkr-dashboard .hkr-dash-dot.dot-err{background:#ff4d4d;box-shadow:0 0 6px rgba(255,77,77,0.75)}",
+      "#hkr-dashboard .hkr-dash-dot.dot-off{background:#5a6470;box-shadow:none}",
+    ].join("");
+    (document.head || document.documentElement).appendChild(style);
+    DASHBOARD_STATE.styleInstalled = true;
+  }
+
+  function applyDashboardSavedPosition(host) {
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem(DASHBOARD_POS_KEY) || "null"); } catch { pos = null; }
+    const x = pos && Number.isFinite(pos.x) ? pos.x : 8;
+    const y = pos && Number.isFinite(pos.y) ? pos.y : 8;
+    host.style.left = `${x}px`;
+    host.style.top = `${y}px`;
+  }
+
+  function installDashboardDrag(host, handle) {
+    handle.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      const rect = host.getBoundingClientRect();
+      DASHBOARD_STATE.dragging = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+      event.preventDefault();
+    });
+    document.addEventListener("mousemove", (event) => {
+      const drag = DASHBOARD_STATE.dragging;
+      if (!drag) return;
+      const maxX = Math.max(0, (Number(pageWindow.innerWidth) || 800) - 40);
+      const maxY = Math.max(0, (Number(pageWindow.innerHeight) || 600) - 18);
+      host.style.left = `${Math.round(clamp(event.clientX - drag.dx, 0, maxX))}px`;
+      host.style.top = `${Math.round(clamp(event.clientY - drag.dy, 0, maxY))}px`;
+    });
+    document.addEventListener("mouseup", () => {
+      if (!DASHBOARD_STATE.dragging) return;
+      DASHBOARD_STATE.dragging = null;
+      try {
+        const rect = host.getBoundingClientRect();
+        localStorage.setItem(DASHBOARD_POS_KEY, JSON.stringify({ x: Math.round(rect.left), y: Math.round(rect.top) }));
+      } catch {
+        // storage may be unavailable
+      }
+    });
+  }
+
+  function ensureDashboardHost() {
+    if (DASHBOARD_STATE.host && document.contains(DASHBOARD_STATE.host)) return DASHBOARD_STATE.host;
+    if (!document.body) return null;
+    ensureDashboardStyle();
+
+    const host = document.createElement("div");
+    host.id = "hkr-dashboard";
+
+    const header = document.createElement("div");
+    header.className = "hkr-dash-header";
+    const master = document.createElement("span");
+    master.className = "hkr-dash-master hkr-dash-dot dot-warn";
+    const title = document.createElement("span");
+    title.className = "hkr-dash-title";
+    title.textContent = "KR 상태";
+    const hide = document.createElement("span");
+    hide.className = "hkr-dash-hide";
+    hide.textContent = "✕";
+    hide.title = "숨기기 (콘솔 HordesKrMod.toggleDashboard() 로 다시 표시)";
+    hide.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setDashboardEnabled(false);
+    });
+    header.append(master, title, hide);
+
+    const body = document.createElement("div");
+    body.className = "hkr-dash-body";
+
+    host.append(header, body);
+    document.body.appendChild(host);
+    applyDashboardSavedPosition(host);
+    installDashboardDrag(host, header);
+
+    DASHBOARD_STATE.host = host;
+    DASHBOARD_STATE.body = body;
+    DASHBOARD_STATE.rows.clear();
+    return host;
+  }
+
+  function renderDashboard(rows) {
+    const host = ensureDashboardHost();
+    if (!host) return;
+    const body = DASHBOARD_STATE.body;
+
+    const master = host.querySelector(".hkr-dash-master");
+    if (master) master.className = `hkr-dash-master hkr-dash-dot dot-${rows[0].dot}`;
+
+    for (const row of rows) {
+      let el = DASHBOARD_STATE.rows.get(row.key);
+      if (!el || !body.contains(el)) {
+        el = document.createElement("div");
+        el.className = "hkr-dash-row";
+        const dot = document.createElement("span");
+        dot.className = "hkr-dash-dot";
+        const label = document.createElement("span");
+        label.className = "hkr-dash-lbl";
+        label.textContent = row.label;
+        const value = document.createElement("span");
+        value.className = "hkr-dash-val";
+        el.append(dot, label, value);
+        body.appendChild(el);
+        DASHBOARD_STATE.rows.set(row.key, el);
+      }
+      const dotClass = `hkr-dash-dot dot-${row.dot}`;
+      if (el.children[0].className !== dotClass) el.children[0].className = dotClass;
+      if (el.children[2].textContent !== row.text) el.children[2].textContent = row.text;
+    }
+  }
+
+  function hideDashboard() {
+    if (DASHBOARD_STATE.host) DASHBOARD_STATE.host.style.display = "none";
+  }
+
+  function updateStatusDashboard() {
+    try {
+      if (!isDashboardEnabled()) {
+        hideDashboard();
+        return;
+      }
+      renderDashboard(computeDashboardRows());
+      if (DASHBOARD_STATE.host) DASHBOARD_STATE.host.style.display = "block";
+    } catch {
+      // never let the dashboard break the page
+    }
+  }
+
+  function installStatusDashboard() {
+    if (DASHBOARD_STATE.timer) return;
+    DASHBOARD_STATE.timer = setInterval(updateStatusDashboard, DASHBOARD_REFRESH_MS);
+    updateStatusDashboard();
+  }
+
+  function setDashboardEnabled(value) {
+    FEATURE_CONFIG.dashboardEnabled = Boolean(value);
+    saveFeatureConfig();
+    if (!FEATURE_CONFIG.dashboardEnabled) hideDashboard();
+    else updateStatusDashboard();
+    return FEATURE_CONFIG.dashboardEnabled;
   }
 
   function updateRuntimeNameOverlay() {
