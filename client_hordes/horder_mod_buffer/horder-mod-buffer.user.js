@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.5.1
+// @version      0.6.0
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.5.1";
+  const MOD_VERSION = "0.6.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -70,6 +70,12 @@
   const LEVEL_FOLLOW_RADIUS = 16;      // when rejoining, stop this close to the party cluster
   const LEVEL_REJOIN_DIST = 24;        // drift past this from the party centroid -> go back to it
   const PARTY_CHECK_MS = 60000;        // re-verify level-band party membership at most this often
+  // Obelisk (faction war) — scaffold; in-window PvP/capture details pending live verification.
+  const OBELISK_HOURS = [3, 6, 9, 12, 15, 18, 21, 0]; // KST hours the war window opens (~every 3h)
+  const OBELISK_WINDOW_MIN = 35;       // try to enter within this many minutes past the hour
+  const OBELISK_FOLLOW_DIST = 22;      // regroup with the friendly zerg if farther than this
+  const OBELISK_RETRY_MS = 60000;      // re-attempt entry at most this often
+  const WAR_CONJURER_POS = { x: 4244, z: 4176 }; // Faivel War Conjurer (obelisk port)
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -162,6 +168,9 @@
     _partyAt: 0,           // last band-membership check time
     _zoneLog: {},          // band party id -> { zone, x, z } learned farming-spot coords
     _zoneLoaded: false,    // whether _zoneLog has been hydrated from localStorage yet
+    obelisk: false,        // obelisk-war mode (opt-in; only acts inside KST windows)
+    _obAt: 0,              // last obelisk entry attempt time
+    _warTarget: false,     // combat should include enemy-faction players (war only)
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -234,7 +243,8 @@
     copyDebug: () => copyDebugReport(),
     setAi: (value) => setAiEnabled(value),
     setFarm: (value) => { ai.farm = Boolean(value); if (ai.farm) { setAiEnabled(true); ai.stopped = false; ai.leveling = false; } else releaseAllMoveKeys(); setStatus(ai.farm ? "전투 파밍 ON" : "전투 파밍 OFF"); },
-    setLeveling: (value) => { ai.leveling = Boolean(value); if (ai.leveling) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai._partyAt = 0; } else releaseAllMoveKeys(); setStatus(ai.leveling ? "렙업 파티 모드 ON" : "렙업 모드 OFF"); },
+    setLeveling: (value) => { ai.leveling = Boolean(value); if (ai.leveling) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai.obelisk = false; ai._partyAt = 0; } else releaseAllMoveKeys(); setStatus(ai.leveling ? "렙업 파티 모드 ON" : "렙업 모드 OFF"); },
+    setObelisk: (value) => { ai.obelisk = Boolean(value); if (ai.obelisk) { setAiEnabled(true); ai.stopped = false; ai.farm = false; ai.leveling = false; ai._obAt = 0; } else releaseAllMoveKeys(); setStatus(ai.obelisk ? "오벨리스크 모드 ON(윈도우 대기)" : "오벨리스크 모드 OFF"); },
     zoneLog: () => ai._zoneLog,
     setRecallSlot: (slot) => setRecallSlot(slot),
     setFinalDest: (dest) => setFinalDest(dest),
@@ -255,6 +265,7 @@
       activity: ai.activity,
       farm: ai.farm,
       leveling: ai.leveling,
+      obelisk: ai.obelisk,
       band: ai._band,
       kills: ai.kills,
       persona: ai.persona,
@@ -1867,6 +1878,7 @@
     if (ai.stopped) return "stopped";
     if (mode.indexOf("버프") >= 0) return "buffing";
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
+    if (ai.obelisk || mode.indexOf("오벨") >= 0) return "obelisk";
     if (ai.leveling || mode.indexOf("파티") >= 0 || mode.indexOf("솔로파밍") >= 0) return "level";
     if (ai.farm || mode.indexOf("전투") >= 0 || mode.indexOf("접근") >= 0 || mode.indexOf("후퇴") >= 0 || mode.indexOf("몹") >= 0 || mode.indexOf("루팅") >= 0 || mode.indexOf("회복") >= 0) return "farm";
     if (mode.indexOf("AFK") >= 0) return "afk";
@@ -1949,23 +1961,29 @@
       } else if (command === "start" || command === "enable" || command === "resume" || command === "wander") {
         setAiEnabled(true); // remote one-click activation of autonomous mode
         ai.stopped = false;
-        ai.farm = false; ai.leveling = false;
+        ai.farm = false; ai.leveling = false; ai.obelisk = false;
         ackNow.push(entry.id);
       } else if (command === "disable") {
         setAiEnabled(false);
-        ai.farm = false; ai.leveling = false;
+        ai.farm = false; ai.leveling = false; ai.obelisk = false;
         ackNow.push(entry.id);
       } else if (command === "farm") {
-        setAiEnabled(true); ai.stopped = false; ai.farm = true; ai.leveling = false;
+        setAiEnabled(true); ai.stopped = false; ai.farm = true; ai.leveling = false; ai.obelisk = false;
         ackNow.push(entry.id);
       } else if (command === "farmoff" || command === "farmstop") {
         ai.farm = false; releaseAllMoveKeys();
         ackNow.push(entry.id);
       } else if (command === "level" || command === "leveling") {
-        setAiEnabled(true); ai.stopped = false; ai.leveling = true; ai.farm = false; ai._partyAt = 0;
+        setAiEnabled(true); ai.stopped = false; ai.leveling = true; ai.farm = false; ai.obelisk = false; ai._partyAt = 0;
         ackNow.push(entry.id);
       } else if (command === "leveloff") {
         ai.leveling = false; releaseAllMoveKeys();
+        ackNow.push(entry.id);
+      } else if (command === "obelisk") {
+        setAiEnabled(true); ai.stopped = false; ai.obelisk = true; ai.farm = false; ai.leveling = false; ai._obAt = 0;
+        ackNow.push(entry.id);
+      } else if (command === "obeliskoff") {
+        ai.obelisk = false; releaseAllMoveKeys();
         ackNow.push(entry.id);
       } else {
         ackNow.push(entry.id);
@@ -2045,6 +2063,7 @@
       return;
     }
 
+    if (ai.obelisk) { await obeliskStep(runtime); return; } // faction war (window-gated)
     if (ai.leveling) { await levelingStep(runtime); return; } // follow band party + farm
     if (ai.farm) { await farmStep(runtime); return; } // combat farming (leveling)
 
@@ -2581,12 +2600,14 @@
     let best = null, bd = R, alt = null, ad = R;
     for (let i = 0; i < arr.length; i++) {
       const e = arr[i];
-      if (!e || (e.type !== 1 && e.type !== 10) || !e.pos || !e.stats) continue;
+      if (!e || !e.pos || !e.stats || e.id === me.id) continue;
+      const enemyPlayer = ai._warTarget && e.type === 0 && e.faction !== me.faction; // war: enemy faction
+      if (!enemyPlayer && e.type !== 1 && e.type !== 10) continue;
       if (hpFracOf(e) <= 0) continue;
       const skip = ai._skipMobs[e.id];
       if (skip) { if (skip > now) continue; delete ai._skipMobs[e.id]; }
       const d = Math.hypot(e.pos[0] - me.pos[0], e.pos[2] - me.pos[2]);
-      if (e.type === 1) { if (d < bd) { bd = d; best = e; } }
+      if (e.type === 1 || enemyPlayer) { if (d < bd) { bd = d; best = e; } } // real mobs + enemies preferred
       else if (d < ad) { ad = d; alt = e; }
     }
     return best || alt;
@@ -2604,7 +2625,7 @@
     let prev = playerPos();
     try {
       while (Date.now() < burstEnd) {
-        if (ai.stopped || !ai.enabled || (!ai.farm && !ai.leveling) || ai.pendingBuff || ai.pendingRecall) return;
+        if (ai.stopped || !ai.enabled || (!ai.farm && !ai.leveling && !ai.obelisk) || ai.pendingBuff || ai.pendingRecall) return;
 
         const myHp = hpFracOf(me);
         if (myHp >= 0 && myHp < FARM_RETREAT_HP) {
@@ -2615,7 +2636,7 @@
           return;
         }
 
-        let target = eng.entities.array.find((e) => e && e.id === me.target && e.type === 1 && hpFracOf(e) > 0 && !(ai._skipMobs[e.id] > Date.now()));
+        let target = eng.entities.array.find((e) => e && e.id === me.target && (e.type === 1 || (ai._warTarget && e.type === 0 && e.faction !== me.faction)) && hpFracOf(e) > 0 && !(ai._skipMobs[e.id] > Date.now()));
         if (!target) target = nearestMobEntity(eng, me, FARM_RADIUS);
         if (!target) {
           if (holding) { holdForward(false); holding = false; }
@@ -2686,7 +2707,7 @@
     if (ai.home) await navTo(runtime, { x: ai.home[0], z: ai.home[2] }, 5, 9000);
     const me = runtime.engine && runtime.engine.player;
     for (let i = 0; i < 30; i++) {
-      if (ai.stopped || (!ai.farm && !ai.leveling) || ai.pendingBuff) return;
+      if (ai.stopped || (!ai.farm && !ai.leveling && !ai.obelisk) || ai.pendingBuff) return;
       if (!me || hpFracOf(me) >= FARM_RESUME_HP) return;
       think("🧘 회복 대기 (HP " + Math.round(hpFracOf(me) * 100) + "%)");
       await sleep(1000);
@@ -2704,7 +2725,7 @@
     }
     loot.sort((a, b) => a.d - b.d);
     for (const it of loot.slice(0, 3)) {
-      if (ai.stopped || (!ai.farm && !ai.leveling) || ai.pendingBuff || ai.pendingRecall) return;
+      if (ai.stopped || (!ai.farm && !ai.leveling && !ai.obelisk) || ai.pendingBuff || ai.pendingRecall) return;
       ai.mode = "루팅";
       think("💰 줍기: " + String(it.e.name || "").slice(0, 14));
       await navTo(runtime, { x: it.e.pos[0], z: it.e.pos[2] }, 1.5, 4000); // walk over it
@@ -2816,6 +2837,89 @@
     // Near the party (or solo if none visible): fight the local mobs.
     if (!cen) ai.mode = "솔로파밍";
     await farmStep(runtime);
+  }
+
+  // ===== Obelisk (faction war) mode — SCAFFOLD; in-window behavior pending live verification.
+  // Outside a KST war window it is a safe no-op (won't disrupt leveling). Reuses the verified
+  // combat/follow/recall primitives. Entry dialog text and war-world name are best-effort guesses.
+  function kstHM() { const d = new Date(); return { h: (d.getUTCHours() + 9) % 24, m: d.getUTCMinutes() }; }
+  function inObeliskWindow() { const t = kstHM(); return OBELISK_HOURS.indexOf(t.h) >= 0 && t.m < OBELISK_WINDOW_MIN; }
+
+  // In the war instance? Prefer the active-world name; fall back to PvP presence
+  // (enemy-faction players only ever share our space inside the war).
+  function inWarInstance(runtime) {
+    try {
+      const w = typeof runtime.getActiveWorld === "function" ? normalizeText(runtime.getActiveWorld()) : "";
+      if (w && (w.includes("obelisk") || w.includes("war"))) return true;
+    } catch { /* ignore */ }
+    const eng = runtime.engine, me = eng && eng.player;
+    if (!me || !eng.entities) return false;
+    for (const e of eng.entities.array) { if (e && e.type === 0 && e.faction !== me.faction && e.pos) return true; }
+    return false;
+  }
+
+  function friendlyCentroid(eng, me) {
+    let sx = 0, sz = 0, n = 0;
+    for (const e of eng.entities.array) {
+      if (e && e.type === 0 && e.faction === me.faction && e.id !== me.id && e.pos) { sx += e.pos[0]; sz += e.pos[2]; n++; }
+    }
+    return n ? { x: sx / n, z: sz / n, n } : null;
+  }
+
+  async function obeliskStep(runtime) {
+    const eng = runtime.engine, me = eng && eng.player;
+    if (!me || !me.stats) { await sleep(700); return; }
+
+    if (inWarInstance(runtime)) {
+      ai.mode = "오벨전투";
+      // Push the objective with the friendly zerg (the AI bots), then fight hostiles.
+      const cen = friendlyCentroid(eng, me);
+      if (cen) {
+        const d = Math.hypot(cen.x - me.pos[0], cen.z - me.pos[2]);
+        if (d > OBELISK_FOLLOW_DIST) {
+          think("🏁 아군 " + cen.n + "명 쪽으로 진격 (" + Math.round(d) + ")");
+          await navTo(runtime, { x: cen.x, z: cen.z }, OBELISK_FOLLOW_DIST - 6, 8000);
+          return;
+        }
+      }
+      ai._warTarget = true;        // combat targets enemy players + mobs
+      try { await farmStep(runtime); } finally { ai._warTarget = false; }
+      return;
+    }
+
+    // Not in the war: only act during a window so leveling/idle is never disrupted.
+    if (!inObeliskWindow()) {
+      ai.mode = "오벨대기";
+      const t = kstHM();
+      think("⏳ 오벨리스크 윈도우 대기 (지금 KST " + t.h + ":" + (t.m < 10 ? "0" : "") + t.m + ")");
+      await sleep(5000);
+      return;
+    }
+    if (Date.now() - ai._obAt < OBELISK_RETRY_MS) { await sleep(3000); return; }
+    ai._obAt = Date.now();
+    ai.mode = "오벨입장";
+    think("⚔️ 오벨리스크 윈도우 — War Conjurer 입장 시도");
+    await enterObelisk(runtime);
+  }
+
+  // Best-effort entry (pending live verification): recall, reach Faivel's War
+  // Conjurer, open its dialog and pick the obelisk-port option.
+  async function enterObelisk(runtime) {
+    try {
+      releaseAllMoveKeys();
+      castRecall(runtime);
+      await sleep(RECALL_WAIT_MS);
+      await navTo(runtime, WAR_CONJURER_POS, NEAR_CONJURER_DIST, 16000);
+      const wc = findNearestConjurer(runtime); // nearest at the war conjurer spot = the War Conjurer
+      if (!wc) { think("❓ War Conjurer를 못 찾음 — 재시도 예정"); return; }
+      runtime.changeTarget(wc.id);
+      await sleep(AFTER_INTERACT_DELAY_MS);
+      runtime.sendInteract(wc.id);
+      await sleep(700);
+      const opt = findChoiceElement("Obelisk") || findChoiceElement("War") || findChoiceElement("Battle") || findChoiceElement("Enter");
+      if (opt) { think("🌀 오벨리스크 포트 선택"); clickLikeUser(opt); await sleep(RECALL_WAIT_MS); }
+      else think("❓ 오벨 포트 선택지 없음(윈도우 아님?) — 대기");
+    } catch { think("⚠️ 오벨 입장 실패 — 재시도 예정"); }
   }
 
   function learnWaypoints(runtime) {
