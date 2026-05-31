@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.6.6
+// @version      0.7.0
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.6.6";
+  const MOD_VERSION = "0.7.0";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -31,6 +31,17 @@
   const AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS = 300;
   const BETWEEN_BUFFS_MS = 1000;
   const AFTER_BUFFS_MS = 600;
+  // Mage party-enchant course (slot 5 buff -> slot 8 self cast-haste -> loop slot 4
+  // enchant over every nearby ally). Targets are nearby same-faction players (what
+  // the in-game "target ally" key 'x' cycles through); the Mage itself is skipped.
+  const ENCHANT_BUFF_SLOT = 5;          // party buff
+  const ENCHANT_SELF_SLOT = 8;          // self cast-time reduction (cast before the sweep)
+  const ENCHANT_SLOT = 4;               // the per-ally enchant
+  const ENCHANT_RADIUS = 40;            // sweep allies within this of the buffer (party clusters at Faivel)
+  const ENCHANT_TARGET_SETTLE_MS = 140; // pause after changeTarget so the lock registers before casting
+  const ENCHANT_REGISTER_MAX_MS = 500;  // grace for the cast to register server-side (gcdEnd bump) before giving up
+  const ENCHANT_CAST_MAX_MS = 2500;     // cap on waiting for one enchant cast/GCD to clear
+  const ENCHANT_SETTLE_MS = 150;        // settle after the GCD clears before retargeting
   const GUARDSTONE_HOTKEY_CODE = "Digit1";
   const HEADLESS_HOTKEY_CODE = "Digit2";
   const STORAGE_MINIMIZED_KEY = "horder_mod_buffer_minimized";
@@ -945,12 +956,19 @@
       setStatus("Faivel 이동 후 0.3초 대기");
       await sleep(AFTER_FAIVEL_TELEPORT_BUFF_DELAY_MS, token);
 
-      if (state.useSlot4) {
-        await useSkillbarSlot(4, token);
-        await sleep(BETWEEN_BUFFS_MS, token);
+      // Buff phase. On a Mage with "4번도 사용" on, run the party-enchant course
+      // (5 -> 8 self cast-haste -> loop 4 over nearby allies). Every other class
+      // keeps the original single-cast behavior (optional 4, then 5).
+      if (state.useSlot4 && isMageClass()) {
+        await runMageEnchantPhase(token);
+      } else {
+        if (state.useSlot4) {
+          await useSkillbarSlot(4, token);
+          await sleep(BETWEEN_BUFFS_MS, token);
+        }
+        await useSkillbarSlot(5, token);
+        await sleep(AFTER_BUFFS_MS, token);
       }
-      await useSkillbarSlot(5, token);
-      await sleep(AFTER_BUFFS_MS, token);
 
       await openConjurer(token);
       await chooseDestination(finalDestination, token);
@@ -968,6 +986,99 @@
       state.cancelToken = null;
       updatePanel();
     }
+  }
+
+  function isMageClass() {
+    const runtime = getRuntime();
+    const player = runtime && runtime.player ? runtime.player : null;
+    return classLabel(player ? player.class : undefined) === "Mage";
+  }
+
+  // Nearby same-faction players (excluding self), closest first — the allies the
+  // in-game "target ally" key 'x' would cycle through. Faction is only filtered
+  // when known on both sides (in a town everyone present is friendly anyway).
+  function nearbyAllies(runtime) {
+    const me = runtime && runtime.player;
+    const list = runtime && runtime.listEntities ? runtime.listEntities() : [];
+    const pos = (me && (me.pos || me.visualPosition)) || playerPos();
+    if (!me || !pos) return [];
+    const out = [];
+    for (const e of list) {
+      if (!e || e.type !== 0 || e.id === me.id) continue;
+      if (me.faction !== undefined && e.faction !== undefined && e.faction !== me.faction) continue;
+      const ep = e.pos;
+      if (!ep) continue;
+      const d = Math.hypot(ep[0] - pos[0], ep[2] - pos[2]);
+      if (d > ENCHANT_RADIUS) continue;
+      out.push({ id: e.id, name: e.name || "", d });
+    }
+    out.sort((a, b) => a.d - b.d);
+    return out;
+  }
+
+  // Mage party-enchant course at Faivel: party buff (5) -> self cast-haste (8) ->
+  // sweep the target across every nearby ally and cast enchant (4) on each. The
+  // ally set is snapshotted once after the self-buff so a single pass enchants
+  // everyone exactly once (no re-enchanting the Mage itself).
+  async function runMageEnchantPhase(token) {
+    await useSkillbarSlot(ENCHANT_BUFF_SLOT, token);
+    await sleep(BETWEEN_BUFFS_MS, token);
+    await useSkillbarSlot(ENCHANT_SELF_SLOT, token);
+    await sleep(AFTER_BUFFS_MS, token);
+
+    const runtime = await waitForRuntime(token);
+    const allies = nearbyAllies(runtime);
+    if (!allies.length) {
+      setStatus("인첸트: 근방 아군 없음 — 건너뜀");
+      return;
+    }
+
+    setStatus(`인첸트 대상 ${allies.length}명`);
+    let done = 0;
+    for (const ally of allies) {
+      throwIfCancelled(token);
+      try { runtime.changeTarget(ally.id); } catch { /* ignore */ }
+      await sleep(ENCHANT_TARGET_SETTLE_MS, token);
+      const prevGcd = currentGcdEnd(runtime);
+      let res = null;
+      try { res = typeof runtime.useSkillbarSlot === "function" ? runtime.useSkillbarSlot(ENCHANT_SLOT) : null; } catch { res = null; }
+      if (res && res.ok) done++;
+      setStatus(`인첸트 ${done}/${allies.length}`);
+      // Wait out the GCD before retargeting so the next cast isn't rejected and
+      // this one isn't cancelled by the target switch.
+      await waitForCastClear(runtime, token, prevGcd, ENCHANT_CAST_MAX_MS);
+    }
+    setStatus(`인첸트 완료 ${done}/${allies.length}`);
+  }
+
+  function currentGcdEnd(runtime) {
+    const sk = runtime && runtime.engine && runtime.engine.player && runtime.engine.player.skills;
+    return sk && typeof sk.gcdEnd === "number" ? sk.gcdEnd : 0;
+  }
+
+  // After casting, wait for the cast to register server-side (gcdEnd jumps past
+  // its pre-cast value over the ~RTT) and then for that GCD to clear, so the
+  // retarget neither cancels this cast nor gets the next one rejected on-GCD.
+  // gcdEnd/time are in seconds (engine clock). Capped against a stuck/dropped cast.
+  async function waitForCastClear(runtime, token, prevGcdEnd, maxMs) {
+    const start = Date.now();
+    let registered = false;
+    for (;;) {
+      throwIfCancelled(token);
+      const eng = runtime && runtime.engine;
+      const me = eng && eng.player;
+      const sk = me && me.skills;
+      const t = eng && typeof eng.time === "number" ? eng.time : null;
+      const elapsed = Date.now() - start;
+      if (sk && t !== null && typeof sk.gcdEnd === "number") {
+        if (!registered && sk.gcdEnd > prevGcdEnd + 0.05) registered = true;
+        if (registered && t >= sk.gcdEnd) break;                       // cast landed, GCD cleared
+        if (!registered && elapsed >= ENCHANT_REGISTER_MAX_MS) break;  // no GCD bump (instant/dropped) — move on
+      } else if (elapsed >= ENCHANT_REGISTER_MAX_MS) break;
+      if (elapsed > maxMs) break;
+      await sleep(60, token);
+    }
+    await sleep(ENCHANT_SETTLE_MS, token);
   }
 
   function cancelRunningFlow() {
