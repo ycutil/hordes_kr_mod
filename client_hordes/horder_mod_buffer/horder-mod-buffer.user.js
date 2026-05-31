@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.4
+// @version      0.4.5
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.4";
+  const MOD_VERSION = "0.4.5";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -150,6 +150,10 @@
     farm: false,           // combat farming mode (opt-in via panel command)
     _rot: 0,               // skill rotation cursor
     kills: 0,
+    _skipMobs: {},         // mob id -> expiry: targets that took no damage (critters/unreachable)
+    _tgtId: 0,             // current locked target id (for stuck/no-damage detection)
+    _tgtHp: 1,             // last seen HP fraction of the locked target
+    _tgtStuck: 0,          // consecutive casts with no HP progress on the locked target
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -2546,18 +2550,26 @@
     try { const c = e.stats.getResource(HP_RES_IDX), m = e.stats.getStat(HP_RES_IDX); return m > 0 ? c / m : 0; } catch { return 1; }
   }
 
+  // Prefer real combat mobs (type 1: e.g. River Crocodile). Type-10 "Greedy"
+  // critters are level-1 ambient pinatas whose HP never drops to skill attacks,
+  // so only fall back to them when no real mob is around. Skip blacklisted ids
+  // (targets that took no damage — un-killable critters or unreachable mobs).
   function nearestMobEntity(eng, me, R) {
     const arr = eng.entities && eng.entities.array;
     if (!arr) return null;
-    let best = null, bd = R;
+    const now = Date.now();
+    let best = null, bd = R, alt = null, ad = R;
     for (let i = 0; i < arr.length; i++) {
       const e = arr[i];
       if (!e || (e.type !== 1 && e.type !== 10) || !e.pos || !e.stats) continue;
       if (hpFracOf(e) <= 0) continue;
+      const skip = ai._skipMobs[e.id];
+      if (skip) { if (skip > now) continue; delete ai._skipMobs[e.id]; }
       const d = Math.hypot(e.pos[0] - me.pos[0], e.pos[2] - me.pos[2]);
-      if (d < bd) { bd = d; best = e; }
+      if (e.type === 1) { if (d < bd) { bd = d; best = e; } }
+      else if (d < ad) { ad = d; alt = e; }
     }
-    return best;
+    return best || alt;
   }
 
   // One farmStep runs a self-contained combat burst (~8s) at ~200ms cadence so
@@ -2583,7 +2595,7 @@
           return;
         }
 
-        let target = eng.entities.array.find((e) => e && e.id === me.target && (e.type === 1 || e.type === 10) && hpFracOf(e) > 0);
+        let target = eng.entities.array.find((e) => e && e.id === me.target && e.type === 1 && hpFracOf(e) > 0 && !(ai._skipMobs[e.id] > Date.now()));
         if (!target) target = nearestMobEntity(eng, me, FARM_RADIUS);
         if (!target) {
           if (holding) { holdForward(false); holding = false; }
@@ -2629,7 +2641,19 @@
           try { if (typeof runtime.useSkillbarSlot === "function") runtime.useSkillbarSlot(slot); } catch { /* ignore */ }
         }
         await sleep(180);
-        if (hpFracOf(target) <= 0) { ai.kills++; await lootNearby(runtime); }
+        const th = hpFracOf(target);
+        if (th <= 0) { ai.kills++; ai._tgtId = 0; ai._tgtStuck = 0; await lootNearby(runtime); prev = playerPos(); continue; }
+        // No-damage guard: if HP won't budge after several casts, it's a critter or
+        // an unreachable mob — blacklist it briefly and move on to a real target.
+        if (target.id === ai._tgtId) { if (th >= ai._tgtHp - 0.002) ai._tgtStuck++; else ai._tgtStuck = 0; }
+        else { ai._tgtId = target.id; ai._tgtStuck = 0; }
+        ai._tgtHp = th;
+        if (ai._tgtStuck >= 6) {
+          ai._skipMobs[target.id] = Date.now() + 30000;
+          ai._tgtId = 0; ai._tgtStuck = 0;
+          try { if (typeof runtime.changeTarget === "function") runtime.changeTarget(0); } catch { /* ignore */ }
+          think("🚫 데미지 안 박힘 — 다른 몹으로");
+        }
         prev = playerPos();
       }
     } finally {
