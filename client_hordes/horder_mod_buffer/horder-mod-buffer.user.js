@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Horder Mod Buffer
 // @namespace    https://hordes.io/
-// @version      0.4.2
+// @version      0.4.3
 // @description  Buffer route helper + panel-driven autonomous (newbie-like) controller for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -16,7 +16,7 @@
 (function horderModBufferBootstrap() {
   "use strict";
 
-  const MOD_VERSION = "0.4.2";
+  const MOD_VERSION = "0.4.3";
   const BOOT_KEY = "__HORDER_MOD_BUFFER_BOOTSTRAPPED__";
   const SANDBOX_BOOT_KEY = "__HORDER_MOD_BUFFER_SANDBOX_BOOTSTRAPPED__";
   const RUNTIME_KEY = "__HORDER_MOD_BUFFER_RUNTIME__";
@@ -58,6 +58,14 @@
   const OCC_NY_MAX = 0.35;             // |normal.y| below this = steep wall (else walkable slope)
   const OCC_STEP = 1.0;                // surfaces up to this above local floor are steppable (walkable)
   const OCC_BODY = 1.8;                // walls reaching into this band above floor block the body
+  // Combat farming (verified: HP=getResource(6)/getStat(6), cast via useSkillbarSlot, gcdEnd<time)
+  const FARM_RADIUS = 45;              // engage mobs within this distance
+  const FARM_RANGE = 4;                // attack range (approach to here; melee, works for all classes)
+  const FARM_RETREAT_HP = 0.3;         // retreat & heal below this HP fraction
+  const FARM_RESUME_HP = 0.75;         // re-engage once healed back to here
+  const FARM_LOOT_RADIUS = 14;         // pick up drops within this after a kill
+  const FARM_SKILL_SLOTS = [1, 2, 3, 4, 5, 6]; // cast these in rotation when GCD is ready
+  const HP_RES_IDX = 6;                // resource/stat index for HP
   const WAYPOINT_DEDUP_DIST = 7;       // min spacing between learned landmarks
   const MAX_WAYPOINTS = 40;            // cap on learned landmark memory
   const NEAR_CONJURER_DIST = 2.5;       // close enough to interact with the Conjurer
@@ -138,6 +146,9 @@
     persona: null,         // stable per-bot personality (activity/radius/rest/social/afk...)
     profile: null,         // learned human behavior profile (imitation), fetched from panel
     profileAt: 0,
+    farm: false,           // combat farming mode (opt-in via panel command)
+    _rot: 0,               // skill rotation cursor
+    kills: 0,
     account: "",
     klass: "",
     home: null,            // town/stroll anchor (Conjurer pos when found, else spawn pos)
@@ -209,6 +220,7 @@
     showDebug: () => showDebugReport(),
     copyDebug: () => copyDebugReport(),
     setAi: (value) => setAiEnabled(value),
+    setFarm: (value) => { ai.farm = Boolean(value); if (ai.farm) { setAiEnabled(true); ai.stopped = false; } else releaseAllMoveKeys(); setStatus(ai.farm ? "전투 파밍 ON" : "전투 파밍 OFF"); },
     setRecallSlot: (slot) => setRecallSlot(slot),
     setFinalDest: (dest) => setFinalDest(dest),
     setPanelToken: (value) => {
@@ -226,6 +238,8 @@
       stopped: ai.stopped,
       mode: ai.mode,
       activity: ai.activity,
+      farm: ai.farm,
+      kills: ai.kills,
       persona: ai.persona,
       brain: ai.brain.slice(-15).map((e) => formatBrainTime(e.t) + " " + e.m),
       account: ai.account,
@@ -1836,6 +1850,7 @@
     if (ai.stopped) return "stopped";
     if (mode.indexOf("버프") >= 0) return "buffing";
     if (mode.indexOf("귀환") >= 0 || mode.indexOf("리콜") >= 0) return "recall";
+    if (ai.farm || mode.indexOf("전투") >= 0 || mode.indexOf("접근") >= 0 || mode.indexOf("후퇴") >= 0 || mode.indexOf("몹") >= 0 || mode.indexOf("루팅") >= 0 || mode.indexOf("회복") >= 0) return "farm";
     if (mode.indexOf("AFK") >= 0) return "afk";
     if (mode.indexOf("배회") >= 0 || mode.indexOf("구경") >= 0) return "wander";
     if (mode.indexOf("수동") >= 0) return "idle";
@@ -1916,9 +1931,17 @@
       } else if (command === "start" || command === "enable" || command === "resume" || command === "wander") {
         setAiEnabled(true); // remote one-click activation of autonomous mode
         ai.stopped = false;
+        ai.farm = false;
         ackNow.push(entry.id);
       } else if (command === "disable") {
         setAiEnabled(false);
+        ai.farm = false;
+        ackNow.push(entry.id);
+      } else if (command === "farm") {
+        setAiEnabled(true); ai.stopped = false; ai.farm = true;
+        ackNow.push(entry.id);
+      } else if (command === "farmoff" || command === "farmstop") {
+        ai.farm = false; releaseAllMoveKeys();
         ackNow.push(entry.id);
       } else {
         ackNow.push(entry.id);
@@ -1997,6 +2020,8 @@
       think("🅿️ 자율행동 OFF (명령만 대기)");
       return;
     }
+
+    if (ai.farm) { await farmStep(runtime); return; } // combat farming (leveling)
 
     // Obelisk auto-buff removed by request (handled manually via the panel button).
     await wanderStep(runtime);
@@ -2513,6 +2538,134 @@
     const restMs = idleDuration(1600 * restMul);
     think("😌 잠깐 쉬는 중 (" + (restMs / 1000).toFixed(1) + "초)");
     await sleep(restMs); // rest a while, like a person
+  }
+
+  // ===== Combat farming (leveling) — verified live: approach+face, cast rotation, loot, retreat =====
+  function hpFracOf(e) {
+    try { const c = e.stats.getResource(HP_RES_IDX), m = e.stats.getStat(HP_RES_IDX); return m > 0 ? c / m : 0; } catch { return 1; }
+  }
+
+  function nearestMobEntity(eng, me, R) {
+    const arr = eng.entities && eng.entities.array;
+    if (!arr) return null;
+    let best = null, bd = R;
+    for (let i = 0; i < arr.length; i++) {
+      const e = arr[i];
+      if (!e || (e.type !== 1 && e.type !== 10) || !e.pos || !e.stats) continue;
+      if (hpFracOf(e) <= 0) continue;
+      const d = Math.hypot(e.pos[0] - me.pos[0], e.pos[2] - me.pos[2]);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
+  async function farmStep(runtime) {
+    const eng = runtime.engine, me = eng && eng.player;
+    if (!me || !me.stats || typeof me.stats.getResource !== "function") { ai.mode = "전투대기"; await sleep(700); return; }
+
+    const myHp = hpFracOf(me);
+    if (myHp >= 0 && myHp < FARM_RETREAT_HP) {
+      ai.mode = "후퇴";
+      think("🩸 HP " + Math.round(myHp * 100) + "% — 후퇴/회복");
+      await farmRetreat(runtime);
+      return;
+    }
+
+    let target = eng.entities.array.find((e) => e && e.id === me.target && (e.type === 1 || e.type === 10) && hpFracOf(e) > 0);
+    if (!target) target = nearestMobEntity(eng, me, FARM_RADIUS);
+    if (!target) {
+      ai.mode = "몹탐색";
+      think("🔎 주변에 몹 없음 — 이동");
+      holdForward(false);
+      await lootNearby(runtime);
+      await navTo(runtime, pickRoamTarget(), 4, 7000);
+      return;
+    }
+
+    try { runtime.changeTarget(target.id); } catch { /* ignore */ }
+    const d = Math.hypot(target.pos[0] - me.pos[0], target.pos[2] - me.pos[2]);
+    if (d > FARM_RANGE) {
+      ai.mode = "접근";
+      think("🏃 " + String(target.name).slice(0, 14) + " 접근 (" + Math.round(d) + ")");
+      await approachTarget(runtime, target);
+      return;
+    }
+
+    // In range: stop, face, attack.
+    holdForward(false);
+    ai.mode = "전투";
+    think("⚔️ " + String(target.name).slice(0, 14) + " 공격 (HP " + Math.round(hpFracOf(target) * 100) + "%)");
+    await faceEntity(runtime, target);
+    await castRotation(runtime);
+    if (hpFracOf(target) <= 0) { ai.kills++; await lootNearby(runtime); }
+  }
+
+  async function approachTarget(runtime, target) {
+    holdForward(true);
+    const before = playerPos();
+    await sleep(230);
+    const after = playerPos();
+    if (!before || !after) return;
+    const moved = Math.hypot(after[0] - before[0], after[2] - before[2]);
+    if (moved > 0.4) {
+      const heading = Math.atan2(after[2] - before[2], after[0] - before[0]);
+      const err = normAngle(Math.atan2(target.pos[2] - after[2], target.pos[0] - after[0]) - heading);
+      if (Math.abs(err) > 0.25) await steerPulse(err > 0 ? "ArrowRight" : "ArrowLeft", Math.min(Math.max(Math.abs(err) * 220, 55), 280));
+    } else {
+      await steerPulse(Math.random() < 0.5 ? "ArrowRight" : "ArrowLeft", 160); // nudge if stuck
+    }
+  }
+
+  async function faceEntity(runtime, target) {
+    const before = playerPos();
+    if (!before) return;
+    dispatchKeyEvent("keydown", "KeyW", "w");
+    await sleep(150);
+    dispatchKeyEvent("keyup", "KeyW", "w");
+    await sleep(80);
+    const after = playerPos();
+    if (!after || Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.3) return;
+    const err = normAngle(Math.atan2(target.pos[2] - after[2], target.pos[0] - after[0]) - Math.atan2(after[2] - before[2], after[0] - before[0]));
+    if (Math.abs(err) > 0.35) await turnBy(err);
+  }
+
+  async function castRotation(runtime) {
+    const eng = runtime.engine, sk = eng.player.skills;
+    if (sk && typeof sk.gcdEnd === "number" && eng.time < sk.gcdEnd) { await sleep(110); return; }
+    const slot = FARM_SKILL_SLOTS[ai._rot % FARM_SKILL_SLOTS.length];
+    ai._rot = (ai._rot + 1) % 1000;
+    try { if (typeof runtime.useSkillbarSlot === "function") runtime.useSkillbarSlot(slot); } catch { /* ignore */ }
+    await sleep(150);
+  }
+
+  async function farmRetreat(runtime) {
+    releaseAllMoveKeys();
+    if (ai.home) await navTo(runtime, { x: ai.home[0], z: ai.home[2] }, 5, 9000);
+    const me = runtime.engine && runtime.engine.player;
+    for (let i = 0; i < 30; i++) {
+      if (ai.stopped || !ai.farm || ai.pendingBuff) return;
+      if (!me || hpFracOf(me) >= FARM_RESUME_HP) return;
+      think("🧘 회복 대기 (HP " + Math.round(hpFracOf(me) * 100) + "%)");
+      await sleep(1000);
+    }
+  }
+
+  async function lootNearby(runtime) {
+    const eng = runtime.engine, me = eng.player;
+    const arr = eng.entities.array || [];
+    const loot = [];
+    for (const e of arr) {
+      if (!e || e.type !== 3 || !e.pos) continue;
+      const d = Math.hypot(e.pos[0] - me.pos[0], e.pos[2] - me.pos[2]);
+      if (d < FARM_LOOT_RADIUS) loot.push({ e, d });
+    }
+    loot.sort((a, b) => a.d - b.d);
+    for (const it of loot.slice(0, 3)) {
+      if (ai.stopped || !ai.farm || ai.pendingBuff || ai.pendingRecall) return;
+      ai.mode = "루팅";
+      think("💰 줍기: " + String(it.e.name || "").slice(0, 14));
+      await navTo(runtime, { x: it.e.pos[0], z: it.e.pos[2] }, 1.5, 4000); // walk over it
+    }
   }
 
   function learnWaypoints(runtime) {
