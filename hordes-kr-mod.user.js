@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.152-local
+// @version      0.9.153-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.152-local";
+  const BOOT_VERSION = "0.9.153-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -771,10 +771,12 @@
     presetBarY: null,
     hideClanNames: true,
     nameplateStyle: null,
+    selfHighlight: false,
   });
   HIGHLIGHT_CONFIG.names = Array.isArray(HIGHLIGHT_CONFIG.names)
     ? uniqueHighlightNames(HIGHLIGHT_CONFIG.names)
     : [];
+  HIGHLIGHT_CONFIG.selfHighlight = HIGHLIGHT_CONFIG.selfHighlight === true;
   HIGHLIGHT_CONFIG.enabled = HIGHLIGHT_CONFIG.enabled !== false;
   HIGHLIGHT_CONFIG.domEnabled = HIGHLIGHT_CONFIG.domEnabled !== false;
   HIGHLIGHT_CONFIG.canvasEnabled = HIGHLIGHT_CONFIG.canvasEnabled !== false;
@@ -3368,6 +3370,9 @@
     toggleNameHighlight() {
       return setNameHighlightEnabled(!HIGHLIGHT_CONFIG.enabled);
     },
+    toggleSelfHighlight() {
+      return setSelfHighlightEnabled(!HIGHLIGHT_CONFIG.selfHighlight);
+    },
     toggleDomNameHighlight() {
       HIGHLIGHT_CONFIG.domEnabled = !HIGHLIGHT_CONFIG.domEnabled;
       saveHighlightConfig();
@@ -3724,6 +3729,16 @@
     return HIGHLIGHT_CONFIG.enabled;
   }
 
+  function setSelfHighlightEnabled(nextEnabled) {
+    HIGHLIGHT_CONFIG.selfHighlight = Boolean(nextEnabled);
+    saveHighlightConfig();
+    HIGHLIGHT_NAME_CACHE.key = ""; // force the match cache to rebuild with/without self
+    refreshNameHighlights();
+    updateRuntimeNameOverlay();
+    renderStatusUi();
+    return HIGHLIGHT_CONFIG.selfHighlight;
+  }
+
   function shouldRunDomNameHighlight() {
     return (
       HIGHLIGHT_CONFIG.enabled &&
@@ -3732,11 +3747,22 @@
     );
   }
 
+  // Names to draw in the DOM overlay: configured names when the main highlight is on,
+  // plus the player's own name when "내 이름만 강조" is on.
+  function getOverlayHighlightNames() {
+    const out = HIGHLIGHT_CONFIG.enabled ? HIGHLIGHT_CONFIG.names.slice() : [];
+    if (HIGHLIGHT_CONFIG.selfHighlight) {
+      const self = getSelfPlayerName();
+      if (self && out.indexOf(self) < 0) out.push(self);
+    }
+    return out;
+  }
+
   function shouldRunRuntimeNameOverlay() {
     return (
       HIGHLIGHT_CONFIG.runtimeOverlayEnabled !== false &&
       (
-        (HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0) ||
+        getOverlayHighlightNames().length > 0 ||
         isIncomingSkillOverlayEnabled() ||
         isIncomingTargetWatchEnabled()
       )
@@ -9299,11 +9325,46 @@
     }
   }
 
+  function getSelfPlayerName() {
+    try {
+      const runtime = getExposedRuntime();
+      const player = runtime && runtime.player;
+      const name = player && player.name;
+      return typeof name === "string" && name.trim() ? name.trim() : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // The name-highlight machinery runs when the main highlight feature is on, OR when
+  // the "내 이름만 강조"(self-only) toggle is on and the player's name is known.
+  function isNameHighlightActive() {
+    if (HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.canvasEnabled !== false) return true;
+    return HIGHLIGHT_CONFIG.selfHighlight && Boolean(getSelfPlayerName());
+  }
+
+  // Which highlight name a piece of canvas text matches, honoring the toggles:
+  // configured names only when the main highlight is on, the player's own name when
+  // self-highlight is on.
+  function matchedHighlightName(text) {
+    const raw = String(text == null ? "" : text);
+    if (!raw) return "";
+    if (HIGHLIGHT_CONFIG.enabled) {
+      const base = getMatchingHighlightName(raw);
+      if (base) return base;
+    }
+    if (HIGHLIGHT_CONFIG.selfHighlight) {
+      const self = getSelfPlayerName();
+      if (self && raw.toLowerCase().includes(self.toLowerCase())) return self;
+    }
+    return "";
+  }
+
   function drawCanvasNameHighlight(ctx, text, x, y, maxWidth) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return;
+    if (!isNameHighlightActive()) return;
 
     const rawText = String(text ?? "");
-    if (!getMatchingHighlightName(rawText)) return;
+    if (!matchedHighlightName(rawText)) return;
 
     const numberX = Number(x);
     const numberY = Number(y);
@@ -9330,10 +9391,10 @@
   }
 
   function shouldReplaceCanvasNameText(text) {
-    if (!HIGHLIGHT_CONFIG.enabled || !HIGHLIGHT_CONFIG.canvasEnabled) return false;
+    if (!isNameHighlightActive()) return false;
 
     const rawText = String(text ?? "").trim();
-    return Boolean(rawText && getMatchingHighlightName(rawText));
+    return Boolean(rawText && matchedHighlightName(rawText));
   }
 
   function shouldHideStandaloneCanvasClanTag(text) {
@@ -9368,8 +9429,9 @@
   }
 
   function getCanvasHighlightedName(imageText) {
-    const rawText = String(imageText || "").trim();
-    return getCanvasHighlightDisplayText(rawText);
+    if (!isNameHighlightActive()) return "";
+    const matched = matchedHighlightName(String(imageText || "").trim());
+    return matched ? normalizeHighlightName(matched) : "";
   }
 
   function drawCanvasTargetDistanceOverlay(ctx, imageText, dest, originalFillText, originalStrokeText) {
@@ -11777,12 +11839,13 @@
         return;
       }
 
+      const overlayHighlightNames = getOverlayHighlightNames();
       const candidates = [
         ...incomingCandidates,
         ...incomingTargetWatchCandidates,
         ...(
-          HIGHLIGHT_CONFIG.enabled && HIGHLIGHT_CONFIG.names.length > 0
-            ? collectRuntimeOverlayEntities(HIGHLIGHT_CONFIG.names, {
+          overlayHighlightNames.length > 0
+            ? collectRuntimeOverlayEntities(overlayHighlightNames, {
                 limit: 16,
                 maxDepth: 5,
                 maxObjects: 3000,
@@ -18760,6 +18823,7 @@
             <div class="section feature-grid">
               <button id="toggle" class="action" type="button"></button>
               <button id="toggleHighlight" class="action" type="button"></button>
+              <button id="toggleSelfHighlight" class="action" type="button"></button>
               <button id="toggleChatTranslation" class="action" type="button"></button>
               <button id="toggleMinimapLabels" class="action" type="button"></button>
               <button id="toggleIncomingSkill" class="action" type="button"></button>
@@ -19136,6 +19200,7 @@
     shadow.getElementById("badgeState").textContent = badgeState;
     setFeatureToggleButton(shadow, "toggle", "번역", enabled);
     setFeatureToggleButton(shadow, "toggleHighlight", "강조", HIGHLIGHT_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
     renderTargetOrderUi(shadow);
@@ -19157,6 +19222,7 @@
       applyPendingTargetOrderNow: () => pageWindow.HordesKrMod.applyPendingTargetOrder(),
       connectTargetOrderNow: () => pageWindow.HordesKrMod.connectTargetOrder(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
+      toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
       toggleSwiftshotTurbo: () => pageWindow.HordesKrMod.toggleSwiftshotTurbo(),
