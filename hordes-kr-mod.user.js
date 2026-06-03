@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.153-local
+// @version      0.9.154-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.153-local";
+  const BOOT_VERSION = "0.9.154-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -347,6 +347,15 @@
     "items/charm/charm13_": { label: "Orc Skull (skull)" },
   };
   const KEY_BUFF_MAX_ICONS = 6; // cap icons shown next to one target
+  // Skills to flag while an enemy is mid-cast/channel, by skill id (== icon number;
+  // verified live: Summon id 35, Bone Shot id 54). entity.skills.timedSkill holds the
+  // skill being cast (null when idle); timedCast.end is when it resolves.
+  const KEY_CAST_SKILL_MAP = {
+    46: "Whirlwind (휠윈드)",
+    45: "Volley (볼리)",
+    52: "Frostcall (프로스트콜)",
+    35: "소환 (Summon)",
+  };
   // Status dashboard: small draggable HUD showing runtime/feature health at a glance.
   const DASHBOARD_REFRESH_MS = 700;
   const DASHBOARD_ACTIVE_WINDOW_MS = 2500; // "recent activity" window for a feature to count as live
@@ -10875,6 +10884,19 @@
       .hordes-kr-runtime-name-label .key-buff-icon.ally {
         box-shadow: 0 0 0 1px rgba(90, 209, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
       }
+      .hordes-kr-runtime-name-label .cast-skill-icon {
+        width: 18px !important;
+        height: 18px !important;
+        flex: 0 0 18px !important;
+        object-fit: contain !important;
+        border-radius: 3px !important;
+        box-shadow: 0 0 0 2px rgba(255, 160, 40, 1), 0 0 7px rgba(255, 160, 40, 0.85), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+        animation: hordesKrCastPulse 0.55s ease-in-out infinite !important;
+      }
+      @keyframes hordesKrCastPulse {
+        0%, 100% { box-shadow: 0 0 0 2px rgba(255, 160, 40, 1), 0 0 6px rgba(255, 160, 40, 0.7), 0 1px 3px rgba(0, 0, 0, 0.85); }
+        50% { box-shadow: 0 0 0 2px rgba(255, 210, 90, 1), 0 0 11px rgba(255, 190, 70, 1), 0 1px 3px rgba(0, 0, 0, 0.85); }
+      }
       .hordes-kr-runtime-name-label.normal-highlight.has-key-buff {
         display: inline-flex !important;
         align-items: center !important;
@@ -11565,6 +11587,27 @@
     return out.slice(0, KEY_BUFF_MAX_ICONS);
   }
 
+  // If an enemy is mid-cast on one of the flagged skills, return its icon. The skill
+  // being cast is entity.skills.timedSkill (null when idle); timedCast.end (engine
+  // clock) marks when it resolves, so a stale reference past the end is ignored.
+  function getEntityCastIcon(entity, runtime) {
+    try {
+      const skills = entity && entity.skills;
+      const timedSkill = skills && skills.timedSkill;
+      const id = timedSkill && timedSkill.id;
+      if (id == null) return null;
+      const label = KEY_CAST_SKILL_MAP[id];
+      if (!label) return null;
+      const engine = runtime && runtime.engine;
+      const now = engine && typeof engine.time === "number" ? engine.time : null;
+      const end = Number(skills.timedCast && skills.timedCast.end);
+      if (now !== null && Number.isFinite(end) && now > end + 0.2) return null; // cast already done
+      return { iconUrl: buildDataAssetUrl("ui/skills/" + id), label };
+    } catch {
+      return null;
+    }
+  }
+
   // ===== Status dashboard (small draggable HUD) =====
   // Shows the runtime bridge + feature health at a glance. The runtime row goes red
   // when the engine bridge is missing (the transient drop the user kept hitting), and
@@ -11862,6 +11905,7 @@
         const hostile = isHostileEntity(candidate.entity, runtime);
         candidate.buffSpike = buffSpikeOn && hostile && updateBuffSpikeForEntity(candidate.entity, now);
         candidate.keyBuffs = buffSpikeOn && hostile ? getEntityKeyBuffIcons(candidate.entity) : [];
+        candidate.castSkill = buffSpikeOn && hostile ? getEntityCastIcon(candidate.entity, runtime) : null;
 
         const point = (candidate.incomingSkill || candidate.incomingTargetWatch)
           ? projectRuntimeIncomingWarningPoint(candidate, runtime)
@@ -14030,7 +14074,7 @@
       label.classList.toggle("incoming-watch", Boolean(candidate.incomingTargetWatch && !candidate.incomingSkill));
       label.classList.toggle("normal-highlight", !candidate.incomingSkill && !candidate.incomingTargetWatch);
       label.classList.toggle("buff-spike", Boolean(candidate.buffSpike));
-      label.classList.toggle("has-key-buff", Boolean(candidate.keyBuffs && candidate.keyBuffs.length));
+      label.classList.toggle("has-key-buff", Boolean((candidate.keyBuffs && candidate.keyBuffs.length) || candidate.castSkill));
       renderRuntimeNameOverlayLabelContent(label, candidate);
 
       const left = `${Math.round(candidate.screen.x)}px`;
@@ -14124,12 +14168,25 @@
       candidate.watchTargetField || "",
       candidate.buffSpike ? "buff" : "",
       (candidate.keyBuffs || []).map((b) => b.label).join(","),
+      candidate.castSkill ? "cast:" + candidate.castSkill.label : "",
     ].join("|");
     if (label.dataset.hordesKrSignature === signature) return;
 
     label.dataset.hordesKrSignature = signature;
     label.dataset.hordesKrName = candidate.name;
     label.replaceChildren();
+
+    const appendCastSkillIcon = () => {
+      if (!candidate.castSkill) return;
+      const icon = document.createElement("img");
+      icon.className = "cast-skill-icon";
+      icon.alt = "";
+      icon.decoding = "async";
+      icon.src = candidate.castSkill.iconUrl;
+      icon.title = candidate.castSkill.label + " 시전 중";
+      icon.addEventListener("error", () => icon.remove(), { once: true });
+      label.appendChild(icon);
+    };
 
     const appendKeyBuffIcons = () => {
       const list = candidate.keyBuffs || [];
@@ -14154,8 +14211,9 @@
     };
 
     if (!candidate.incomingSkill && !candidate.incomingTargetWatch) {
-      const hasExtras = candidate.buffSpike || (candidate.keyBuffs && candidate.keyBuffs.length);
+      const hasExtras = candidate.buffSpike || candidate.castSkill || (candidate.keyBuffs && candidate.keyBuffs.length);
       if (hasExtras) {
+        appendCastSkillIcon();
         appendKeyBuffIcons();
         appendBuffSpikeBadge();
         const nameOnly = document.createElement("span");
@@ -14163,7 +14221,8 @@
         nameOnly.textContent = candidate.name;
         label.appendChild(nameOnly);
         const buffLabels = (candidate.keyBuffs || []).map((b) => b.label).join(", ");
-        label.title = `${candidate.name}${buffLabels ? " — " + buffLabels : ""}${candidate.buffSpike ? " (버프 활성화 감지)" : ""}`;
+        const castLabel = candidate.castSkill ? `${candidate.castSkill.label} 시전 중` : "";
+        label.title = `${candidate.name}${castLabel ? " — " + castLabel : ""}${buffLabels ? " — " + buffLabels : ""}${candidate.buffSpike ? " (버프 활성화 감지)" : ""}`;
       } else {
         label.textContent = candidate.name;
         label.title = candidate.name;
@@ -14203,6 +14262,7 @@
       label.appendChild(distance);
     }
 
+    appendCastSkillIcon();
     appendKeyBuffIcons();
     appendBuffSpikeBadge();
 
@@ -14210,6 +14270,7 @@
       `${candidate.name} -> 나`,
       candidate.skillId ? `skill ${candidate.skillId}` : "",
       candidate.incomingTargetWatch ? "주시" : "",
+      candidate.castSkill ? `${candidate.castSkill.label} 시전 중` : "",
       (candidate.keyBuffs || []).map((b) => b.label).join(", "),
       candidate.buffSpike ? "버프 활성화(교전 징조)" : "",
       candidate.distanceText ? `거리 ${candidate.distanceText}` : "",
