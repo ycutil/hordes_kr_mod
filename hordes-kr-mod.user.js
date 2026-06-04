@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.154-local
+// @version      0.9.155-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.154-local";
+  const BOOT_VERSION = "0.9.155-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -873,6 +873,8 @@
     lastAppliedKey: "",
     lastFrameCount: 0,
     lastError: "",
+    gameFrameWidth: 0,
+    gameWidthCount: 0,
   };
   const PARTY_COMMAND_STATE = {
     host: null,
@@ -6851,6 +6853,7 @@
         return;
       }
 
+      refreshGamePartyFrameWidth(frame);
       const layout = getPartyUiLayout(frame);
       applyPartyFrameLayout(frame, layout);
       updatePartyUiHandle(frame, layout);
@@ -6913,9 +6916,54 @@
     };
   }
 
+  // The party frame width should follow the game's own setting, not a fixed value.
+  // The game sets each frame's width inline (style.width); our stylesheet override
+  // only changes the rendered width, so the game's intended value is still readable
+  // from the inline property. Fall back to a one-off natural measurement, then to
+  // the configured default. Cached; refreshed when the member count changes.
+  function readGamePartyFrameWidth(frame) {
+    try {
+      const kid = frame && frame.children && frame.children[0];
+      if (!kid) return 0;
+      const inlineW = parseFloat(kid.style && kid.style.width);
+      if (Number.isFinite(inlineW) && inlineW >= 80 && inlineW <= 400) return Math.round(inlineW);
+      // fallback: measure natural width with our grid/width override neutralized
+      const savedDisplay = frame.style.display;
+      const savedCols = frame.style.gridTemplateColumns;
+      const savedKidWidth = kid.style.width;
+      frame.style.removeProperty("display");
+      frame.style.removeProperty("grid-template-columns");
+      kid.style.removeProperty("width");
+      const w = Math.round(kid.getBoundingClientRect().width);
+      frame.style.display = savedDisplay;
+      frame.style.gridTemplateColumns = savedCols;
+      kid.style.width = savedKidWidth;
+      if (Number.isFinite(w) && w >= 80 && w <= 400) return w;
+    } catch {
+      // unreadable mid-transition
+    }
+    return 0;
+  }
+
+  function refreshGamePartyFrameWidth(frame) {
+    const count = frame && frame.children ? frame.children.length : 0;
+    if (count > 0 && count !== PARTY_UI_STATE.gameWidthCount) {
+      const measured = readGamePartyFrameWidth(frame);
+      if (measured > 0) {
+        PARTY_UI_STATE.gameFrameWidth = measured;
+        PARTY_UI_STATE.gameWidthCount = count;
+      }
+    }
+  }
+
+  function effectivePartyFrameWidth() {
+    const w = PARTY_UI_STATE.gameFrameWidth;
+    return Number.isFinite(w) && w >= 80 ? w : PARTY_UI_CONFIG.frameWidth;
+  }
+
   function getPartyUiGridWidth(columns) {
     const count = clamp(Math.round(columns), 1, 5);
-    return Math.round(count * PARTY_UI_CONFIG.frameWidth + Math.max(0, count - 1) * PARTY_UI_CONFIG.gap);
+    return Math.round(count * effectivePartyFrameWidth() + Math.max(0, count - 1) * PARTY_UI_CONFIG.gap);
   }
 
   function getPartyUiGridHeight(count, columns) {
@@ -6933,7 +6981,7 @@
       layout.y,
       layout.columns,
       layout.width,
-      PARTY_UI_CONFIG.frameWidth,
+      effectivePartyFrameWidth(),
       PARTY_UI_CONFIG.gap,
       frame.children ? frame.children.length : 0,
     ].join("|");
@@ -6947,7 +6995,7 @@
     frame.style.setProperty("width", `${layout.width}px`, "important");
     frame.style.setProperty("max-width", `${layout.width}px`, "important");
     frame.style.setProperty("display", "grid", "important");
-    frame.style.setProperty("grid-template-columns", `repeat(${layout.columns}, ${PARTY_UI_CONFIG.frameWidth}px)`, "important");
+    frame.style.setProperty("grid-template-columns", `repeat(${layout.columns}, ${effectivePartyFrameWidth()}px)`, "important");
     frame.style.setProperty("grid-auto-rows", `${PARTY_UI_FRAME_HEIGHT}px`, "important");
     frame.style.setProperty("gap", `${PARTY_UI_CONFIG.gap}px`, "important");
     frame.style.setProperty("z-index", "2147483200", "important");
@@ -8330,7 +8378,7 @@
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35) !important;
       }
       .partyframes[data-hordes-kr-party-ui="1"] > * {
-        width: ${PARTY_UI_FRAME_WIDTH}px !important;
+        width: 100% !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
