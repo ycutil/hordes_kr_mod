@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.157-local
+// @version      0.9.158-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.157-local";
+  const BOOT_VERSION = "0.9.158-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -379,11 +379,15 @@
   const WATCH_BEEP_MIN_GAP_MS = 1500;       // min gap between new-watcher beeps
   const THREAT_FLASH_MS = 1200;             // threat HUD flash duration on a new watcher
   // Auto-interrupt: when a highlighted enemy in range starts casting a trigger skill,
-  // target them and fire an interrupt slot. Retries alternate slots while the cast is
-  // still live, rate-limited so the GCD/packet round-trip can land.
-  const AUTO_INTERRUPT_GAP_MS = 600;        // min gap between interrupt cast attempts
+  // target them and fire the first interrupt slot that is OFF COOLDOWN (local cd read,
+  // no waiting) — e.g. slot 5 instantly, slot 9 in the same tick when 5 is on cd.
+  // Runs on its own fast pulse; the flat entity scan costs ~0.002ms so even 50ms
+  // ticks are free. Retries (both slots on cd / packet lost) are rate-limited.
+  const AUTO_INTERRUPT_TICK_MS = 50;        // dedicated detection pulse (≤50ms latency)
+  const AUTO_INTERRUPT_GAP_MS = 250;        // min gap between interrupt cast attempts
   const AUTO_INTERRUPT_MAX_TRIES = 4;       // attempts per single enemy cast instance
   const AUTO_INTERRUPT_MIN_REMAIN_S = 0.25; // ignore casts about to resolve anyway
+  const AUTO_INTERRUPT_CD_READY_S = 0.05;   // local cd remaining at/below this = ready
   const INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH = 3;
   const INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS = 180;
   const INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT = 64;
@@ -1031,6 +1035,7 @@
 
   const COMBAT_ASSIST_STATE = {
     timer: null,
+    interruptTimer: null,
     rotationOn: false,        // session-only: never persisted, always boots OFF
     rotationCursor: 0,
     lastDefenseAt: 0,
@@ -14371,9 +14376,41 @@
     return null;
   }
 
+  // Local cooldown of whatever skill currently sits in a skillbar slot, in seconds.
+  // Reads settings.skillbarsettings[name][slot-1].id -> player.skills.skills.get(id).cd
+  // (verified live: slot 5 cd readable; a never-cast skill has no cd object -> ready).
+  // null = unreadable (treat as ready and just fire).
+  function getSlotCooldownRemaining(runtime, engine, me, slot) {
+    try {
+      const settings = runtime && runtime.settings;
+      const bar = settings && settings.skillbarsettings && settings.skillbarsettings[me.name];
+      const entry = bar && bar[slot - 1];
+      const id = entry && Number(entry.id);
+      if (!Number.isFinite(id) || id < 0) return null;
+      const skillMap = me.skills && me.skills.skills;
+      const skill = skillMap && typeof skillMap.get === "function" ? skillMap.get(id) : null;
+      const cd = skill && skill.cd;
+      const engineTime = engine && engine.time;
+      if (!cd || typeof cd.end !== "number" || typeof engineTime !== "number") return null;
+      return Math.max(0, cd.end - engineTime);
+    } catch {
+      return null;
+    }
+  }
+
+  // First interrupt slot that is off cooldown right now (so "5 on cd -> fire 9" happens
+  // in the same tick, no retry wait). Returns 0 when every slot is cooling down.
+  function pickReadyInterruptSlot(runtime, engine, me, slots) {
+    for (const slot of slots) {
+      const remaining = getSlotCooldownRemaining(runtime, engine, me, slot);
+      if (remaining === null || remaining <= AUTO_INTERRUPT_CD_READY_S) return slot;
+    }
+    return 0;
+  }
+
   // Scan highlighted enemies in range for a live cast of a trigger skill; target the
-  // caster and fire the next interrupt slot. One enemy cast = one castKey (entity id +
-  // skill id + cast start), retried up to AUTO_INTERRUPT_MAX_TRIES across the slots.
+  // caster and fire the first off-cooldown interrupt slot. One enemy cast = one castKey
+  // (entity id + skill id + cast start), max AUTO_INTERRUPT_MAX_TRIES fires per cast.
   function autoInterruptTick(runtime, engine, me, now) {
     if (!FEATURE_CONFIG.autoInterruptEnabled) return;
     const slots = FEATURE_CONFIG.autoInterruptSlots;
@@ -14424,13 +14461,19 @@
       const castKey = `${entity.id}:${castSkillId}:${Math.round(castStart * 10)}`;
       const tries = COMBAT_ASSIST_STATE.interruptTries.get(castKey) || 0;
       if (tries >= AUTO_INTERRUPT_MAX_TRIES) continue;
+
+      // Pick the first slot that is actually off cooldown — when slot 5 is cooling
+      // down, slot 9 fires in this same tick. If everything is on cd, consume nothing
+      // and re-check on the next 50ms pulse (fires the instant a slot frees up).
+      const slot = pickReadyInterruptSlot(runtime, engine, me, slots);
+      if (!slot) continue;
+
       COMBAT_ASSIST_STATE.interruptTries.set(castKey, tries + 1);
       if (COMBAT_ASSIST_STATE.interruptTries.size > 64) {
         COMBAT_ASSIST_STATE.interruptTries.delete(COMBAT_ASSIST_STATE.interruptTries.keys().next().value);
       }
 
       try { if (readEntityTargetId(me) !== entity.id && typeof runtime.changeTarget === "function") runtime.changeTarget(entity.id); } catch { /* keep casting */ }
-      const slot = slots[tries % slots.length];
       callRuntimeUseSkillbarSlot(runtime, slot);
       COMBAT_ASSIST_STATE.lastInterruptAt = now;
       COMBAT_ASSIST_STATE.interruptHits++;
@@ -14441,6 +14484,20 @@
     }
   }
 
+  // Dedicated fast pulse for the interrupt only — detection latency ≤ AUTO_INTERRUPT_TICK_MS.
+  function autoInterruptFastTick() {
+    try {
+      if (!FEATURE_CONFIG.autoInterruptEnabled) return;
+      const runtime = pageWindow.__HORDES_KR_RUNTIME__;
+      const engine = runtime && runtime.engine;
+      const me = engine && engine.player;
+      if (!me) return;
+      autoInterruptTick(runtime, engine, me, Date.now());
+    } catch (error) {
+      COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
+    }
+  }
+
   function combatAssistTick() {
     try {
       const runtime = getExposedRuntime();
@@ -14448,8 +14505,6 @@
       const me = engine && engine.player;
       if (!me) return;
       const now = Date.now();
-
-      autoInterruptTick(runtime, engine, me, now);
 
       if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot >= 1) {
         const hp = entityHpFraction(me);
@@ -14498,6 +14553,7 @@
   function installCombatAssist() {
     if (COMBAT_ASSIST_STATE.timer) return;
     COMBAT_ASSIST_STATE.timer = setInterval(combatAssistTick, COMBAT_ASSIST_TICK_MS);
+    COMBAT_ASSIST_STATE.interruptTimer = setInterval(autoInterruptFastTick, AUTO_INTERRUPT_TICK_MS);
     try {
       pageWindow.addEventListener("keydown", (event) => {
         if (!event.altKey || event.code !== "KeyR" || event.repeat) return;
