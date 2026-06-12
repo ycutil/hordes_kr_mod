@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.164-local
+// @version      0.9.165-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.164-local";
+  const BOOT_VERSION = "0.9.165-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -703,6 +703,7 @@
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
     autoInterruptSkillIds: [45, 52, 35],
+    autoInterruptHighlightOnly: false, // false = interrupt ANY hostile in range (강조 무관)
     teamSyncEnabled: false,
     teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
     teamSyncServer: TEAM_SYNC_SERVER_DEFAULT,
@@ -738,6 +739,7 @@
     ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
     : [45, 52, 35];
   if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35];
+  FEATURE_CONFIG.autoInterruptHighlightOnly = FEATURE_CONFIG.autoInterruptHighlightOnly === true;
   FEATURE_CONFIG.teamSyncEnabled = FEATURE_CONFIG.teamSyncEnabled === true;
   FEATURE_CONFIG.teamSyncRoom = String(FEATURE_CONFIG.teamSyncRoom || TEAM_SYNC_ROOM_DEFAULT).replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 48) || TEAM_SYNC_ROOM_DEFAULT;
   FEATURE_CONFIG.teamSyncServer = String(FEATURE_CONFIG.teamSyncServer || TEAM_SYNC_SERVER_DEFAULT).trim() || TEAM_SYNC_SERVER_DEFAULT;
@@ -1062,6 +1064,7 @@
     dragging: null,
     hasSavedPos: false,
     posApplied: false,
+    scale: 1,
   };
 
   const HIGHLIGHT_STATE = {
@@ -3278,12 +3281,17 @@
       FEATURE_CONFIG.autoInterruptEnabled = !FEATURE_CONFIG.autoInterruptEnabled;
       saveFeatureConfig();
       renderStatusUi();
-      if (FEATURE_CONFIG.autoInterruptEnabled && !HIGHLIGHT_CONFIG.names.length) {
-        return "자동끊기 켜짐 — 강조 ID 목록이 비어 있습니다. 강조 목록의 적이 시전할 때만 끊습니다.";
-      }
+      const scope = FEATURE_CONFIG.autoInterruptHighlightOnly ? "강조 대상" : "모든 적";
       return FEATURE_CONFIG.autoInterruptEnabled
-        ? `자동끊기 켜짐: 강조 대상이 ${FEATURE_CONFIG.autoInterruptRangeM}m 내에서 [${FEATURE_CONFIG.autoInterruptSkillIds.join(",")}] 시전 시 ${FEATURE_CONFIG.autoInterruptSlots.join("→")}번으로 끊기`
+        ? `자동끊기 켜짐: ${scope}이 ${FEATURE_CONFIG.autoInterruptRangeM}m 내에서 [${FEATURE_CONFIG.autoInterruptSkillIds.join(",")}] 시전 시 ${FEATURE_CONFIG.autoInterruptSlots.join("→")}번으로 끊기`
         : "자동끊기 꺼짐";
+    },
+    setAutoInterruptHighlightOnly(on) {
+      FEATURE_CONFIG.autoInterruptHighlightOnly = on === true;
+      saveFeatureConfig();
+      return FEATURE_CONFIG.autoInterruptHighlightOnly
+        ? "자동끊기: 강조 대상만 끊기"
+        : "자동끊기: 모든 적 끊기 (강조 무관)";
     },
     setAutoInterruptSlots(slots) {
       const list = (Array.isArray(slots) ? slots : [slots])
@@ -3321,6 +3329,9 @@
       FEATURE_CONFIG.teamSyncToken = String(token || TEAM_SYNC_TOKEN_DEFAULT).trim() || TEAM_SYNC_TOKEN_DEFAULT;
       saveFeatureConfig();
       return "팀공유 토큰 설정됨";
+    },
+    setTeamSyncScale(value) {
+      return `팀공유 패널 크기: ${setTeamSyncScale(value)}배 (헤더의 −/+ 버튼으로도 조절)`;
     },
     teamSyncStatus() {
       return {
@@ -3366,6 +3377,7 @@
         },
         autoInterrupt: {
           enabled: FEATURE_CONFIG.autoInterruptEnabled,
+          highlightOnly: FEATURE_CONFIG.autoInterruptHighlightOnly,
           slots: FEATURE_CONFIG.autoInterruptSlots,
           rangeM: FEATURE_CONFIG.autoInterruptRangeM,
           triggerSkillIds: FEATURE_CONFIG.autoInterruptSkillIds,
@@ -12966,6 +12978,20 @@
       renderStatusUi();
     });
 
+    // Right-click a row to drop that name from the 강조 list (no console needed).
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rowName = row.dataset.hordesKrTargetName || "";
+      if (!rowName) return;
+      try { pageWindow.HordesKrMod.removeHighlightName(rowName); } catch { /* ignore */ }
+      try { showGearPresetProgressOverlay(`강조 삭제: ${rowName}`, "running", 1300); } catch { /* toast optional */ }
+      refreshNameHighlights();
+      updateMinimapNameOverlay();
+      updateTargetDistanceOverlay();
+      renderStatusUi();
+    });
+
     return row;
   }
 
@@ -13021,6 +13047,7 @@
       candidate.distanceText,
       health && health.maxText ? `HP ${health.currentText}/${health.maxText}` : "",
       selected ? "클릭하면 타겟 해제" : "클릭하면 실제 타겟 지정",
+      "우클릭하면 강조 삭제",
     ]);
   }
 
@@ -14170,8 +14197,11 @@
     const slots = FEATURE_CONFIG.autoInterruptSlots;
     if (!slots.length) return;
     if (now - COMBAT_ASSIST_STATE.lastInterruptAt < AUTO_INTERRUPT_GAP_MS) return;
-    const names = HIGHLIGHT_CONFIG.names;
-    if (!names.length) return;
+    // By default interrupt ANY hostile in range; only restrict to the 강조 list when the
+    // user explicitly turns highlight-only on. (Most Volley casters in a fight aren't
+    // on your highlight list, which is why it felt like it never fired.)
+    const highlightOnly = FEATURE_CONFIG.autoInterruptHighlightOnly === true;
+    if (highlightOnly && !HIGHLIGHT_CONFIG.names.length) return;
     const arr = engine.entities && engine.entities.array;
     if (!arr) return;
     const engineTime = typeof engine.time === "number" ? engine.time : null;
@@ -14200,7 +14230,7 @@
       }
 
       const name = String(entity.name || "");
-      if (!name || !getMatchingHighlightName(name)) continue;
+      if (highlightOnly && (!name || !getMatchingHighlightName(name))) continue;
 
       let distance = Infinity;
       try {
@@ -14465,6 +14495,8 @@
       "#hkr-teamsync{position:fixed;right:8px;top:34%;z-index:2147483550;font:600 11px/1.4 -apple-system,'Segoe UI',sans-serif;color:#e8eef6;background:rgba(12,16,24,0.82);border:1px solid rgba(120,140,170,0.32);border-radius:7px;padding:4px 6px 6px;min-width:150px;max-width:240px;box-shadow:0 3px 12px rgba(0,0,0,0.5);-webkit-user-select:none;user-select:none}",
       "#hkr-teamsync .ts-head{display:flex;align-items:center;gap:5px;cursor:move;margin-bottom:3px;padding-bottom:3px;border-bottom:1px solid rgba(120,140,170,0.2)}",
       "#hkr-teamsync .ts-title{flex:1;opacity:0.92;letter-spacing:0.2px}",
+      "#hkr-teamsync .ts-btn{cursor:pointer;width:14px;height:14px;line-height:13px;text-align:center;border-radius:3px;font-size:12px;font-weight:800;opacity:0.7;background:rgba(120,140,170,0.18);border:1px solid rgba(120,140,170,0.3)}",
+      "#hkr-teamsync .ts-btn:hover{opacity:1;background:rgba(120,140,170,0.34)}",
       "#hkr-teamsync .ts-room{opacity:0.55;font-size:9px;font-weight:500}",
       "#hkr-teamsync .ts-row{display:flex;align-items:center;gap:4px;padding:1px 0}",
       "#hkr-teamsync .ts-dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}",
@@ -14483,6 +14515,17 @@
     TEAM_SYNC_STATE.styleInstalled = true;
   }
 
+  // Uniform panel resize via CSS zoom (reflows + keeps getBoundingClientRect honest,
+  // so drag-clamping still works). Persisted so it survives reloads.
+  function setTeamSyncScale(value) {
+    const next = clamp(Math.round(Number(value) * 100) / 100, 0.6, 2.2);
+    TEAM_SYNC_STATE.scale = next;
+    const host = TEAM_SYNC_STATE.host;
+    if (host) host.style.zoom = String(next);
+    try { localStorage.setItem("hordesKrMod.teamSync.scale", String(next)); } catch { /* ignore */ }
+    return next;
+  }
+
   function ensureTeamSyncHost() {
     if (TEAM_SYNC_STATE.host && document.contains(TEAM_SYNC_STATE.host)) return TEAM_SYNC_STATE.host;
     if (!document.body) return null;
@@ -14494,9 +14537,26 @@
     const title = document.createElement("span");
     title.className = "ts-title";
     title.textContent = "팀";
+    const shrink = document.createElement("span");
+    shrink.className = "ts-btn";
+    shrink.textContent = "−";
+    shrink.title = "패널 축소";
+    const grow = document.createElement("span");
+    grow.className = "ts-btn";
+    grow.textContent = "+";
+    grow.title = "패널 확대";
     const room = document.createElement("span");
     room.className = "ts-room";
-    head.append(title, room);
+    head.append(title, shrink, grow, room);
+    const stepScale = (delta, event) => {
+      if (event) { event.stopPropagation(); event.preventDefault(); }
+      setTeamSyncScale(TEAM_SYNC_STATE.scale + delta);
+    };
+    // Buttons live inside the draggable head — stop their mousedown from starting a drag.
+    shrink.addEventListener("mousedown", (e) => e.stopPropagation());
+    grow.addEventListener("mousedown", (e) => e.stopPropagation());
+    shrink.addEventListener("click", (e) => stepScale(-0.1, e));
+    grow.addEventListener("click", (e) => stepScale(0.1, e));
     const bodyEl = document.createElement("div");
     bodyEl.className = "ts-body";
     host.append(head, bodyEl);
@@ -14508,6 +14568,11 @@
         TEAM_SYNC_STATE.hasSavedPos = true;
       }
     } catch { /* default position */ }
+    try {
+      const s = Number(localStorage.getItem("hordesKrMod.teamSync.scale"));
+      if (Number.isFinite(s) && s > 0) TEAM_SYNC_STATE.scale = clamp(s, 0.6, 2.2);
+    } catch { /* default scale */ }
+    host.style.zoom = String(TEAM_SYNC_STATE.scale);
     head.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       const rect = host.getBoundingClientRect();
