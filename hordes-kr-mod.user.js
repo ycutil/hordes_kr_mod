@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.155-local
+// @version      0.9.156-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.155-local";
+  const BOOT_VERSION = "0.9.156-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -370,6 +370,14 @@
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
   const INCOMING_WARNING_SCAN_LIMIT = 700;
+  // Combat assist: threat HUD + auto-defense + auto-rotation. The incoming-watch
+  // fast path reads entity.target (the engine's authoritative field — verified live:
+  // 89/98 loaded entities expose it; one full scan costs ~0.002ms) instead of the
+  // legacy per-entity reflection BFS (180 objects x 64 keys x 700 entities).
+  const COMBAT_ASSIST_TICK_MS = 200;        // auto-defense / auto-rotation pulse
+  const AUTO_DEFENSE_LOCKOUT_MS = 8000;     // min gap between auto-defense triggers
+  const WATCH_BEEP_MIN_GAP_MS = 1500;       // min gap between new-watcher beeps
+  const THREAT_FLASH_MS = 1200;             // threat HUD flash duration on a new watcher
   const INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH = 3;
   const INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS = 180;
   const INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT = 64;
@@ -658,6 +666,12 @@
     incomingTargetWatchEnabled: false,
     buffSpikeWarnEnabled: true,
     dashboardEnabled: true,
+    threatHudEnabled: true,
+    watchBeepEnabled: true,
+    autoDefenseEnabled: false,
+    autoDefenseSlot: 0,
+    autoDefenseHpPct: 35,
+    autoRotationSlots: [],
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
@@ -671,6 +685,14 @@
   FEATURE_CONFIG.incomingTargetWatchEnabled = FEATURE_CONFIG.incomingTargetWatchEnabled !== false;
   FEATURE_CONFIG.buffSpikeWarnEnabled = FEATURE_CONFIG.buffSpikeWarnEnabled !== false;
   FEATURE_CONFIG.dashboardEnabled = FEATURE_CONFIG.dashboardEnabled !== false;
+  FEATURE_CONFIG.threatHudEnabled = FEATURE_CONFIG.threatHudEnabled !== false;
+  FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled !== false;
+  FEATURE_CONFIG.autoDefenseEnabled = FEATURE_CONFIG.autoDefenseEnabled === true;
+  FEATURE_CONFIG.autoDefenseSlot = clamp(Math.round(Number(FEATURE_CONFIG.autoDefenseSlot) || 0), 0, 12);
+  FEATURE_CONFIG.autoDefenseHpPct = clamp(Math.round(Number(FEATURE_CONFIG.autoDefenseHpPct) || 35), 5, 90);
+  FEATURE_CONFIG.autoRotationSlots = Array.isArray(FEATURE_CONFIG.autoRotationSlots)
+    ? FEATURE_CONFIG.autoRotationSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 8)
+    : [];
   if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
     FEATURE_CONFIG.incomingTargetWatchEnabled = true;
     try {
@@ -987,6 +1009,25 @@
     styleInstalled: false,
   };
 
+  const COMBAT_ASSIST_STATE = {
+    timer: null,
+    rotationOn: false,        // session-only: never persisted, always boots OFF
+    rotationCursor: 0,
+    lastDefenseAt: 0,
+    lastRotationCastAt: 0,
+    lastError: "",
+    // threat tracking (fed by the fast incoming-watch scan)
+    watcherIds: new Set(),
+    watcherNames: [],
+    mobAggroCount: 0,
+    threatFlashUntil: 0,
+    lastBeepAt: 0,
+    threatHost: null,
+    audioCtx: null,
+    fastPathHits: 0,
+    fastPathLastAt: 0,
+  };
+
   const HIGHLIGHT_STATE = {
     observer: null,
     pending: false,
@@ -1088,6 +1129,7 @@
 
   initGameScriptRuntimeHook();
   installStatusDashboard();
+  installCombatAssist();
 
   // === 시야각(FOV) 슬라이더 상한 해제 ===
   // 게임은 시야각 슬라이더를 max=100으로 제한하지만, 슬라이더 값 파서(Gt)에는
@@ -3165,6 +3207,71 @@
     toggleDashboard() {
       const enabled = setDashboardEnabled(!isDashboardEnabled());
       return enabled ? "상태 대시보드 켜짐" : "상태 대시보드 꺼짐";
+    },
+    toggleThreatHud() {
+      FEATURE_CONFIG.threatHudEnabled = FEATURE_CONFIG.threatHudEnabled === false;
+      saveFeatureConfig();
+      updateThreatHud();
+      return FEATURE_CONFIG.threatHudEnabled ? "위협 HUD 켜짐 (주시/어그로 카운터)" : "위협 HUD 꺼짐";
+    },
+    toggleWatchBeep() {
+      FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled === false;
+      saveFeatureConfig();
+      return FEATURE_CONFIG.watchBeepEnabled ? "주시 경고음 켜짐" : "주시 경고음 꺼짐";
+    },
+    toggleAutoDefense() {
+      FEATURE_CONFIG.autoDefenseEnabled = !FEATURE_CONFIG.autoDefenseEnabled;
+      saveFeatureConfig();
+      renderStatusUi();
+      if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot < 1) {
+        return "자동방어 켜짐 — 슬롯 미지정: HordesKrMod.setAutoDefense(슬롯, HP%) 로 설정하세요 (예: setAutoDefense(8, 35))";
+      }
+      return FEATURE_CONFIG.autoDefenseEnabled
+        ? `자동방어 켜짐 (HP ${FEATURE_CONFIG.autoDefenseHpPct}% 미만 → ${FEATURE_CONFIG.autoDefenseSlot}번 시전)`
+        : "자동방어 꺼짐";
+    },
+    setAutoDefense(slot, hpPct) {
+      FEATURE_CONFIG.autoDefenseSlot = clamp(Math.round(Number(slot) || 0), 0, 12);
+      if (hpPct !== undefined) FEATURE_CONFIG.autoDefenseHpPct = clamp(Math.round(Number(hpPct) || 35), 5, 90);
+      saveFeatureConfig();
+      return `자동방어 설정: HP ${FEATURE_CONFIG.autoDefenseHpPct}% 미만 → ${FEATURE_CONFIG.autoDefenseSlot}번 (현재 ${FEATURE_CONFIG.autoDefenseEnabled ? "켜짐" : "꺼짐"})`;
+    },
+    toggleAutoRotation() {
+      return setAutoRotationOn(!COMBAT_ASSIST_STATE.rotationOn);
+    },
+    setAutoRotationSlots(slots) {
+      const list = (Array.isArray(slots) ? slots : [slots])
+        .map((slot) => Math.round(Number(slot)))
+        .filter((slot) => slot >= 1 && slot <= 12)
+        .slice(0, 8);
+      FEATURE_CONFIG.autoRotationSlots = list;
+      saveFeatureConfig();
+      return list.length
+        ? `자동시전 슬롯: ${list.join(" → ")} (Alt+R 또는 패널 '자동시전'으로 켬)`
+        : "자동시전 슬롯 비움";
+    },
+    combatAssistStatus() {
+      return {
+        threatHud: FEATURE_CONFIG.threatHudEnabled !== false,
+        watchBeep: FEATURE_CONFIG.watchBeepEnabled !== false,
+        watchers: [...COMBAT_ASSIST_STATE.watcherIds],
+        watcherNames: COMBAT_ASSIST_STATE.watcherNames,
+        mobAggro: COMBAT_ASSIST_STATE.mobAggroCount,
+        fastPathHits: COMBAT_ASSIST_STATE.fastPathHits,
+        fastPathLastAgoMs: COMBAT_ASSIST_STATE.fastPathLastAt ? Date.now() - COMBAT_ASSIST_STATE.fastPathLastAt : null,
+        autoDefense: {
+          enabled: FEATURE_CONFIG.autoDefenseEnabled,
+          slot: FEATURE_CONFIG.autoDefenseSlot,
+          hpPct: FEATURE_CONFIG.autoDefenseHpPct,
+          lastTriggerAgoMs: COMBAT_ASSIST_STATE.lastDefenseAt ? Date.now() - COMBAT_ASSIST_STATE.lastDefenseAt : null,
+        },
+        autoRotation: {
+          on: COMBAT_ASSIST_STATE.rotationOn,
+          slots: FEATURE_CONFIG.autoRotationSlots,
+          lastCastAgoMs: COMBAT_ASSIST_STATE.lastRotationCastAt ? Date.now() - COMBAT_ASSIST_STATE.lastRotationCastAt : null,
+        },
+        lastError: COMBAT_ASSIST_STATE.lastError,
+      };
     },
     showDashboard() {
       return setDashboardEnabled(true) ? "상태 대시보드 켜짐" : "상태 대시보드 꺼짐";
@@ -11727,6 +11834,22 @@
         label: "번역",
         ...dashboardFeatureRow(FEATURE_CONFIG.domTranslationEnabled !== false, false, healthy, MOD_STATUS.domReplacedCount > 0, "적용", "대기"),
       },
+      {
+        key: "rot",
+        label: "자동시전",
+        dot: COMBAT_ASSIST_STATE.rotationOn ? "ok" : "off",
+        text: COMBAT_ASSIST_STATE.rotationOn
+          ? `ON ${FEATURE_CONFIG.autoRotationSlots.join("→")}`
+          : "꺼짐(Alt+R)",
+      },
+      {
+        key: "threat",
+        label: "위협",
+        dot: COMBAT_ASSIST_STATE.watcherIds.size > 0 ? "err" : (COMBAT_ASSIST_STATE.mobAggroCount > 0 ? "warn" : "ok"),
+        text: COMBAT_ASSIST_STATE.watcherIds.size > 0
+          ? `주시 ${COMBAT_ASSIST_STATE.watcherIds.size}명`
+          : (COMBAT_ASSIST_STATE.mobAggroCount > 0 ? `어그로 ${COMBAT_ASSIST_STATE.mobAggroCount}` : "없음"),
+      },
     ];
   }
 
@@ -11904,6 +12027,8 @@
       HIGHLIGHT_STATE.lastPresetBarTickAt = now;
       updatePresetQuickBar();
     }
+
+    try { updateThreatHud(); } catch { /* HUD must never break the overlay */ }
 
     try {
       if (!shouldRunRuntimeNameOverlay()) {
@@ -13931,6 +14056,323 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
+  function readEntityTargetId(entity) {
+    try {
+      const t = entity && entity.target;
+      if (typeof t === "number") return t;
+      if (t && typeof t === "object" && typeof t.id === "number") return t.id;
+    } catch {
+      // unreadable mid-transition
+    }
+    return null;
+  }
+
+  function entityHpFraction(entity) {
+    try {
+      const stats = entity && entity.stats;
+      if (stats && typeof stats.getResource === "function" && typeof stats.getStat === "function") {
+        const max = stats.getStat(6);
+        if (max > 0) return stats.getResource(6) / max;
+      }
+    } catch {
+      // stats unreadable
+    }
+    return -1;
+  }
+
+  // Fast incoming-warning scan. The engine's entity list (engine.entities.array)
+  // carries the authoritative `target` (entity id) and `skills.timedTarget/timedCast`
+  // fields, so one flat pass answers both "who targets me" and "who casts at me" —
+  // no reflection BFS. Verified live: a full scan costs ~0.002ms for ~100 entities.
+  // Returns null when the engine list is unavailable so the caller can fall back to
+  // the legacy deep scan.
+  function collectIncomingWarningOverlayEntitiesFast(runtime, self, selfPosition, wantsSkill, wantsWatch) {
+    const engine = runtime && runtime.engine;
+    const arr = engine && engine.entities && engine.entities.array;
+    if (!arr || typeof arr.length !== "number" || arr.length === 0) return null;
+    const myId = getRuntimeEntityId(self.entity);
+    if (myId === undefined || myId === null) return null;
+
+    const engineTime = typeof engine.time === "number" ? engine.time : null;
+    const skills = [];
+    const watches = [];
+    const watcherIds = new Set();
+    const watcherNames = [];
+    let mobAggro = 0;
+
+    for (let index = 0; index < arr.length; index++) {
+      const entity = arr[index];
+      if (!entity || entity.id === myId) continue;
+
+      const targetsMe = readEntityTargetId(entity) === myId;
+
+      // mob aggro count for the threat HUD (any living non-player aiming at me)
+      if (targetsMe && entity.type === 1 && entityHpFraction(entity) > 0) mobAggro++;
+
+      const isPlayer = entity.type === 0;
+      if (!isPlayer && !targetsMe) continue;
+
+      let relation = null;
+      const needRelation = (wantsWatch && isPlayer && targetsMe) || wantsSkill;
+      if (!needRelation) continue;
+
+      // casting at me? (cheap field reads — only escalate when there is a live cast)
+      let castAtMe = null;
+      if (wantsSkill) {
+        try {
+          const entitySkills = entity.skills;
+          const timedSkill = entitySkills && entitySkills.timedSkill;
+          if (timedSkill && timedSkill.id != null) {
+            const timedCast = entitySkills.timedCast;
+            const castLive = timedCast && (engineTime === null || engineTime <= Number(timedCast.end) + 0.2);
+            const timedTargetId = (() => {
+              const t = entitySkills.timedTarget;
+              if (typeof t === "number") return t;
+              return t && typeof t === "object" && typeof t.id === "number" ? t.id : null;
+            })();
+            if (castLive && timedTargetId === myId) {
+              castAtMe = {
+                id: timedSkill.id,
+                remaining: timedCast && engineTime !== null ? Math.max(0, Number(timedCast.end) - engineTime) : null,
+              };
+            }
+          }
+        } catch {
+          castAtMe = null;
+        }
+      }
+
+      const wantThisWatch = wantsWatch && isPlayer && targetsMe;
+      if (!wantThisWatch && !castAtMe) continue;
+
+      relation = getRuntimeEntityRelation(entity, self.entity);
+      if (relation.friendly) continue;
+
+      const positionInfo = getRuntimeWorldPosition(entity);
+      if (!positionInfo) continue;
+      const distance = getHorizontalRuntimeDistance(selfPosition.position, positionInfo.position);
+      const name = String(entity.name || "");
+
+      if (castAtMe) {
+        const skillId = normalizeSkillIconId(castAtMe.id);
+        skills.push({
+          entity,
+          path: `engine.entities.array[${index}]`,
+          name,
+          matchedName: name.toLowerCase(),
+          position: positionInfo.position,
+          positionSource: positionInfo.source,
+          score: 1000 + (isPlayer ? 120 : 0),
+          incomingSkill: true,
+          relation,
+          skillId,
+          skillIconUrl: skillId ? getSkillIconUrl(skillId) : "",
+          skillTargetField: "skills.timedTarget",
+          skillRemaining: castAtMe.remaining,
+          distance,
+          distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+        });
+      }
+
+      if (wantThisWatch) {
+        watcherIds.add(entity.id);
+        if (watcherNames.length < 8) watcherNames.push(name);
+        watches.push({
+          entity,
+          path: `engine.entities.array[${index}]`,
+          name,
+          matchedName: name.toLowerCase(),
+          position: positionInfo.position,
+          positionSource: positionInfo.source,
+          score: 920 + (relation.hostile ? 80 : 0),
+          incomingTargetWatch: true,
+          relation,
+          watchTargetField: "target",
+          watchTargetResolved: true,
+          distance,
+          distanceText: Number.isFinite(distance) ? `${formatTargetDistance(distance)}m` : "",
+        });
+      }
+    }
+
+    updateThreatState(watcherIds, watcherNames, mobAggro);
+    COMBAT_ASSIST_STATE.fastPathHits++;
+    COMBAT_ASSIST_STATE.fastPathLastAt = Date.now();
+    return { skills, watches };
+  }
+
+  // ===== Threat HUD (위협 표시) =====
+  function updateThreatState(watcherIds, watcherNames, mobAggro) {
+    const state = COMBAT_ASSIST_STATE;
+    const now = Date.now();
+    let hasNewWatcher = false;
+    for (const id of watcherIds) {
+      if (!state.watcherIds.has(id)) { hasNewWatcher = true; break; }
+    }
+    state.watcherIds = watcherIds;
+    state.watcherNames = watcherNames;
+    state.mobAggroCount = mobAggro;
+    if (hasNewWatcher) {
+      state.threatFlashUntil = now + THREAT_FLASH_MS;
+      if (FEATURE_CONFIG.watchBeepEnabled && now - state.lastBeepAt > WATCH_BEEP_MIN_GAP_MS) {
+        state.lastBeepAt = now;
+        playWatchBeep();
+      }
+    }
+  }
+
+  function playWatchBeep() {
+    try {
+      const AudioCtx = pageWindow.AudioContext || pageWindow.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!COMBAT_ASSIST_STATE.audioCtx) COMBAT_ASSIST_STATE.audioCtx = new AudioCtx();
+      const ctx = COMBAT_ASSIST_STATE.audioCtx;
+      if (ctx.state === "suspended") { ctx.resume().catch(() => {}); }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.06, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.13);
+    } catch {
+      // audio unavailable
+    }
+  }
+
+  function ensureThreatHudHost() {
+    let host = COMBAT_ASSIST_STATE.threatHost;
+    if (host && document.contains(host)) return host;
+    if (!document.body) return null;
+    host = document.createElement("div");
+    host.id = "hkr-threat-hud";
+    host.style.cssText = [
+      "position:fixed", "left:50%", "top:11%", "transform:translateX(-50%)",
+      "z-index:2147483500", "pointer-events:none", "display:none",
+      "font:900 16px -apple-system,'Segoe UI',sans-serif", "color:#ff5252",
+      "background:rgba(12,4,4,0.72)", "border:1px solid rgba(255,82,82,0.55)",
+      "border-radius:7px", "padding:3px 12px",
+      "text-shadow:0 1px 2px rgba(0,0,0,0.9)",
+      "box-shadow:0 2px 10px rgba(0,0,0,0.55)",
+    ].join(";");
+    document.body.appendChild(host);
+    COMBAT_ASSIST_STATE.threatHost = host;
+    return host;
+  }
+
+  function updateThreatHud() {
+    const host = ensureThreatHudHost();
+    if (!host) return;
+    const state = COMBAT_ASSIST_STATE;
+    const watchers = state.watcherIds.size;
+    const mobs = state.mobAggroCount;
+    if (FEATURE_CONFIG.threatHudEnabled === false || (watchers === 0 && mobs === 0)) {
+      if (host.style.display !== "none") host.style.display = "none";
+      return;
+    }
+    const flash = Date.now() < state.threatFlashUntil;
+    const parts = [];
+    if (watchers > 0) parts.push(`🎯 주시 ${watchers}명${state.watcherNames.length ? " (" + state.watcherNames.slice(0, 3).join(", ") + ")" : ""}`);
+    if (mobs > 0) parts.push(`몹 어그로 ${mobs}`);
+    const text = parts.join(" · ");
+    if (host.textContent !== text) host.textContent = text;
+    host.style.display = "block";
+    host.style.background = flash ? "rgba(120,8,8,0.92)" : "rgba(12,4,4,0.72)";
+    host.style.fontSize = flash ? "19px" : "16px";
+  }
+
+  // ===== Combat assist: auto-defense (HP trigger) + auto-rotation (toggled) =====
+  // Casting goes through runtime.useSkillbarSlot (the same packet path a keypress
+  // takes). Auto-rotation is session-only: it always boots OFF and is toggled by
+  // Alt+R, the panel button, or HordesKrMod.toggleAutoRotation().
+  function callRuntimeUseSkillbarSlot(runtime, slot) {
+    try {
+      if (runtime && typeof runtime.useSkillbarSlot === "function") return runtime.useSkillbarSlot(slot);
+    } catch (error) {
+      COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
+    }
+    return null;
+  }
+
+  function findEngineEntityById(engine, id) {
+    try {
+      if (engine && typeof engine.getEntityById === "function") return engine.getEntityById(id) || null;
+      const arr = engine && engine.entities && engine.entities.array;
+      if (arr) { for (const entity of arr) { if (entity && entity.id === id) return entity; } }
+    } catch {
+      // unreadable
+    }
+    return null;
+  }
+
+  function combatAssistTick() {
+    try {
+      const runtime = getExposedRuntime();
+      const engine = runtime && runtime.engine;
+      const me = engine && engine.player;
+      if (!me) return;
+      const now = Date.now();
+
+      if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot >= 1) {
+        const hp = entityHpFraction(me);
+        if (hp >= 0 && hp * 100 < FEATURE_CONFIG.autoDefenseHpPct
+            && now - COMBAT_ASSIST_STATE.lastDefenseAt > AUTO_DEFENSE_LOCKOUT_MS) {
+          COMBAT_ASSIST_STATE.lastDefenseAt = now; // lock out even on failure: no spam
+          callRuntimeUseSkillbarSlot(runtime, FEATURE_CONFIG.autoDefenseSlot);
+        }
+      }
+
+      if (COMBAT_ASSIST_STATE.rotationOn) {
+        const slots = FEATURE_CONFIG.autoRotationSlots;
+        if (!slots.length) return;
+        const mySkills = me.skills;
+        const engineTime = typeof engine.time === "number" ? engine.time : null;
+        if (mySkills && typeof mySkills.gcdEnd === "number" && engineTime !== null && engineTime < mySkills.gcdEnd) return;
+        const targetId = readEntityTargetId(me);
+        if (targetId === null) return;
+        const target = findEngineEntityById(engine, targetId);
+        if (!target) return;
+        const hostileTarget = target.type === 1
+          || (target.type === 0 && target.faction !== undefined && me.faction !== undefined && target.faction !== me.faction);
+        if (!hostileTarget || entityHpFraction(target) <= 0) return;
+        const slot = slots[COMBAT_ASSIST_STATE.rotationCursor % slots.length];
+        COMBAT_ASSIST_STATE.rotationCursor = (COMBAT_ASSIST_STATE.rotationCursor + 1) % 1000;
+        callRuntimeUseSkillbarSlot(runtime, slot);
+        COMBAT_ASSIST_STATE.lastRotationCastAt = now;
+      }
+    } catch (error) {
+      COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
+    }
+  }
+
+  function setAutoRotationOn(value) {
+    const slots = FEATURE_CONFIG.autoRotationSlots;
+    if (value && !slots.length) {
+      return "자동시전 슬롯이 비어 있습니다 — HordesKrMod.setAutoRotationSlots([7,5]) 처럼 우선순위 슬롯을 먼저 지정하세요.";
+    }
+    COMBAT_ASSIST_STATE.rotationOn = Boolean(value);
+    renderStatusUi();
+    return COMBAT_ASSIST_STATE.rotationOn
+      ? `자동시전 켜짐 (슬롯 ${slots.join("→")}) — Alt+R 또는 패널로 끔`
+      : "자동시전 꺼짐";
+  }
+
+  function installCombatAssist() {
+    if (COMBAT_ASSIST_STATE.timer) return;
+    COMBAT_ASSIST_STATE.timer = setInterval(combatAssistTick, COMBAT_ASSIST_TICK_MS);
+    try {
+      pageWindow.addEventListener("keydown", (event) => {
+        if (!event.altKey || event.code !== "KeyR" || event.repeat) return;
+        event.preventDefault();
+        setAutoRotationOn(!COMBAT_ASSIST_STATE.rotationOn);
+      }, true);
+    } catch {
+      // hotkey optional
+    }
+  }
+
   function collectIncomingWarningOverlayEntities(runtime) {
     const self = findLocalPlayerEntity(runtime);
     if (!self) return { skills: [], watches: [] };
@@ -13941,6 +14383,9 @@
     const wantsSkill = isIncomingSkillOverlayEnabled();
     const wantsWatch = isIncomingTargetWatchEnabled();
     if (!wantsSkill && !wantsWatch) return { skills: [], watches: [] };
+
+    const fast = collectIncomingWarningOverlayEntitiesFast(runtime, self, selfPosition, wantsSkill, wantsWatch);
+    if (fast) return fast;
 
     const entities = collectLoadedRuntimeEntities(runtime, {
       limit: INCOMING_WARNING_SCAN_LIMIT,
@@ -18938,6 +19383,8 @@
               <button id="toggleIncomingSkill" class="action" type="button"></button>
               <button id="toggleTargetDistance" class="action" type="button"></button>
               <button id="toggleHighlightList" class="action" type="button"></button>
+              <button id="toggleAutoRotation" class="action" type="button"></button>
+              <button id="toggleAutoDefense" class="action" type="button"></button>
             </div>
             <details class="section">
               <summary>프리셋</summary>
@@ -19310,6 +19757,8 @@
     setFeatureToggleButton(shadow, "toggle", "번역", enabled);
     setFeatureToggleButton(shadow, "toggleHighlight", "강조", HIGHLIGHT_CONFIG.enabled);
     setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
+    setFeatureToggleButton(shadow, "toggleAutoRotation", "자동시전", COMBAT_ASSIST_STATE.rotationOn);
+    setFeatureToggleButton(shadow, "toggleAutoDefense", "자동방어", FEATURE_CONFIG.autoDefenseEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
     renderTargetOrderUi(shadow);
@@ -19332,6 +19781,8 @@
       connectTargetOrderNow: () => pageWindow.HordesKrMod.connectTargetOrder(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
+      toggleAutoRotation: () => pageWindow.HordesKrMod.toggleAutoRotation(),
+      toggleAutoDefense: () => pageWindow.HordesKrMod.toggleAutoDefense(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
       toggleSwiftshotTurbo: () => pageWindow.HordesKrMod.toggleSwiftshotTurbo(),
