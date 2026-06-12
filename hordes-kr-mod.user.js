@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.162-local
+// @version      0.9.163-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.162-local";
+  const BOOT_VERSION = "0.9.163-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -1038,6 +1038,20 @@
     lastInterruptAt: 0,
     lastInterruptInfo: "",
     interruptHits: 0,
+  };
+
+  // Declared before installCombatAssist() runs at init — scheduleTeamSync() reads it
+  // synchronously, so it must not be in the temporal dead zone.
+  const TEAM_SYNC_STATE = {
+    timer: null,
+    members: [],
+    lastSyncAt: 0,
+    lastError: "",
+    inFlight: false,
+    host: null,
+    rows: new Map(),
+    styleInstalled: false,
+    dragging: null,
   };
 
   const HIGHLIGHT_STATE = {
@@ -14241,18 +14255,6 @@
   }
 
   // ===== Team sync (팀파이트 멤버 상태 공유) =====
-  const TEAM_SYNC_STATE = {
-    timer: null,
-    members: [],
-    lastSyncAt: 0,
-    lastError: "",
-    inFlight: false,
-    host: null,
-    rows: new Map(),
-    styleInstalled: false,
-    dragging: null,
-  };
-
   function isTeamSyncEnabled() {
     return FEATURE_CONFIG.teamSyncEnabled === true;
   }
