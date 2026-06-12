@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.165-local
+// @version      0.9.166-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.165-local";
+  const BOOT_VERSION = "0.9.166-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -1064,7 +1064,7 @@
     dragging: null,
     hasSavedPos: false,
     posApplied: false,
-    scale: 1,
+    scale: 1.3,
   };
 
   const HIGHLIGHT_STATE = {
@@ -9690,7 +9690,9 @@
   }
 
   function getMatchingHighlightName(text) {
-    const haystack = String(text || "").toLowerCase();
+    // Exact (equality) match, not substring — a 강조ID highlights only its exact name,
+    // so "bga" no longer lights up "bgaXYZ". Trim so canvas/DOM whitespace doesn't break it.
+    const haystack = String(text || "").trim().toLowerCase();
     if (!haystack) return "";
 
     const { names, lowerNames, matchCache } = getHighlightNameCache();
@@ -9700,7 +9702,7 @@
 
     let matchedName = "";
     for (let index = 0; index < lowerNames.length; index++) {
-      if (haystack.includes(lowerNames[index])) {
+      if (haystack === lowerNames[index]) {
         matchedName = names[index];
         break;
       }
@@ -14492,7 +14494,7 @@
     if (TEAM_SYNC_STATE.styleInstalled) return;
     const style = document.createElement("style");
     style.textContent = [
-      "#hkr-teamsync{position:fixed;right:8px;top:34%;z-index:2147483550;font:600 11px/1.4 -apple-system,'Segoe UI',sans-serif;color:#e8eef6;background:rgba(12,16,24,0.82);border:1px solid rgba(120,140,170,0.32);border-radius:7px;padding:4px 6px 6px;min-width:150px;max-width:240px;box-shadow:0 3px 12px rgba(0,0,0,0.5);-webkit-user-select:none;user-select:none}",
+      "#hkr-teamsync{position:fixed;right:8px;top:34%;transform-origin:top left;z-index:2147483550;font:600 11px/1.4 -apple-system,'Segoe UI',sans-serif;color:#e8eef6;background:rgba(12,16,24,0.82);border:1px solid rgba(120,140,170,0.32);border-radius:7px;padding:4px 6px 6px;min-width:150px;max-width:240px;box-shadow:0 3px 12px rgba(0,0,0,0.5);-webkit-user-select:none;user-select:none}",
       "#hkr-teamsync .ts-head{display:flex;align-items:center;gap:5px;cursor:move;margin-bottom:3px;padding-bottom:3px;border-bottom:1px solid rgba(120,140,170,0.2)}",
       "#hkr-teamsync .ts-title{flex:1;opacity:0.92;letter-spacing:0.2px}",
       "#hkr-teamsync .ts-btn{cursor:pointer;width:14px;height:14px;line-height:13px;text-align:center;border-radius:3px;font-size:12px;font-weight:800;opacity:0.7;background:rgba(120,140,170,0.18);border:1px solid rgba(120,140,170,0.3)}",
@@ -14520,8 +14522,10 @@
   function setTeamSyncScale(value) {
     const next = clamp(Math.round(Number(value) * 100) / 100, 0.6, 2.2);
     TEAM_SYNC_STATE.scale = next;
+    // transform (not zoom) with top-left origin: the anchor corner stays put, so
+    // getBoundingClientRect().left === style.left and dragging math stays correct.
     const host = TEAM_SYNC_STATE.host;
-    if (host) host.style.zoom = String(next);
+    if (host) host.style.transform = `scale(${next})`;
     try { localStorage.setItem("hordesKrMod.teamSync.scale", String(next)); } catch { /* ignore */ }
     return next;
   }
@@ -14569,10 +14573,21 @@
       }
     } catch { /* default position */ }
     try {
-      const s = Number(localStorage.getItem("hordesKrMod.teamSync.scale"));
-      if (Number.isFinite(s) && s > 0) TEAM_SYNC_STATE.scale = clamp(s, 0.6, 2.2);
+      // One-time migration: adopt the larger 1.3x default (= old 1.0 + three +clicks)
+      // and re-anchor cleanly (the old zoom-based drag had left the saved pos off).
+      if (localStorage.getItem("hordesKrMod.teamSync.scaleDefaultV2") !== "1") {
+        TEAM_SYNC_STATE.scale = 1.3;
+        TEAM_SYNC_STATE.hasSavedPos = false;
+        host.style.left = ""; host.style.top = ""; host.style.right = "";
+        localStorage.setItem("hordesKrMod.teamSync.scale", "1.3");
+        localStorage.setItem("hordesKrMod.teamSync.scaleDefaultV2", "1");
+        try { localStorage.removeItem("hordesKrMod.teamSync.pos"); } catch { /* ignore */ }
+      } else {
+        const s = Number(localStorage.getItem("hordesKrMod.teamSync.scale"));
+        if (Number.isFinite(s) && s > 0) TEAM_SYNC_STATE.scale = clamp(s, 0.6, 2.2);
+      }
     } catch { /* default scale */ }
-    host.style.zoom = String(TEAM_SYNC_STATE.scale);
+    host.style.transform = `scale(${TEAM_SYNC_STATE.scale})`;
     head.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       const rect = host.getBoundingClientRect();
@@ -14623,7 +14638,8 @@
     if (!anchor) return;
     const r = anchor.getBoundingClientRect();
     if (!r || (r.width === 0 && r.height === 0)) return;
-    const w = host.offsetWidth || 160;
+    // offsetWidth is the unscaled layout width; the rendered panel is scaled by transform.
+    const w = (host.offsetWidth || 160) * (TEAM_SYNC_STATE.scale || 1);
     const gap = 8;
     const left = clamp(r.left - w - gap, 4, (pageWindow.innerWidth || 800) - w - 4);
     const top = clamp(r.top, 4, (pageWindow.innerHeight || 600) - 30);
@@ -14673,12 +14689,32 @@
       }
       const candle = member.payload && member.payload.candle;
       if (candle) {
-        const c = document.createElement("span");
-        c.className = "ts-candle";
-        if (!candle.equipped) { c.textContent = "🕯"; c.style.opacity = "0.25"; c.title = "candle 미착용"; }
-        else if (Number(candle.remain) > 0.3) { c.textContent = "🕯"; c.style.filter = "grayscale(1) brightness(0.6)"; c.title = `candle 쿨 ${Math.ceil(candle.remain)}s`; }
-        else { c.textContent = "🕯"; c.style.color = "#46d07a"; c.title = "candle 사용가능"; }
-        row.appendChild(c);
+        // Emoji ignore CSS color, so a green 🕯 looked identical to a ready one. Pair the
+        // candle with the same green-circle / white-cooldown indicator the skills use.
+        const cell = document.createElement("span");
+        cell.className = "ts-sk";
+        const ico = document.createElement("span");
+        ico.className = "ts-candle";
+        ico.textContent = "🕯";
+        cell.appendChild(ico);
+        if (!candle.equipped) {
+          ico.style.opacity = "0.22";
+          cell.title = "candle 미착용";
+        } else {
+          const remain = Number(candle.remain);
+          const tag = document.createElement("span");
+          if (remain > 0.3) {
+            ico.style.filter = "grayscale(1) brightness(0.6)";
+            tag.className = "ts-ind cd";
+            tag.textContent = Math.ceil(remain) + "";
+            cell.title = `candle 쿨 ${Math.ceil(remain)}s`;
+          } else {
+            tag.className = "ts-ind ready";
+            cell.title = "candle 사용가능";
+          }
+          cell.appendChild(tag);
+        }
+        row.appendChild(cell);
       }
       body.appendChild(row);
     }
@@ -15399,8 +15435,8 @@
     const name = getRuntimeNameValueLoose(value);
     if (!name) return null;
 
-    const lowerName = name.toLowerCase();
-    const matchedName = lowerNames.find((target) => lowerName.includes(target));
+    const lowerName = name.trim().toLowerCase();
+    const matchedName = lowerNames.find((target) => lowerName === target); // exact, not substring
     if (!matchedName) return null;
 
     const positionInfo = getRuntimeWorldPosition(value);
