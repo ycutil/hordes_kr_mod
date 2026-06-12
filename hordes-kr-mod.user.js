@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.166-local
+// @version      0.9.167-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.166-local";
+  const BOOT_VERSION = "0.9.167-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -704,7 +704,7 @@
     autoInterruptRangeM: 30,
     autoInterruptSkillIds: [45, 52, 35],
     autoInterruptHighlightOnly: false, // false = interrupt ANY hostile in range (강조 무관)
-    teamSyncEnabled: false,
+    teamSyncEnabled: true, // 설치 기본값: 팀공유 ON
     teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
     teamSyncServer: TEAM_SYNC_SERVER_DEFAULT,
     teamSyncToken: TEAM_SYNC_TOKEN_DEFAULT,
@@ -784,7 +784,7 @@
     SWIFTSHOT_TURBO_DEFAULT_INTERVAL_MS
   );
   const PARTY_UI_CONFIG = loadJsonConfig(PARTY_UI_CONFIG_KEY, {
-    enabled: true,
+    enabled: false, // 설치 기본값: 파티창이동 OFF
     preset: "default",
     x: null,
     y: null,
@@ -798,7 +798,7 @@
   PARTY_UI_CONFIG.frameWidth = clamp(Number(PARTY_UI_CONFIG.frameWidth) || PARTY_UI_FRAME_WIDTH, 150, 240);
   PARTY_UI_CONFIG.gap = clamp(Number(PARTY_UI_CONFIG.gap) || PARTY_UI_GRID_GAP, 0, 10);
   const PARTY_COMMAND_CONFIG = loadJsonConfig(PARTY_COMMAND_CONFIG_KEY, {
-    enabled: true,
+    enabled: false, // 설치 기본값: 파티패널 OFF
     channel: "clan",
     x: null,
     y: null,
@@ -827,7 +827,7 @@
     domEnabled: true,
     canvasEnabled: true,
     runtimeOverlayEnabled: true,
-    minimapLabelsEnabled: true,
+    minimapLabelsEnabled: false, // 설치 기본값: 미니맵 라벨 OFF
     minimapListEnabled: true,
     minimapListAllHostiles: false,
     minimapListScale: MINIMAP_LIST_DEFAULT_SCALE,
@@ -837,7 +837,7 @@
     presetBarY: null,
     hideClanNames: true,
     nameplateStyle: null,
-    selfHighlight: false,
+    selfHighlight: true, // 설치 기본값: 내이름 강조 ON
   });
   HIGHLIGHT_CONFIG.names = Array.isArray(HIGHLIGHT_CONFIG.names)
     ? uniqueHighlightNames(HIGHLIGHT_CONFIG.names)
@@ -11142,7 +11142,7 @@
         width: 100% !important;
         min-width: 0 !important;
         display: grid !important;
-        grid-template-columns: minmax(0, 1fr) auto auto !important;
+        grid-template-columns: minmax(0, 1fr) auto auto auto !important;
         align-items: center !important;
         gap: calc(6px * var(--hordes-kr-minimap-list-scale, 1)) !important;
         border: 1px solid rgba(166, 220, 213, 0.18) !important;
@@ -11172,6 +11172,26 @@
       .hordes-kr-minimap-list-row.nearby .state {
         font-weight: 1000 !important;
         text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9) !important;
+      }
+      .hordes-kr-minimap-list-row .del-btn {
+        flex: 0 0 auto !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        height: calc(16px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        font-size: calc(11px * var(--hordes-kr-minimap-list-scale, 1)) !important;
+        line-height: 1 !important;
+        border-radius: 3px !important;
+        cursor: pointer !important;
+        opacity: 0.5 !important;
+        filter: grayscale(1) !important;
+        transition: opacity 0.1s, background 0.1s !important;
+      }
+      .hordes-kr-minimap-list-row .del-btn:hover {
+        opacity: 1 !important;
+        filter: none !important;
+        background: rgba(220, 60, 60, 0.85) !important;
       }
       .hordes-kr-minimap-list-row .identity {
         min-width: 0 !important;
@@ -12958,11 +12978,32 @@
     const distance = createUiElement("span", "distance");
     const status = createUiElement("span", "state");
 
+    // Trash button to drop this name from the 강조 list (click or right-click anywhere).
+    const del = createUiElement("span", "del-btn");
+    del.textContent = "🗑";
+    del.setAttribute("role", "button");
+    del.title = "강조 ID에서 삭제";
+
     nameLine.append(icon, name);
     identity.append(nameLine, health);
-    row.append(identity, distance, status);
+    row.append(identity, distance, status, del);
 
-    row.__hkrParts = { icon, name, health, healthBar, healthFill, healthText, distance, status };
+    row.__hkrParts = { icon, name, health, healthBar, healthFill, healthText, distance, status, del };
+
+    const dropRowHighlight = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rowName = row.dataset.hordesKrTargetName || "";
+      if (!rowName) return;
+      try { pageWindow.HordesKrMod.removeHighlightName(rowName); } catch { /* ignore */ }
+      try { showGearPresetProgressOverlay(`강조 삭제: ${rowName}`, "running", 1300); } catch { /* toast optional */ }
+      refreshNameHighlights();
+      updateMinimapNameOverlay();
+      updateTargetDistanceOverlay();
+      renderStatusUi();
+    };
+    del.addEventListener("click", dropRowHighlight);
+    del.addEventListener("mousedown", (event) => event.stopPropagation()); // don't start a list drag
 
     row.addEventListener("click", (event) => {
       event.preventDefault();
@@ -12980,19 +13021,8 @@
       renderStatusUi();
     });
 
-    // Right-click a row to drop that name from the 강조 list (no console needed).
-    row.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const rowName = row.dataset.hordesKrTargetName || "";
-      if (!rowName) return;
-      try { pageWindow.HordesKrMod.removeHighlightName(rowName); } catch { /* ignore */ }
-      try { showGearPresetProgressOverlay(`강조 삭제: ${rowName}`, "running", 1300); } catch { /* toast optional */ }
-      refreshNameHighlights();
-      updateMinimapNameOverlay();
-      updateTargetDistanceOverlay();
-      renderStatusUi();
-    });
+    // Right-click anywhere on the row also drops it (same as the 🗑 button).
+    row.addEventListener("contextmenu", dropRowHighlight);
 
     return row;
   }
