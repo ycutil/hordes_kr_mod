@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.163-local
+// @version      0.9.164-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.163-local";
+  const BOOT_VERSION = "0.9.164-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -344,6 +344,14 @@
     "items/charm/charm11_": { label: "Ghost Candles (candle)" },
     "items/charm/charm2_": { label: "Tattooed Skull (skull)" },
     "items/charm/charm13_": { label: "Orc Skull (skull)" },
+  };
+  // Defensive/immunity skills worth flagging on a highlighted enemy. When active,
+  // the skill leaves a self-buff whose logic.icon == the skill icon (== skill id);
+  // we read the buff's remaining duration (enemy recast cooldown is not server-synced).
+  const KEY_DEFENSE_ICON_MAP = {
+    "ui/skills/2": { label: "Bulwark (불웍)", cls: "전사" },
+    "ui/skills/53": { label: "Ice Block (아이스블락)", cls: "마법사" },
+    "ui/skills/23": { label: "Ice Shield (아이스실드)", cls: "마법사" },
   };
   const KEY_BUFF_MAX_ICONS = 6; // cap icons shown next to one target
   // Skills to flag while an enemy is mid-cast/channel, by skill id (== icon number;
@@ -1052,6 +1060,8 @@
     rows: new Map(),
     styleInstalled: false,
     dragging: null,
+    hasSavedPos: false,
+    posApplied: false,
   };
 
   const HIGHLIGHT_STATE = {
@@ -10807,10 +10817,27 @@
         flex: 0 0 17px !important;
         object-fit: contain !important;
         border-radius: 3px !important;
-        box-shadow: 0 0 0 1px rgba(255, 90, 90, 0.9), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+        box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.95), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
       }
-      .hordes-kr-runtime-name-label .key-buff-icon.ally {
-        box-shadow: 0 0 0 1px rgba(90, 209, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+      .hordes-kr-runtime-name-label .key-buff-icon.def {
+        box-shadow: 0 0 0 2px rgba(183, 110, 255, 0.97), 0 0 6px rgba(160, 90, 255, 0.6), 0 1px 3px rgba(0, 0, 0, 0.85) !important;
+      }
+      .hordes-kr-runtime-name-label .key-buff-wrap {
+        position: relative !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        flex: 0 0 auto !important;
+      }
+      .hordes-kr-runtime-name-label .key-buff-wrap .key-buff-cd {
+        position: absolute !important;
+        left: 50% !important;
+        bottom: -3px !important;
+        transform: translateX(-50%) !important;
+        font: 800 10px/1 -apple-system, 'Segoe UI', sans-serif !important;
+        color: #ffffff !important;
+        text-shadow: 0 0 2px #000, 0 0 3px #000, 0 1px 2px #000 !important;
+        pointer-events: none !important;
+        white-space: nowrap !important;
       }
       .hordes-kr-runtime-name-label .cast-skill-icon {
         width: 18px !important;
@@ -11478,10 +11505,12 @@
 
   function matchKeyBuffIcon(icon) {
     if (!icon) return null;
+    const def = KEY_DEFENSE_ICON_MAP[icon];
+    if (def) return { ...def, kind: "def" };
     const direct = KEY_BUFF_ICON_MAP[icon];
-    if (direct) return direct;
+    if (direct) return { ...direct, kind: "buff" };
     for (const prefix in KEY_BUFF_CHARM_MAP) {
-      if (icon.indexOf(prefix) === 0) return KEY_BUFF_CHARM_MAP[prefix];
+      if (icon.indexOf(prefix) === 0) return { ...KEY_BUFF_CHARM_MAP[prefix], kind: "buff" };
     }
     return null;
   }
@@ -11489,16 +11518,19 @@
   // Read a watched enemy's currently-active "tell" buffs as displayable icons.
   // Each buff lives at entity.buffs.buffs.get(id) (a Map caster->instance); the
   // instance's logic.icon is the icon path. Matched against the key-buff maps.
-  function getEntityKeyBuffIcons(entity) {
+  function getEntityKeyBuffIcons(entity, runtime) {
     const out = [];
     try {
       const map = entity && entity.buffs && entity.buffs.buffs;
       if (!map || typeof map.forEach !== "function") return out;
+      const engine = runtime && runtime.engine;
+      const now = engine && typeof engine.time === "number" ? engine.time : null;
       const seen = new Set();
       map.forEach((inner) => {
+        let inst = null;
         let icon = "";
         try {
-          const inst = inner && typeof inner.values === "function" ? inner.values().next().value : inner;
+          inst = inner && typeof inner.values === "function" ? inner.values().next().value : inner;
           icon = inst && inst.logic && inst.logic.icon || "";
         } catch {
           icon = "";
@@ -11507,11 +11539,29 @@
         const match = matchKeyBuffIcon(icon);
         if (!match) return;
         seen.add(icon);
-        out.push({ iconUrl: buildDataAssetUrl(icon), label: match.label, ally: !!match.ally });
+        const isDef = match.kind === "def";
+        let remain = null;
+        if (isDef && now !== null) {
+          // Defensive buff still active → show its remaining duration as the "still
+          // protected" window (the recast cooldown itself isn't synced from enemies).
+          try {
+            const end = Number(inst && inst.timer && inst.timer.end);
+            if (Number.isFinite(end) && end > now) remain = end - now;
+          } catch { /* timer unreadable */ }
+        }
+        out.push({
+          iconUrl: buildDataAssetUrl(icon),
+          label: match.label,
+          kind: isDef ? "def" : "buff",
+          ally: !!match.ally,
+          remain,
+        });
       });
     } catch {
       // entity buffs may be unreadable mid-transition
     }
+    // Defensive icons first so a target's protection state is the eye's first stop.
+    out.sort((a, b) => (a.kind === "def" ? 0 : 1) - (b.kind === "def" ? 0 : 1));
     return out.slice(0, KEY_BUFF_MAX_ICONS);
   }
 
@@ -11850,7 +11900,7 @@
         // ones) so a baseline exists before they pop; flag the ones that just spiked.
         const hostile = isHostileEntity(candidate.entity, runtime);
         candidate.buffSpike = buffSpikeOn && hostile && updateBuffSpikeForEntity(candidate.entity, now);
-        candidate.keyBuffs = buffSpikeOn && hostile ? getEntityKeyBuffIcons(candidate.entity) : [];
+        candidate.keyBuffs = buffSpikeOn && hostile ? getEntityKeyBuffIcons(candidate.entity, runtime) : [];
         candidate.castSkill = buffSpikeOn && hostile ? getEntityCastIcon(candidate.entity, runtime) : null;
 
         const point = (candidate.incomingSkill || candidate.incomingTargetWatch)
@@ -14423,8 +14473,9 @@
       "#hkr-teamsync .ts-sk{display:inline-flex;align-items:center;gap:2px}",
       "#hkr-teamsync .ts-ico{width:15px;height:15px;flex:0 0 15px;object-fit:contain;border-radius:2px}",
       "#hkr-teamsync .ts-ico.cd{filter:grayscale(1) brightness(0.55)}",
-      "#hkr-teamsync .ts-cdnum{font-size:9px;font-weight:800;color:#ff9a6a;min-width:13px}",
-      "#hkr-teamsync .ts-ready{font-size:9px;font-weight:800;color:#46d07a}",
+      "#hkr-teamsync .ts-ind{display:inline-flex;align-items:center;justify-content:center;min-width:13px;height:13px;font-size:9px;font-weight:800}",
+      "#hkr-teamsync .ts-ind.ready{width:9px;height:9px;min-width:9px;border-radius:50%;background:#46d07a;box-shadow:0 0 3px rgba(70,208,122,0.85)}",
+      "#hkr-teamsync .ts-ind.cd{color:#ffffff;text-shadow:0 0 2px #000,0 1px 2px #000}",
       "#hkr-teamsync .ts-candle{font-size:13px;flex:0 0 auto}",
       "#hkr-teamsync .ts-empty{opacity:0.5;font-size:10px;font-weight:500;padding:2px 0}",
     ].join("");
@@ -14452,7 +14503,10 @@
     document.body.appendChild(host);
     try {
       const pos = JSON.parse(localStorage.getItem("hordesKrMod.teamSync.pos") || "null");
-      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) { host.style.left = `${pos.x}px`; host.style.top = `${pos.y}px`; host.style.right = "auto"; }
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        host.style.left = `${pos.x}px`; host.style.top = `${pos.y}px`; host.style.right = "auto";
+        TEAM_SYNC_STATE.hasSavedPos = true;
+      }
     } catch { /* default position */ }
     head.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
@@ -14469,6 +14523,7 @@
     document.addEventListener("mouseup", () => {
       if (!TEAM_SYNC_STATE.dragging) return;
       TEAM_SYNC_STATE.dragging = null;
+      TEAM_SYNC_STATE.hasSavedPos = true;
       try { const r = host.getBoundingClientRect(); localStorage.setItem("hordesKrMod.teamSync.pos", JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) })); } catch { /* ignore */ }
     });
     TEAM_SYNC_STATE.host = host;
@@ -14488,10 +14543,29 @@
     icon.addEventListener("error", () => icon.remove(), { once: true });
     cell.appendChild(icon);
     const tag = document.createElement("span");
-    if (remain > 0.3) { tag.className = "ts-cdnum"; tag.textContent = Math.ceil(remain) + ""; }
-    else { tag.className = "ts-ready"; tag.textContent = "✓"; }
+    if (remain > 0.3) { tag.className = "ts-ind cd"; tag.textContent = Math.ceil(remain) + ""; }
+    else { tag.className = "ts-ind ready"; } // ready = filled green circle (no glyph)
     cell.appendChild(tag);
     return cell;
+  }
+
+  // Default placement: just left of the player health bar (#ufplayer). Only applied
+  // until the user drags the panel (then their saved position wins). Retries each
+  // render until #ufplayer has real layout, since the game UI mounts asynchronously.
+  function positionTeamSyncDefault(host) {
+    if (TEAM_SYNC_STATE.hasSavedPos || TEAM_SYNC_STATE.posApplied) return;
+    const anchor = document.getElementById("ufplayer");
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    if (!r || (r.width === 0 && r.height === 0)) return;
+    const w = host.offsetWidth || 160;
+    const gap = 8;
+    const left = clamp(r.left - w - gap, 4, (pageWindow.innerWidth || 800) - w - 4);
+    const top = clamp(r.top, 4, (pageWindow.innerHeight || 600) - 30);
+    host.style.left = `${Math.round(left)}px`;
+    host.style.top = `${Math.round(top)}px`;
+    host.style.right = "auto";
+    TEAM_SYNC_STATE.posApplied = true;
   }
 
   function renderTeamSyncList() {
@@ -14502,6 +14576,7 @@
     const host = ensureTeamSyncHost();
     if (!host) return;
     host.style.display = "block";
+    positionTeamSyncDefault(host);
     if (TEAM_SYNC_STATE.headRoom) TEAM_SYNC_STATE.headRoom.textContent = FEATURE_CONFIG.teamSyncRoom;
     const body = TEAM_SYNC_STATE.body;
     body.replaceChildren();
@@ -14871,14 +14946,28 @@
     const appendKeyBuffIcons = () => {
       const list = candidate.keyBuffs || [];
       for (const buff of list) {
+        const isDef = buff.kind === "def";
         const icon = document.createElement("img");
-        icon.className = buff.ally ? "key-buff-icon ally" : "key-buff-icon";
+        icon.className = isDef ? "key-buff-icon def" : "key-buff-icon";
         icon.alt = "";
         icon.decoding = "async";
         icon.src = buff.iconUrl;
-        icon.title = buff.label + (buff.ally ? " — 아군 버프" : "");
-        icon.addEventListener("error", () => icon.remove(), { once: true });
-        label.appendChild(icon);
+        icon.title = buff.label + (isDef ? " — 방어 스킬" : " — 버프");
+        if (isDef && buff.remain != null && buff.remain > 0.3) {
+          // Defensive buff with a live timer → overlay the remaining seconds in bold white.
+          const wrap = document.createElement("span");
+          wrap.className = "key-buff-wrap def";
+          wrap.title = icon.title;
+          const cd = document.createElement("span");
+          cd.className = "key-buff-cd";
+          cd.textContent = Math.ceil(buff.remain) + "";
+          wrap.append(icon, cd);
+          icon.addEventListener("error", () => wrap.remove(), { once: true });
+          label.appendChild(wrap);
+        } else {
+          icon.addEventListener("error", () => icon.remove(), { once: true });
+          label.appendChild(icon);
+        }
       }
     };
 
