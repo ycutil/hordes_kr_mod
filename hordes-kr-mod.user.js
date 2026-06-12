@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.158-local
+// @version      0.9.159-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.158-local";
+  const BOOT_VERSION = "0.9.159-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -388,6 +388,25 @@
   const AUTO_INTERRUPT_MAX_TRIES = 4;       // attempts per single enemy cast instance
   const AUTO_INTERRUPT_MIN_REMAIN_S = 0.25; // ignore casts about to resolve anyway
   const AUTO_INTERRUPT_CD_READY_S = 0.05;   // local cd remaining at/below this = ready
+  // Team sync (팀파이트 멤버 상태 공유): each client publishes its own class + key-skill
+  // cooldowns + candle charm to a shared room (yerp PHP + MySQL, HTTP polling — no
+  // websocket). One POST = publish my state + receive the whole room.
+  const TEAM_SYNC_SERVER_DEFAULT = "https://yerp.cafe24.com/teamsync/api.php";
+  const TEAM_SYNC_TOKEN_DEFAULT = "b7f3a91c4e2d6580a1c9f0e3d4b5a6c7";
+  const TEAM_SYNC_ROOM_DEFAULT = "guild";
+  const TEAM_SYNC_POLL_COMBAT_MS = 1500;    // sync cadence while in combat
+  const TEAM_SYNC_POLL_IDLE_MS = 4000;      // sync cadence while idle
+  const TEAM_SYNC_CANDLE_ICON_PREFIX = "items/charm/charm11_"; // Ghost Candles (candle)
+  // Per-class key skills to share, keyed by class index. id == icon number (verified
+  // live this session). k: aoe = 주요 광역, buff = 자버프.
+  const TEAM_SYNC_CLASS_SKILLS = {
+    0: [{ id: 46, k: "aoe", name: "휠윈드" }, { id: 17, k: "buff", name: "Enrage" }],
+    1: [{ id: 52, k: "aoe", name: "Frostcall" }, { id: 16, k: "buff", name: "히포" }],
+    2: [{ id: 45, k: "aoe", name: "Volley" }, { id: 11, k: "buff", name: "Invi" }],
+    3: [{ id: 35, k: "aoe", name: "소환" }, { id: 28, k: "buff", name: "캐니언" }],
+  };
+  const TEAM_SYNC_CLASS_LABEL = { 0: "전사", 1: "법사", 2: "궁수", 3: "주술", 4: "NPC", 5: "몹" };
+  const TEAM_SYNC_CLASS_COLOR = { 0: "#e8a23d", 1: "#4aa3ff", 2: "#46d07a", 3: "#c77dff" };
   const INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH = 3;
   const INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS = 180;
   const INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT = 64;
@@ -686,6 +705,10 @@
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
     autoInterruptSkillIds: [45, 52, 35],
+    teamSyncEnabled: false,
+    teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
+    teamSyncServer: TEAM_SYNC_SERVER_DEFAULT,
+    teamSyncToken: TEAM_SYNC_TOKEN_DEFAULT,
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
@@ -717,6 +740,10 @@
     ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
     : [45, 52, 35];
   if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35];
+  FEATURE_CONFIG.teamSyncEnabled = FEATURE_CONFIG.teamSyncEnabled === true;
+  FEATURE_CONFIG.teamSyncRoom = String(FEATURE_CONFIG.teamSyncRoom || TEAM_SYNC_ROOM_DEFAULT).replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 48) || TEAM_SYNC_ROOM_DEFAULT;
+  FEATURE_CONFIG.teamSyncServer = String(FEATURE_CONFIG.teamSyncServer || TEAM_SYNC_SERVER_DEFAULT).trim() || TEAM_SYNC_SERVER_DEFAULT;
+  FEATURE_CONFIG.teamSyncToken = String(FEATURE_CONFIG.teamSyncToken || TEAM_SYNC_TOKEN_DEFAULT).trim() || TEAM_SYNC_TOKEN_DEFAULT;
   if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
     FEATURE_CONFIG.incomingTargetWatchEnabled = true;
     try {
@@ -3298,6 +3325,35 @@
       if (list.length) FEATURE_CONFIG.autoInterruptSkillIds = list;
       saveFeatureConfig();
       return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 46=휠윈드)`;
+    },
+    toggleTeamSync() {
+      const on = setTeamSyncEnabled(!isTeamSyncEnabled());
+      return on
+        ? `팀공유 켜짐 (방 '${FEATURE_CONFIG.teamSyncRoom}') — 같은 방+토큰 멤버끼리 직업/AoE/자버프/candle 공유`
+        : "팀공유 꺼짐";
+    },
+    setTeamSyncRoom(room) {
+      FEATURE_CONFIG.teamSyncRoom = String(room || "").replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 48) || TEAM_SYNC_ROOM_DEFAULT;
+      saveFeatureConfig();
+      TEAM_SYNC_STATE.members = [];
+      if (isTeamSyncEnabled()) scheduleTeamSync();
+      return `팀공유 방: '${FEATURE_CONFIG.teamSyncRoom}' (길드원과 같은 방·토큰을 쓰세요)`;
+    },
+    setTeamSyncToken(token) {
+      FEATURE_CONFIG.teamSyncToken = String(token || TEAM_SYNC_TOKEN_DEFAULT).trim() || TEAM_SYNC_TOKEN_DEFAULT;
+      saveFeatureConfig();
+      return "팀공유 토큰 설정됨";
+    },
+    teamSyncStatus() {
+      return {
+        enabled: isTeamSyncEnabled(),
+        room: FEATURE_CONFIG.teamSyncRoom,
+        server: FEATURE_CONFIG.teamSyncServer,
+        memberCount: TEAM_SYNC_STATE.members.length,
+        members: TEAM_SYNC_STATE.members,
+        lastSyncAgoMs: TEAM_SYNC_STATE.lastSyncAt ? Date.now() - TEAM_SYNC_STATE.lastSyncAt : null,
+        lastError: TEAM_SYNC_STATE.lastError,
+      };
     },
     setAutoRotationSlots(slots) {
       const list = (Array.isArray(slots) ? slots : [slots])
@@ -14550,10 +14606,318 @@
       : "자동시전 꺼짐";
   }
 
+  // ===== Team sync (팀파이트 멤버 상태 공유) =====
+  const TEAM_SYNC_STATE = {
+    timer: null,
+    members: [],
+    lastSyncAt: 0,
+    lastError: "",
+    inFlight: false,
+    host: null,
+    rows: new Map(),
+    styleInstalled: false,
+    dragging: null,
+  };
+
+  function isTeamSyncEnabled() {
+    return FEATURE_CONFIG.teamSyncEnabled === true;
+  }
+
+  // Remaining cooldown (s) of a skill id on the local player; 0 = ready, null = unknown.
+  function skillCooldownRemaining(engine, me, id) {
+    try {
+      const map = me.skills && me.skills.skills;
+      const skill = map && typeof map.get === "function" ? map.get(Number(id)) : null;
+      const cd = skill && skill.cd;
+      const t = engine && engine.time;
+      if (!cd || typeof cd.end !== "number" || typeof t !== "number") return null;
+      return Math.max(0, Math.round((cd.end - t) * 10) / 10);
+    } catch {
+      return null;
+    }
+  }
+
+  // Candle charm state: must be EQUIPPED (worn in an equip slot) AND placed in a
+  // skillbar shortcut to be usable; reports {equipped, slotted, remain}. Detected by
+  // the charm icon prefix (items/charm/charm11_). NOTE: the exact cooldown field is to
+  // be confirmed live (no candle-equipped char available at build time) — best-effort.
+  function readCandleState(runtime, engine, me) {
+    const result = { equipped: false, slotted: false, remain: null };
+    try {
+      const inv = me.inventory;
+      const slots = inv && inv.slots;
+      const iconOf = (it) => String((it && (it.icon || (it.logic && it.logic.icon))) || "");
+      if (slots && typeof slots.forEach === "function") {
+        slots.forEach((it, key) => {
+          if (!it) return;
+          if (Number(key) >= 100 && iconOf(it).indexOf(TEAM_SYNC_CANDLE_ICON_PREFIX) === 0) result.equipped = true;
+        });
+      }
+      // skillbar shortcut holding the candle item
+      const settings = runtime && runtime.settings;
+      const bar = settings && settings.skillbarsettings && settings.skillbarsettings[me.name];
+      if (Array.isArray(bar)) {
+        for (let i = 0; i < bar.length; i++) {
+          const entry = bar[i];
+          const it = entry && entry.item;
+          if (it && iconOf(it).indexOf(TEAM_SYNC_CANDLE_ICON_PREFIX) === 0) {
+            result.slotted = true;
+            const def = it.logic || it;
+            const cd = def && def.cd;
+            const t = engine && engine.time;
+            if (cd && typeof cd.end === "number" && typeof t === "number") result.remain = Math.max(0, Math.round((cd.end - t) * 10) / 10);
+            break;
+          }
+        }
+      }
+    } catch {
+      // inventory unreadable mid-transition
+    }
+    return result;
+  }
+
+  function buildTeamSyncPayload(runtime, engine, me) {
+    const klass = Number(me.class);
+    const defs = TEAM_SYNC_CLASS_SKILLS[klass] || [];
+    const skills = {};
+    for (const def of defs) {
+      const remain = skillCooldownRemaining(engine, me, def.id);
+      skills[def.id] = remain === null ? 0 : remain; // unknown -> treat as ready
+    }
+    const hp = entityHpFraction(me);
+    return {
+      klass,
+      faction: Number(me.faction),
+      payload: {
+        skills,
+        candle: readCandleState(runtime, engine, me),
+        hp: hp >= 0 ? Math.round(hp * 100) : null,
+        inCombat: (() => {
+          try {
+            const timer = me.stats && me.stats.combatTimer;
+            return timer && typeof timer.done === "function" && engine && typeof engine.time === "number"
+              ? !timer.done(engine.time) : false;
+          } catch { return false; }
+        })(),
+      },
+    };
+  }
+
+  async function teamSyncTick() {
+    if (!isTeamSyncEnabled() || TEAM_SYNC_STATE.inFlight) return;
+    let runtime, engine, me;
+    try {
+      runtime = getExposedRuntime();
+      engine = runtime && runtime.engine;
+      me = engine && engine.player;
+    } catch { return; }
+    if (!me || !me.name || me.class === undefined) return;
+
+    const body = buildTeamSyncPayload(runtime, engine, me);
+    body.room = FEATURE_CONFIG.teamSyncRoom;
+    body.name = String(me.name);
+
+    const url = `${FEATURE_CONFIG.teamSyncServer}?action=sync&token=${encodeURIComponent(FEATURE_CONFIG.teamSyncToken)}`;
+    TEAM_SYNC_STATE.inFlight = true;
+    try {
+      const fetchFn = originalFetch || pageWindow.fetch;
+      // text/plain = CORS "simple request": no OPTIONS preflight (cafe24 nginx 403s
+      // OPTIONS). PHP reads the raw php://input body, so the JSON still parses.
+      const response = await fetchFn(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        body: JSON.stringify(body),
+        cache: "no-store",
+        credentials: "omit",
+      });
+      const json = await response.json();
+      if (json && json.ok && Array.isArray(json.members)) {
+        TEAM_SYNC_STATE.members = json.members;
+        TEAM_SYNC_STATE.lastSyncAt = Date.now();
+        TEAM_SYNC_STATE.lastError = "";
+      } else {
+        TEAM_SYNC_STATE.lastError = (json && json.error) || "bad response";
+      }
+    } catch (error) {
+      TEAM_SYNC_STATE.lastError = (error && error.message) || String(error);
+    } finally {
+      TEAM_SYNC_STATE.inFlight = false;
+    }
+    try { renderTeamSyncList(); } catch { /* UI must not break sync */ }
+  }
+
+  function scheduleTeamSync() {
+    if (TEAM_SYNC_STATE.timer) { pageWindow.clearTimeout(TEAM_SYNC_STATE.timer); TEAM_SYNC_STATE.timer = null; }
+    if (!isTeamSyncEnabled()) { renderTeamSyncList(); return; }
+    let combat = false;
+    try {
+      const me = getExposedRuntime() && getExposedRuntime().engine && getExposedRuntime().engine.player;
+      combat = me && COMBAT_ASSIST_STATE.watcherIds.size > 0;
+    } catch { combat = false; }
+    teamSyncTick();
+    TEAM_SYNC_STATE.timer = pageWindow.setTimeout(scheduleTeamSync, combat ? TEAM_SYNC_POLL_COMBAT_MS : TEAM_SYNC_POLL_IDLE_MS);
+  }
+
+  function setTeamSyncEnabled(value) {
+    FEATURE_CONFIG.teamSyncEnabled = Boolean(value);
+    saveFeatureConfig();
+    if (!FEATURE_CONFIG.teamSyncEnabled) {
+      try {
+        const me = getExposedRuntime() && getExposedRuntime().engine && getExposedRuntime().engine.player;
+        if (me && me.name) {
+          const url = `${FEATURE_CONFIG.teamSyncServer}?action=leave&room=${encodeURIComponent(FEATURE_CONFIG.teamSyncRoom)}&name=${encodeURIComponent(me.name)}&token=${encodeURIComponent(FEATURE_CONFIG.teamSyncToken)}`;
+          (originalFetch || pageWindow.fetch)(url, { cache: "no-store", credentials: "omit" }).catch(() => {});
+        }
+      } catch { /* leave is best-effort */ }
+      TEAM_SYNC_STATE.members = [];
+      renderTeamSyncList();
+    }
+    scheduleTeamSync();
+    renderStatusUi();
+    return FEATURE_CONFIG.teamSyncEnabled;
+  }
+
+  function ensureTeamSyncStyle() {
+    if (TEAM_SYNC_STATE.styleInstalled) return;
+    const style = document.createElement("style");
+    style.textContent = [
+      "#hkr-teamsync{position:fixed;right:8px;top:34%;z-index:2147483550;font:600 11px/1.4 -apple-system,'Segoe UI',sans-serif;color:#e8eef6;background:rgba(12,16,24,0.82);border:1px solid rgba(120,140,170,0.32);border-radius:7px;padding:4px 6px 6px;min-width:150px;max-width:240px;box-shadow:0 3px 12px rgba(0,0,0,0.5);-webkit-user-select:none;user-select:none}",
+      "#hkr-teamsync .ts-head{display:flex;align-items:center;gap:5px;cursor:move;margin-bottom:3px;padding-bottom:3px;border-bottom:1px solid rgba(120,140,170,0.2)}",
+      "#hkr-teamsync .ts-title{flex:1;opacity:0.92;letter-spacing:0.2px}",
+      "#hkr-teamsync .ts-room{opacity:0.55;font-size:9px;font-weight:500}",
+      "#hkr-teamsync .ts-row{display:flex;align-items:center;gap:4px;padding:1px 0}",
+      "#hkr-teamsync .ts-dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}",
+      "#hkr-teamsync .ts-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:78px}",
+      "#hkr-teamsync .ts-name.off{opacity:0.4}",
+      "#hkr-teamsync .ts-sk{display:inline-flex;align-items:center;gap:2px}",
+      "#hkr-teamsync .ts-ico{width:15px;height:15px;flex:0 0 15px;object-fit:contain;border-radius:2px}",
+      "#hkr-teamsync .ts-ico.cd{filter:grayscale(1) brightness(0.55)}",
+      "#hkr-teamsync .ts-cdnum{font-size:9px;font-weight:800;color:#ff9a6a;min-width:13px}",
+      "#hkr-teamsync .ts-ready{font-size:9px;font-weight:800;color:#46d07a}",
+      "#hkr-teamsync .ts-candle{font-size:13px;flex:0 0 auto}",
+      "#hkr-teamsync .ts-empty{opacity:0.5;font-size:10px;font-weight:500;padding:2px 0}",
+    ].join("");
+    (document.head || document.documentElement).appendChild(style);
+    TEAM_SYNC_STATE.styleInstalled = true;
+  }
+
+  function ensureTeamSyncHost() {
+    if (TEAM_SYNC_STATE.host && document.contains(TEAM_SYNC_STATE.host)) return TEAM_SYNC_STATE.host;
+    if (!document.body) return null;
+    ensureTeamSyncStyle();
+    const host = document.createElement("div");
+    host.id = "hkr-teamsync";
+    const head = document.createElement("div");
+    head.className = "ts-head";
+    const title = document.createElement("span");
+    title.className = "ts-title";
+    title.textContent = "팀";
+    const room = document.createElement("span");
+    room.className = "ts-room";
+    head.append(title, room);
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "ts-body";
+    host.append(head, bodyEl);
+    document.body.appendChild(host);
+    try {
+      const pos = JSON.parse(localStorage.getItem("hordesKrMod.teamSync.pos") || "null");
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) { host.style.left = `${pos.x}px`; host.style.top = `${pos.y}px`; host.style.right = "auto"; }
+    } catch { /* default position */ }
+    head.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      const rect = host.getBoundingClientRect();
+      TEAM_SYNC_STATE.dragging = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+      event.preventDefault();
+    });
+    document.addEventListener("mousemove", (event) => {
+      const drag = TEAM_SYNC_STATE.dragging; if (!drag) return;
+      host.style.left = `${Math.round(clamp(event.clientX - drag.dx, 0, (pageWindow.innerWidth || 800) - 40))}px`;
+      host.style.top = `${Math.round(clamp(event.clientY - drag.dy, 0, (pageWindow.innerHeight || 600) - 16))}px`;
+      host.style.right = "auto";
+    });
+    document.addEventListener("mouseup", () => {
+      if (!TEAM_SYNC_STATE.dragging) return;
+      TEAM_SYNC_STATE.dragging = null;
+      try { const r = host.getBoundingClientRect(); localStorage.setItem("hordesKrMod.teamSync.pos", JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) })); } catch { /* ignore */ }
+    });
+    TEAM_SYNC_STATE.host = host;
+    TEAM_SYNC_STATE.body = bodyEl;
+    TEAM_SYNC_STATE.headRoom = room;
+    return host;
+  }
+
+  function teamSyncSkillCell(def, remain) {
+    const cell = document.createElement("span");
+    cell.className = "ts-sk";
+    cell.title = def.name;
+    const icon = document.createElement("img");
+    icon.className = remain > 0.3 ? "ts-ico cd" : "ts-ico";
+    icon.alt = "";
+    icon.src = buildDataAssetUrl("ui/skills/" + def.id);
+    icon.addEventListener("error", () => icon.remove(), { once: true });
+    cell.appendChild(icon);
+    const tag = document.createElement("span");
+    if (remain > 0.3) { tag.className = "ts-cdnum"; tag.textContent = Math.ceil(remain) + ""; }
+    else { tag.className = "ts-ready"; tag.textContent = "✓"; }
+    cell.appendChild(tag);
+    return cell;
+  }
+
+  function renderTeamSyncList() {
+    if (!isTeamSyncEnabled()) {
+      if (TEAM_SYNC_STATE.host) TEAM_SYNC_STATE.host.style.display = "none";
+      return;
+    }
+    const host = ensureTeamSyncHost();
+    if (!host) return;
+    host.style.display = "block";
+    if (TEAM_SYNC_STATE.headRoom) TEAM_SYNC_STATE.headRoom.textContent = FEATURE_CONFIG.teamSyncRoom;
+    const body = TEAM_SYNC_STATE.body;
+    body.replaceChildren();
+    const members = TEAM_SYNC_STATE.members || [];
+    if (!members.length) {
+      const empty = document.createElement("div");
+      empty.className = "ts-empty";
+      empty.textContent = TEAM_SYNC_STATE.lastError ? `오류: ${TEAM_SYNC_STATE.lastError}` : "대기 중… (같은 방/토큰 멤버 표시)";
+      body.appendChild(empty);
+      return;
+    }
+    for (const member of members) {
+      const row = document.createElement("div");
+      row.className = "ts-row";
+      const dot = document.createElement("span");
+      dot.className = "ts-dot";
+      dot.style.background = TEAM_SYNC_CLASS_COLOR[member.klass] || "#8893a0";
+      const name = document.createElement("span");
+      name.className = member.ageSec > 8 ? "ts-name off" : "ts-name";
+      name.textContent = member.name;
+      name.title = `${member.name} · ${TEAM_SYNC_CLASS_LABEL[member.klass] || "?"}${member.payload && member.payload.hp != null ? " · HP " + member.payload.hp + "%" : ""} · ${member.ageSec}s 전`;
+      row.append(dot, name);
+
+      const defs = TEAM_SYNC_CLASS_SKILLS[member.klass] || [];
+      const skills = (member.payload && member.payload.skills) || {};
+      for (const def of defs) {
+        const remain = Number(skills[def.id]);
+        row.appendChild(teamSyncSkillCell(def, Number.isFinite(remain) ? remain : 0));
+      }
+      const candle = member.payload && member.payload.candle;
+      if (candle) {
+        const c = document.createElement("span");
+        c.className = "ts-candle";
+        if (!candle.equipped) { c.textContent = "🕯"; c.style.opacity = "0.25"; c.title = "candle 미착용"; }
+        else if (Number(candle.remain) > 0.3) { c.textContent = "🕯"; c.style.filter = "grayscale(1) brightness(0.6)"; c.title = `candle 쿨 ${Math.ceil(candle.remain)}s`; }
+        else { c.textContent = "🕯"; c.style.color = "#46d07a"; c.title = "candle 사용가능"; }
+        row.appendChild(c);
+      }
+      body.appendChild(row);
+    }
+  }
+
   function installCombatAssist() {
     if (COMBAT_ASSIST_STATE.timer) return;
     COMBAT_ASSIST_STATE.timer = setInterval(combatAssistTick, COMBAT_ASSIST_TICK_MS);
     COMBAT_ASSIST_STATE.interruptTimer = setInterval(autoInterruptFastTick, AUTO_INTERRUPT_TICK_MS);
+    scheduleTeamSync();
     try {
       pageWindow.addEventListener("keydown", (event) => {
         if (!event.altKey || event.code !== "KeyR" || event.repeat) return;
@@ -19578,6 +19942,7 @@
               <button id="toggleAutoRotation" class="action" type="button"></button>
               <button id="toggleAutoDefense" class="action" type="button"></button>
               <button id="toggleAutoInterrupt" class="action" type="button"></button>
+              <button id="toggleTeamSync" class="action" type="button"></button>
             </div>
             <details class="section">
               <summary>프리셋</summary>
@@ -19953,6 +20318,7 @@
     setFeatureToggleButton(shadow, "toggleAutoRotation", "자동시전", COMBAT_ASSIST_STATE.rotationOn);
     setFeatureToggleButton(shadow, "toggleAutoDefense", "자동방어", FEATURE_CONFIG.autoDefenseEnabled);
     setFeatureToggleButton(shadow, "toggleAutoInterrupt", "자동끊기", FEATURE_CONFIG.autoInterruptEnabled);
+    setFeatureToggleButton(shadow, "toggleTeamSync", "팀공유", FEATURE_CONFIG.teamSyncEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
     renderTargetOrderUi(shadow);
@@ -19978,6 +20344,7 @@
       toggleAutoRotation: () => pageWindow.HordesKrMod.toggleAutoRotation(),
       toggleAutoDefense: () => pageWindow.HordesKrMod.toggleAutoDefense(),
       toggleAutoInterrupt: () => pageWindow.HordesKrMod.toggleAutoInterrupt(),
+      toggleTeamSync: () => pageWindow.HordesKrMod.toggleTeamSync(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
       toggleSwiftshotTurbo: () => pageWindow.HordesKrMod.toggleSwiftshotTurbo(),
