@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.160-local
+// @version      0.9.161-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.160-local";
+  const BOOT_VERSION = "0.9.161-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -296,7 +296,6 @@
   const SWIFTSHOT_TURBO_KEYS_DEFAULT_VERSION = "2026-05-29-add-digit1";
   const PARTY_UI_CONFIG_KEY = "hordesKrMod.partyUi.config";
   const PARTY_COMMAND_CONFIG_KEY = "hordesKrMod.partyCommand.config";
-  const TARGET_ORDER_CONFIG_KEY = "hordesKrMod.targetOrder.config";
   const GEAR_PRESET_CONFIG_KEY = "hordesKrMod.gearPreset.config";
   const SKILL_PRESET_CONFIG_KEY = "hordesKrMod.skillPreset.config";
   const CHAT_TRANSLATION_API_KEY_KEY = "hordesKrMod.chatTranslation.apiKey";
@@ -585,10 +584,6 @@
     ["party", "Party"],
     ["clan", "Clan"],
   ];
-  const TARGET_ORDER_DEFAULT_HOTKEY_CODE = "KeyG";
-  const TARGET_ORDER_PENDING_MS = 3000;
-  const TARGET_ORDER_RECONNECT_MS = 3000;
-  const TARGET_ORDER_ALERT_OFFSET_TOP = "22vh";
   const GEAR_PRESET_DEFAULT_NAME = "default";
   const GEAR_PRESET_QUICK_NAMES = ["1", "2", "3", "4", "5"];
   const SKILL_PRESET_DEFAULT_NAME = "default";
@@ -675,11 +670,6 @@
   const STATUS_UI_TEXT_INPUT_IDS = [
     "highlightInput",
     "chatApiKeyInput",
-    "targetOrderServerInput",
-    "targetOrderRoomInput",
-    "targetOrderNameInput",
-    "targetOrderTokenInput",
-    "targetOrderHotkeyInput",
   ];
   const UI_CONFIG = loadJsonConfig(UI_CONFIG_KEY, {
     x: null,
@@ -809,22 +799,6 @@
   PARTY_COMMAND_CONFIG.x = normalizeOptionalScreenCoordinate(PARTY_COMMAND_CONFIG.x);
   PARTY_COMMAND_CONFIG.y = normalizeOptionalScreenCoordinate(PARTY_COMMAND_CONFIG.y);
   PARTY_COMMAND_CONFIG.lastMessage = String(PARTY_COMMAND_CONFIG.lastMessage || "").slice(0, 96);
-  const TARGET_ORDER_CONFIG = loadJsonConfig(TARGET_ORDER_CONFIG_KEY, {
-    enabled: false,
-    alertEnabled: true,
-    serverUrl: "",
-    roomId: "",
-    userName: "",
-    clientToken: "",
-    hotkeyCode: TARGET_ORDER_DEFAULT_HOTKEY_CODE,
-  });
-  TARGET_ORDER_CONFIG.enabled = TARGET_ORDER_CONFIG.enabled === true;
-  TARGET_ORDER_CONFIG.alertEnabled = TARGET_ORDER_CONFIG.alertEnabled !== false;
-  TARGET_ORDER_CONFIG.serverUrl = String(TARGET_ORDER_CONFIG.serverUrl || "").trim();
-  TARGET_ORDER_CONFIG.roomId = String(TARGET_ORDER_CONFIG.roomId || "").trim();
-  TARGET_ORDER_CONFIG.userName = String(TARGET_ORDER_CONFIG.userName || "").trim();
-  TARGET_ORDER_CONFIG.clientToken = String(TARGET_ORDER_CONFIG.clientToken || "").trim();
-  TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
   const GEAR_PRESET_CONFIG = loadJsonConfig(GEAR_PRESET_CONFIG_KEY, {
     presets: {},
     lastPreset: GEAR_PRESET_DEFAULT_NAME,
@@ -987,25 +961,6 @@
     lastSeq: 0,
     lines: [],
     history: [],
-  };
-  const TARGET_ORDER_STATE = {
-    ws: null,
-    reconnectTimer: null,
-    alertTimer: null,
-    pendingCall: null,
-    alertHost: null,
-    lastState: "꺼짐",
-    lastError: "",
-    connectedAt: null,
-    lastReceivedAt: null,
-    lastSentAt: null,
-    sentCount: 0,
-    receivedCount: 0,
-    deniedCount: 0,
-    acceptedCount: 0,
-    users: [],
-    keyboardInstalled: false,
-    hotkeyCaptureActive: false,
   };
   const GEAR_PRESET_STATE = {
     gameSocket: null,
@@ -3107,7 +3062,6 @@
     initPartyCommandPanel();
     initSwiftshotTurbo();
     initDamageLog();
-    initTargetOrderClient();
   } catch (error) {
     showBootstrapFailureBadge("KR Mod 초기화 실패", [
       "Hordes KR Mod 초기화 중 오류가 발생했습니다.",
@@ -3450,36 +3404,6 @@
     },
     chatTranslationStatus() {
       return getChatTranslationStatus();
-    },
-    toggleTargetOrder() {
-      return setTargetOrderEnabled(!TARGET_ORDER_CONFIG.enabled);
-    },
-    toggleTargetOrderAlert() {
-      TARGET_ORDER_CONFIG.alertEnabled = !TARGET_ORDER_CONFIG.alertEnabled;
-      saveTargetOrderConfig();
-      if (!TARGET_ORDER_CONFIG.alertEnabled) clearTargetOrderAlert();
-      renderStatusUi();
-      return getTargetOrderStatus();
-    },
-    setTargetOrderConfig(config) {
-      return setTargetOrderConfig(config);
-    },
-    targetOrderStatus() {
-      return getTargetOrderStatus();
-    },
-    connectTargetOrder() {
-      return connectTargetOrder(true);
-    },
-    disconnectTargetOrder() {
-      stopTargetOrderClient("수동 연결 해제");
-      renderStatusUi();
-      return getTargetOrderStatus();
-    },
-    sendTargetOrder() {
-      return sendCurrentTargetOrder();
-    },
-    applyPendingTargetOrder() {
-      return applyPendingTargetOrder();
     },
     togglePartyUi() {
       PARTY_UI_CONFIG.enabled = !PARTY_UI_CONFIG.enabled;
@@ -6443,588 +6367,6 @@
     };
   }
 
-  function initTargetOrderClient() {
-    installTargetOrderStyle();
-    installTargetOrderKeyboardHandler();
-    const start = () => {
-      if (TARGET_ORDER_CONFIG.enabled) connectTargetOrder(false);
-    };
-
-    if (document.body) {
-      start();
-    } else {
-      document.addEventListener("DOMContentLoaded", start, { once: true });
-    }
-  }
-
-  function installTargetOrderKeyboardHandler() {
-    if (TARGET_ORDER_STATE.keyboardInstalled) return;
-    TARGET_ORDER_STATE.keyboardInstalled = true;
-
-    const handler = (event) => {
-      if (!TARGET_ORDER_CONFIG.enabled) return;
-      if (event.repeat || TARGET_ORDER_STATE.hotkeyCaptureActive) return;
-      if (!isTargetOrderHotkeyEvent(event)) return;
-      if (shouldIgnoreTargetOrderHotkey(event)) return;
-
-      const pending = getActiveTargetOrderCall();
-      const result = pending ? applyPendingTargetOrder() : sendCurrentTargetOrder();
-      if (result && result.ok !== false) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      }
-    };
-
-    pageWindow.addEventListener("keydown", handler, true);
-    document.addEventListener("keydown", handler, true);
-  }
-
-  function isTargetOrderHotkeyEvent(event) {
-    const configured = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
-    return event.code === configured;
-  }
-
-  function shouldIgnoreTargetOrderHotkey(event) {
-    const target = event && event.target;
-    const active = document.activeElement;
-    return isEditableTargetOrderElement(target) || isEditableTargetOrderElement(active) || isStatusUiKeyboardEvent(event);
-  }
-
-  function isEditableTargetOrderElement(element) {
-    if (!element || element === document.body) return false;
-    if (element.closest && element.closest("#chatinput, input, textarea, select, [contenteditable='true'], #hordes-kr-mod-status-root")) return true;
-    return Boolean(element.isContentEditable);
-  }
-
-  function setTargetOrderEnabled(enabled) {
-    TARGET_ORDER_CONFIG.enabled = Boolean(enabled);
-    saveTargetOrderConfig();
-    if (TARGET_ORDER_CONFIG.enabled) {
-      connectTargetOrder(true);
-    } else {
-      stopTargetOrderClient("꺼짐");
-      clearTargetOrderAlert();
-    }
-    renderStatusUi();
-    return getTargetOrderStatus();
-  }
-
-  function setTargetOrderConfig(config) {
-    if (config && typeof config === "object") {
-      if ("enabled" in config) TARGET_ORDER_CONFIG.enabled = Boolean(config.enabled);
-      if ("alertEnabled" in config) TARGET_ORDER_CONFIG.alertEnabled = config.alertEnabled !== false;
-      if ("serverUrl" in config) TARGET_ORDER_CONFIG.serverUrl = normalizeTargetOrderServerUrl(config.serverUrl);
-      if ("roomId" in config) TARGET_ORDER_CONFIG.roomId = normalizeTargetOrderConfigText(config.roomId, 48);
-      if ("userName" in config) TARGET_ORDER_CONFIG.userName = normalizeTargetOrderConfigText(config.userName, 32);
-      if ("clientToken" in config) TARGET_ORDER_CONFIG.clientToken = String(config.clientToken || "").trim();
-      if ("hotkeyCode" in config) {
-        TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(config.hotkeyCode) || TARGET_ORDER_CONFIG.hotkeyCode || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
-      }
-    }
-
-    saveTargetOrderConfig();
-    if (TARGET_ORDER_CONFIG.enabled) connectTargetOrder(true);
-    renderStatusUi();
-    return getTargetOrderStatus();
-  }
-
-  function saveTargetOrderConfig() {
-    TARGET_ORDER_CONFIG.serverUrl = normalizeTargetOrderServerUrl(TARGET_ORDER_CONFIG.serverUrl);
-    TARGET_ORDER_CONFIG.roomId = normalizeTargetOrderConfigText(TARGET_ORDER_CONFIG.roomId, 48);
-    TARGET_ORDER_CONFIG.userName = normalizeTargetOrderConfigText(TARGET_ORDER_CONFIG.userName, 32);
-    TARGET_ORDER_CONFIG.clientToken = String(TARGET_ORDER_CONFIG.clientToken || "").trim();
-    TARGET_ORDER_CONFIG.hotkeyCode = normalizeKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
-    saveJsonConfig(TARGET_ORDER_CONFIG_KEY, TARGET_ORDER_CONFIG);
-  }
-
-  function normalizeTargetOrderServerUrl(value) {
-    const text = String(value || "").trim();
-    if (!text) return "";
-    if (/^https:\/\//i.test(text)) return text.replace(/^https:/i, "wss:");
-    if (/^http:\/\//i.test(text)) return text.replace(/^http:/i, "ws:");
-    return text;
-  }
-
-  function normalizeTargetOrderConfigText(value, maxLength) {
-    return String(value || "").trim().replace(/\s+/g, " ").slice(0, maxLength);
-  }
-
-  function normalizeKeyboardCode(code) {
-    const value = String(code || "").trim();
-    if (!value) return "";
-    if (/^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|Numpad[0-9]|Arrow(?:Up|Down|Left|Right)|Space|Tab|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/i.test(value)) {
-      if (/^key[a-z]$/i.test(value)) return `Key${value.slice(-1).toUpperCase()}`;
-      if (/^digit[0-9]$/i.test(value)) return `Digit${value.slice(-1)}`;
-      return value.charAt(0).toUpperCase() + value.slice(1);
-    }
-
-    if (/^[a-z]$/i.test(value)) return `Key${value.toUpperCase()}`;
-    if (/^[0-9]$/.test(value)) return `Digit${value}`;
-    return "";
-  }
-
-  function formatKeyboardCode(code) {
-    const normalized = normalizeKeyboardCode(code) || TARGET_ORDER_DEFAULT_HOTKEY_CODE;
-    if (/^Key[A-Z]$/.test(normalized)) return normalized.slice(3);
-    if (/^Digit[0-9]$/.test(normalized)) return normalized.slice(5);
-    return normalized;
-  }
-
-  function isTargetOrderConfigReady() {
-    return Boolean(TARGET_ORDER_CONFIG.serverUrl && TARGET_ORDER_CONFIG.roomId && TARGET_ORDER_CONFIG.userName && TARGET_ORDER_CONFIG.clientToken);
-  }
-
-  function connectTargetOrder(force) {
-    if (!TARGET_ORDER_CONFIG.enabled) return getTargetOrderStatus();
-    if (!isTargetOrderConfigReady()) {
-      TARGET_ORDER_STATE.lastState = "설정 필요";
-      TARGET_ORDER_STATE.lastError = "서버 URL, 방 코드, 닉네임, 유저 토큰이 필요합니다.";
-      renderStatusUi();
-      return getTargetOrderStatus();
-    }
-
-    if (!force && TARGET_ORDER_STATE.ws && TARGET_ORDER_STATE.ws.readyState === WebSocket.OPEN) {
-      return getTargetOrderStatus();
-    }
-
-    stopTargetOrderSocketOnly();
-    TARGET_ORDER_STATE.lastState = "연결 중";
-    TARGET_ORDER_STATE.lastError = "";
-    renderStatusUi();
-
-    try {
-      const ws = new pageWindow.WebSocket(TARGET_ORDER_CONFIG.serverUrl);
-      TARGET_ORDER_STATE.ws = ws;
-      ws.addEventListener("open", () => {
-        TARGET_ORDER_STATE.connectedAt = new Date();
-        TARGET_ORDER_STATE.lastState = "인증 중";
-        sendTargetOrderSocketMessage({
-          type: "join",
-          roomId: TARGET_ORDER_CONFIG.roomId,
-          userName: TARGET_ORDER_CONFIG.userName,
-          clientToken: TARGET_ORDER_CONFIG.clientToken,
-          version: MOD_VERSION,
-        });
-        renderStatusUi();
-      });
-      ws.addEventListener("message", (event) => {
-        handleTargetOrderSocketMessage(event.data);
-      });
-      ws.addEventListener("close", () => {
-        if (TARGET_ORDER_STATE.ws === ws) TARGET_ORDER_STATE.ws = null;
-        TARGET_ORDER_STATE.users = [];
-        TARGET_ORDER_STATE.lastState = TARGET_ORDER_CONFIG.enabled ? "연결 끊김" : "꺼짐";
-        renderStatusUi();
-        scheduleTargetOrderReconnect();
-      });
-      ws.addEventListener("error", () => {
-        TARGET_ORDER_STATE.lastError = "WebSocket 오류";
-        renderStatusUi();
-      });
-    } catch (error) {
-      TARGET_ORDER_STATE.lastState = "연결 실패";
-      TARGET_ORDER_STATE.lastError = error && error.message ? error.message : String(error);
-      scheduleTargetOrderReconnect();
-      renderStatusUi();
-    }
-
-    return getTargetOrderStatus();
-  }
-
-  function stopTargetOrderClient(reason) {
-    TARGET_ORDER_CONFIG.enabled = false;
-    saveTargetOrderConfig();
-    stopTargetOrderSocketOnly();
-    TARGET_ORDER_STATE.lastState = reason || "꺼짐";
-    TARGET_ORDER_STATE.users = [];
-  }
-
-  function stopTargetOrderSocketOnly() {
-    if (TARGET_ORDER_STATE.reconnectTimer) {
-      clearTimeout(TARGET_ORDER_STATE.reconnectTimer);
-      TARGET_ORDER_STATE.reconnectTimer = null;
-    }
-    const ws = TARGET_ORDER_STATE.ws;
-    TARGET_ORDER_STATE.ws = null;
-    if (ws && ws.readyState <= WebSocket.OPEN) {
-      try {
-        ws.close(1000, "client reconnect");
-      } catch {
-        // Ignore close races.
-      }
-    }
-  }
-
-  function scheduleTargetOrderReconnect() {
-    if (!TARGET_ORDER_CONFIG.enabled || !isTargetOrderConfigReady()) return;
-    if (TARGET_ORDER_STATE.reconnectTimer) return;
-    TARGET_ORDER_STATE.reconnectTimer = setTimeout(() => {
-      TARGET_ORDER_STATE.reconnectTimer = null;
-      connectTargetOrder(false);
-    }, TARGET_ORDER_RECONNECT_MS);
-  }
-
-  function handleTargetOrderSocketMessage(raw) {
-    let message;
-    try {
-      message = JSON.parse(String(raw || ""));
-    } catch {
-      return;
-    }
-
-    if (!message || typeof message !== "object") return;
-    if (message.type === "joined") {
-      TARGET_ORDER_STATE.lastState = message.allowedOrder ? "연결됨 / 오더 가능" : "연결됨";
-      TARGET_ORDER_STATE.lastError = "";
-      TARGET_ORDER_STATE.users = Array.isArray(message.users) ? message.users : [];
-    } else if (message.type === "user-list") {
-      TARGET_ORDER_STATE.users = Array.isArray(message.users) ? message.users : [];
-    } else if (message.type === "target-call") {
-      receiveTargetOrderCall(message);
-    } else if (message.type === "target-call-accepted") {
-      TARGET_ORDER_STATE.acceptedCount++;
-      TARGET_ORDER_STATE.lastState = "오더 전송됨";
-      TARGET_ORDER_STATE.lastError = "";
-    } else if (message.type === "target-call-denied") {
-      TARGET_ORDER_STATE.deniedCount++;
-      TARGET_ORDER_STATE.lastState = "오더 거부됨";
-      TARGET_ORDER_STATE.lastError = message.reason || "서버 권한 없음";
-      showTargetOrderToast("타겟 오더 거부", TARGET_ORDER_STATE.lastError, "권한 없음");
-    } else if (message.type === "error") {
-      TARGET_ORDER_STATE.lastState = "오류";
-      TARGET_ORDER_STATE.lastError = message.message || message.reason || "서버 오류";
-    }
-    renderStatusUi();
-  }
-
-  function sendTargetOrderSocketMessage(message) {
-    const ws = TARGET_ORDER_STATE.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify(message));
-    return true;
-  }
-
-  function sendCurrentTargetOrder() {
-    if (!TARGET_ORDER_CONFIG.enabled) return { ok: false, reason: "타겟오더가 꺼져 있습니다." };
-    if (!isTargetOrderSocketReady()) {
-      connectTargetOrder(false);
-      TARGET_ORDER_STATE.lastError = "서버에 연결되지 않았습니다.";
-      renderStatusUi();
-      return { ok: false, reason: TARGET_ORDER_STATE.lastError };
-    }
-
-    const payload = buildCurrentTargetOrderPayload();
-    if (!payload.ok) {
-      TARGET_ORDER_STATE.lastError = payload.reason || "현재 타겟을 찾지 못했습니다.";
-      showTargetOrderToast("타겟 오더 실패", TARGET_ORDER_STATE.lastError, "현재 타겟 없음");
-      renderStatusUi();
-      return payload;
-    }
-
-    const sent = sendTargetOrderSocketMessage({
-      type: "target-call",
-      roomId: TARGET_ORDER_CONFIG.roomId,
-      targetId: payload.targetId,
-      targetName: payload.targetName,
-      targetPosition: payload.targetPosition,
-      visualPosition: payload.visualPosition,
-      distance: payload.distance,
-      sentAt: Date.now(),
-    });
-    if (!sent) return { ok: false, reason: "WebSocket 전송 실패" };
-
-    TARGET_ORDER_STATE.sentCount++;
-    TARGET_ORDER_STATE.lastSentAt = new Date();
-    TARGET_ORDER_STATE.lastState = "오더 전송 중";
-    setStatus({ lastState: `타겟 오더: ${payload.targetName}`, lastError: "" });
-    renderStatusUi();
-    return { ok: true, ...payload };
-  }
-
-  function buildCurrentTargetOrderPayload() {
-    const runtime = getExposedRuntime();
-    const self = runtime ? findLocalPlayerEntity(runtime) : null;
-    const target = runtime && self ? findSelectedTargetEntity(runtime, self.entity) : null;
-    if (!runtime || !self) return { ok: false, reason: "내 캐릭터 런타임을 찾지 못했습니다." };
-    if (!target) return { ok: false, reason: "현재 선택된 타겟이 없습니다." };
-
-    const targetPosition = getRuntimeWorldPosition(target.entity);
-    const targetCombatPosition = getRuntimeCombatPosition(target.entity) || targetPosition;
-    if (!targetPosition || !targetCombatPosition) return { ok: false, reason: "타겟 좌표를 찾지 못했습니다." };
-
-    const selfPosition = getRuntimeCombatPosition(self.entity) || getRuntimeWorldPosition(self.entity);
-    const range = selfPosition
-      ? getRuntimeCombatRangeDistance(self.entity, target.entity, selfPosition.position, targetCombatPosition.position)
-      : null;
-    const id = getRuntimeEntityId(target.entity);
-    const name = getRuntimeEntityLabel(target.entity);
-
-    return {
-      ok: true,
-      targetId: id !== undefined ? String(id) : "",
-      targetName: name,
-      targetPosition: targetCombatPosition.position.map(roundCoord),
-      visualPosition: targetPosition.position.map(roundCoord),
-      distance: range ? roundCoord(range.distance) : null,
-    };
-  }
-
-  function receiveTargetOrderCall(message) {
-    if (!TARGET_ORDER_CONFIG.enabled || !TARGET_ORDER_CONFIG.alertEnabled) return;
-    if (String(message.senderName || "") === TARGET_ORDER_CONFIG.userName) return;
-
-    const call = normalizeTargetOrderCall(message);
-    if (!call) return;
-
-    TARGET_ORDER_STATE.pendingCall = call;
-    TARGET_ORDER_STATE.receivedCount++;
-    TARGET_ORDER_STATE.lastReceivedAt = new Date();
-    TARGET_ORDER_STATE.lastState = "오더 수신";
-    showTargetOrderAlert(call);
-    renderStatusUi();
-  }
-
-  function normalizeTargetOrderCall(message) {
-    const targetName = normalizeTargetOrderConfigText(message.targetName, 48);
-    if (!targetName) return null;
-
-    return {
-      id: String(message.id || message.callId || `${Date.now()}:${Math.random().toString(36).slice(2)}`),
-      senderName: normalizeTargetOrderConfigText(message.senderName, 32),
-      targetId: String(message.targetId || ""),
-      targetName,
-      targetPosition: Array.isArray(message.targetPosition) ? message.targetPosition.slice(0, 3).map(Number) : null,
-      visualPosition: Array.isArray(message.visualPosition) ? message.visualPosition.slice(0, 3).map(Number) : null,
-      receivedAt: Date.now(),
-      expiresAt: Date.now() + TARGET_ORDER_PENDING_MS,
-    };
-  }
-
-  function getActiveTargetOrderCall() {
-    const call = TARGET_ORDER_STATE.pendingCall;
-    if (!call) return null;
-    if (Date.now() > call.expiresAt) {
-      clearTargetOrderAlert();
-      return null;
-    }
-    return call;
-  }
-
-  function applyPendingTargetOrder() {
-    const call = getActiveTargetOrderCall();
-    if (!call) return { ok: false, reason: "적용할 타겟 오더가 없습니다." };
-
-    const result = applyTargetOrderCall(call);
-    if (result.ok) {
-      clearTargetOrderAlert();
-      showTargetOrderToast("타겟 적용됨", call.targetName, call.senderName || "오더");
-    } else {
-      showTargetOrderToast("타겟 적용 실패", call.targetName, result.reason || "대상 없음");
-    }
-    renderStatusUi();
-    return result;
-  }
-
-  function applyTargetOrderCall(call) {
-    if (call.targetId) {
-      const byId = targetRuntimeEntityById(call.targetId, call.targetName, "targetOrder");
-      if (byId.ok) return byId;
-    }
-
-    const runtime = getExposedRuntime();
-    const self = runtime ? findLocalPlayerEntity(runtime) : null;
-    const byName = runtime ? findRuntimeEntityForTargetOrderCall(runtime, call, self && self.entity) : null;
-    if (!byName) {
-      return { ok: false, reason: "현재 클라이언트에서 대상 엔티티를 찾지 못했습니다." };
-    }
-
-    const id = getRuntimeEntityId(byName.entity);
-    if (id === undefined || id === null || id === "") {
-      return { ok: false, reason: "대상 id를 찾지 못했습니다." };
-    }
-    return targetRuntimeEntityById(id, call.targetName, "targetOrderNameFallback");
-  }
-
-  function findRuntimeEntityForTargetOrderCall(runtime, call, selfEntity) {
-    const candidates = collectRuntimeOverlayEntities([call.targetName], {
-      limit: 20,
-      maxDepth: 7,
-      maxObjects: 9000,
-    }).filter((candidate) => !isSameRuntimeEntity(candidate.entity, selfEntity));
-
-    if (candidates.length === 0) return null;
-    const referencePosition = Array.isArray(call.targetPosition) && call.targetPosition.every(Number.isFinite)
-      ? call.targetPosition
-      : null;
-    if (!referencePosition) return candidates[0];
-
-    return candidates
-      .map((candidate) => ({
-        ...candidate,
-        orderDistance: getHorizontalRuntimeDistance(referencePosition, candidate.position),
-      }))
-      .sort((left, right) => left.orderDistance - right.orderDistance)[0];
-  }
-
-  function isTargetOrderSocketReady() {
-    return Boolean(TARGET_ORDER_STATE.ws && TARGET_ORDER_STATE.ws.readyState === WebSocket.OPEN);
-  }
-
-  function showTargetOrderAlert(call) {
-    const host = ensureTargetOrderAlertHost();
-    if (!host) return;
-
-    host.className = "hordes-kr-target-order-alert";
-    host.innerHTML = "";
-    const sender = document.createElement("div");
-    const target = document.createElement("div");
-    const hint = document.createElement("div");
-    sender.className = "sender";
-    target.className = "target";
-    hint.className = "hint";
-    sender.textContent = `${call.senderName || "Unknown"} 타겟 요청`;
-    target.textContent = call.targetName;
-    hint.textContent = `${formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode)} 입력 시 타겟`;
-    host.append(sender, target, hint);
-    host.hidden = false;
-
-    if (TARGET_ORDER_STATE.alertTimer) clearTimeout(TARGET_ORDER_STATE.alertTimer);
-    TARGET_ORDER_STATE.alertTimer = setTimeout(() => {
-      if (TARGET_ORDER_STATE.pendingCall && TARGET_ORDER_STATE.pendingCall.id === call.id) {
-        clearTargetOrderAlert();
-      }
-    }, TARGET_ORDER_PENDING_MS);
-  }
-
-  function showTargetOrderToast(title, targetName, hint) {
-    const host = ensureTargetOrderAlertHost();
-    if (!host) return;
-
-    host.className = "hordes-kr-target-order-alert compact";
-    host.innerHTML = "";
-    const sender = document.createElement("div");
-    const target = document.createElement("div");
-    const info = document.createElement("div");
-    sender.className = "sender";
-    target.className = "target";
-    info.className = "hint";
-    sender.textContent = title;
-    target.textContent = targetName || "-";
-    info.textContent = hint || "";
-    host.append(sender, target, info);
-    host.hidden = false;
-
-    if (TARGET_ORDER_STATE.alertTimer) clearTimeout(TARGET_ORDER_STATE.alertTimer);
-    TARGET_ORDER_STATE.alertTimer = setTimeout(() => {
-      host.hidden = true;
-    }, 1400);
-  }
-
-  function ensureTargetOrderAlertHost() {
-    if (TARGET_ORDER_STATE.alertHost && document.contains(TARGET_ORDER_STATE.alertHost)) {
-      return TARGET_ORDER_STATE.alertHost;
-    }
-    if (!document.body) return null;
-
-    const host = document.createElement("div");
-    host.id = "hordes-kr-target-order-alert";
-    host.hidden = true;
-    document.body.appendChild(host);
-    TARGET_ORDER_STATE.alertHost = host;
-    return host;
-  }
-
-  function clearTargetOrderAlert() {
-    if (TARGET_ORDER_STATE.alertTimer) {
-      clearTimeout(TARGET_ORDER_STATE.alertTimer);
-      TARGET_ORDER_STATE.alertTimer = null;
-    }
-    TARGET_ORDER_STATE.pendingCall = null;
-    if (TARGET_ORDER_STATE.alertHost) TARGET_ORDER_STATE.alertHost.hidden = true;
-  }
-
-  function installTargetOrderStyle() {
-    if (document.getElementById("hordes-kr-target-order-style")) return;
-    const style = document.createElement("style");
-    style.id = "hordes-kr-target-order-style";
-    style.textContent = `
-      #hordes-kr-target-order-alert {
-        position: fixed !important;
-        top: ${TARGET_ORDER_ALERT_OFFSET_TOP} !important;
-        left: 50% !important;
-        transform: translateX(-50%) !important;
-        z-index: 2147483647 !important;
-        pointer-events: none !important;
-        min-width: 260px !important;
-        max-width: min(520px, calc(100vw - 32px)) !important;
-        padding: 10px 16px 12px !important;
-        border: 1px solid rgba(245, 194, 71, 0.72) !important;
-        border-radius: 8px !important;
-        background: rgba(8, 12, 20, 0.9) !important;
-        color: #f5c247 !important;
-        font-family: Arial, Helvetica, sans-serif !important;
-        text-align: center !important;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42), inset 0 0 20px rgba(245, 194, 71, 0.08) !important;
-      }
-      #hordes-kr-target-order-alert[hidden] {
-        display: none !important;
-      }
-      #hordes-kr-target-order-alert .sender {
-        color: #a6dcd5 !important;
-        font-size: 13px !important;
-        line-height: 1.1 !important;
-        font-weight: 900 !important;
-      }
-      #hordes-kr-target-order-alert .target {
-        color: #ffffff !important;
-        font-size: 28px !important;
-        line-height: 1.08 !important;
-        font-weight: 1000 !important;
-        margin-top: 4px !important;
-        text-shadow:
-          2px 0 0 rgba(0, 0, 0, 0.95),
-          -2px 0 0 rgba(0, 0, 0, 0.95),
-          0 2px 0 rgba(0, 0, 0, 0.95),
-          0 -2px 0 rgba(0, 0, 0, 0.95),
-          0 0 8px rgba(245, 194, 71, 0.82) !important;
-      }
-      #hordes-kr-target-order-alert .hint {
-        color: #f5c247 !important;
-        font-size: 13px !important;
-        line-height: 1.15 !important;
-        font-weight: 900 !important;
-        margin-top: 6px !important;
-      }
-      #hordes-kr-target-order-alert.compact .target {
-        font-size: 22px !important;
-      }
-    `;
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  function getTargetOrderStatus() {
-    return {
-      enabled: TARGET_ORDER_CONFIG.enabled,
-      alertEnabled: TARGET_ORDER_CONFIG.alertEnabled,
-      connected: isTargetOrderSocketReady(),
-      state: TARGET_ORDER_STATE.lastState,
-      lastError: TARGET_ORDER_STATE.lastError,
-      serverUrl: TARGET_ORDER_CONFIG.serverUrl,
-      roomId: TARGET_ORDER_CONFIG.roomId,
-      userName: TARGET_ORDER_CONFIG.userName,
-      hasToken: Boolean(TARGET_ORDER_CONFIG.clientToken),
-      hotkey: formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode),
-      pendingCall: getActiveTargetOrderCall(),
-      users: [...TARGET_ORDER_STATE.users],
-      sentCount: TARGET_ORDER_STATE.sentCount,
-      receivedCount: TARGET_ORDER_STATE.receivedCount,
-      acceptedCount: TARGET_ORDER_STATE.acceptedCount,
-      deniedCount: TARGET_ORDER_STATE.deniedCount,
-      lastSentAt: TARGET_ORDER_STATE.lastSentAt,
-      lastReceivedAt: TARGET_ORDER_STATE.lastReceivedAt,
-    };
-  }
-
   function initPartyUiManager() {
     const start = () => {
       installPartyUiStyle();
@@ -7677,21 +7019,27 @@
   function shouldIgnorePartyCommandHotkey(event) {
     if (!PARTY_COMMAND_CONFIG.enabled) return true;
     if (!event || event.defaultPrevented || event.repeat) return true;
-    if (TARGET_ORDER_STATE.hotkeyCaptureActive) return true;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return true;
     if (event.code !== PARTY_COMMAND_TARGET_HOTKEY_CODE && event.code !== PARTY_COMMAND_GATHER_HOTKEY_CODE) return true;
     return isPartyCommandEditableEvent(event) || isStatusUiKeyboardEvent(event);
   }
 
+  function isEditableUiElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const tag = element.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return Boolean(element.isContentEditable);
+  }
+
   function isPartyCommandEditableEvent(event) {
     const active = document.activeElement;
-    if (isEditableTargetOrderElement(active)) return true;
+    if (isEditableUiElement(active)) return true;
 
     if (typeof event.composedPath === "function") {
-      return event.composedPath().some((element) => isEditableTargetOrderElement(element));
+      return event.composedPath().some((element) => isEditableUiElement(element));
     }
 
-    return isEditableTargetOrderElement(event.target);
+    return isEditableUiElement(event.target);
   }
 
   function setPartyCommandPanelEnabled(enabled) {
@@ -8007,7 +7355,6 @@
   function shouldIgnoreSwiftshotTurboEvent(event) {
     if (!FEATURE_CONFIG.swiftshotTurboEnabled) return true;
     if (!event || event.defaultPrevented || event.isComposing) return true;
-    if (TARGET_ORDER_STATE.hotkeyCaptureActive) return true;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return true;
     if (document.visibilityState && document.visibilityState !== "visible") return true;
     return isPartyCommandEditableEvent(event) || isStatusUiKeyboardEvent(event);
@@ -8092,7 +7439,7 @@
 
   function isSwiftshotTurboSuspended() {
     if (document.visibilityState && document.visibilityState !== "visible") return true;
-    return isEditableTargetOrderElement(document.activeElement);
+    return isEditableUiElement(document.activeElement);
   }
 
   // Companion keys fire only on the pulse where the primary key's skill actually
@@ -19985,32 +19332,6 @@
                 <button id="clearChatApiKey" class="action" type="button">삭제</button>
               </div>
             </details>
-            <details class="section" open>
-              <summary>스크립트 타겟 오더</summary>
-              <div class="row"><span class="label">타겟오더</span><span id="targetOrderStatus" class="value"></span></div>
-              <div class="feature-grid">
-                <button id="toggleTargetOrder" class="action" type="button"></button>
-                <button id="toggleTargetOrderAlert" class="action" type="button"></button>
-              </div>
-              <div class="actions three">
-                <button id="sendTargetOrderNow" class="action" type="button">현재 타겟 보내기</button>
-                <button id="applyPendingTargetOrderNow" class="action" type="button">수신 타겟 적용</button>
-                <button id="connectTargetOrderNow" class="action" type="button">연결</button>
-              </div>
-              <div class="input-row">
-                <input id="targetOrderServerInput" class="text-input" type="text" placeholder="ws://localhost:8787" autocomplete="off" spellcheck="false" />
-                <button id="saveTargetOrderConfig" class="action" type="button">저장</button>
-              </div>
-              <div class="input-row">
-                <input id="targetOrderRoomInput" class="text-input" type="text" maxlength="48" placeholder="방 코드" autocomplete="off" spellcheck="false" />
-                <input id="targetOrderNameInput" class="text-input" type="text" maxlength="32" placeholder="닉네임" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="input-row">
-                <input id="targetOrderTokenInput" class="text-input" type="password" placeholder="유저 토큰" autocomplete="off" spellcheck="false" />
-                <input id="targetOrderHotkeyInput" class="text-input" type="text" readonly placeholder="단축키" autocomplete="off" spellcheck="false" />
-              </div>
-              <div id="targetOrderNote" class="note"></div>
-            </details>
             <details class="section">
               <summary>강조 ID</summary>
               <div class="row"><span class="label">강조 ID</span><span id="highlightCount" class="value"></span></div>
@@ -20058,7 +19379,6 @@
 
       installFeatureToggleHandlers(shadow);
       installChatApiKeyHandlers(shadow);
-      installTargetOrderConfigHandlers(shadow);
       installGearPresetHandlers(shadow);
       installSkillPresetHandlers(shadow);
 
@@ -20143,8 +19463,6 @@
         addHighlightNameFromUi();
       } else if (active.id === "chatApiKeyInput") {
         saveChatApiKeyFromUi();
-      } else if (active.id && active.id.startsWith("targetOrder")) {
-        saveTargetOrderConfigFromUi();
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -20316,7 +19634,6 @@
     setFeatureToggleButton(shadow, "toggleTeamSync", "팀공유", FEATURE_CONFIG.teamSyncEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
-    renderTargetOrderUi(shadow);
     renderGearPresetUi(shadow);
     renderSkillPresetUi(shadow);
     renderTargetDistanceUi(shadow);
@@ -20329,11 +19646,6 @@
       toggleIncomingSkill: () => pageWindow.HordesKrMod.toggleIncomingSkillOverlay(),
       toggleTargetDistance: () => pageWindow.HordesKrMod.toggleTargetDistanceOverlay(),
       toggleChatTranslation: () => pageWindow.HordesKrMod.toggleChatTranslation(),
-      toggleTargetOrder: () => pageWindow.HordesKrMod.toggleTargetOrder(),
-      toggleTargetOrderAlert: () => pageWindow.HordesKrMod.toggleTargetOrderAlert(),
-      sendTargetOrderNow: () => pageWindow.HordesKrMod.sendTargetOrder(),
-      applyPendingTargetOrderNow: () => pageWindow.HordesKrMod.applyPendingTargetOrder(),
-      connectTargetOrderNow: () => pageWindow.HordesKrMod.connectTargetOrder(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
       toggleAutoRotation: () => pageWindow.HordesKrMod.toggleAutoRotation(),
@@ -20387,392 +19699,6 @@
         }
       });
     }
-  }
-
-  function installTargetOrderConfigHandlers(shadow) {
-    const save = shadow.getElementById("saveTargetOrderConfig");
-    const hotkey = shadow.getElementById("targetOrderHotkeyInput");
-    if (save) {
-      save.addEventListener("click", () => {
-        saveTargetOrderConfigFromUi();
-      });
-    }
-
-    if (hotkey) {
-      hotkey.addEventListener("keydown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const code = normalizeKeyboardCode(event.code);
-        if (!code || event.key === "Escape") {
-          hotkey.blur();
-          return;
-        }
-
-        TARGET_ORDER_CONFIG.hotkeyCode = code;
-        hotkey.value = formatKeyboardCode(code);
-        saveTargetOrderConfigFromUi();
-      });
-      hotkey.addEventListener("focus", () => {
-        TARGET_ORDER_STATE.hotkeyCaptureActive = true;
-        hotkey.value = "누를 키 입력...";
-      });
-      hotkey.addEventListener("blur", () => {
-        TARGET_ORDER_STATE.hotkeyCaptureActive = false;
-        hotkey.value = formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode);
-      });
-    }
-  }
-
-  function installGearPresetHandlers(shadow) {
-    installPresetPanelHandlers(shadow, GEAR_PRESET_QUICK_NAMES, {
-      saveId: (presetName) => `saveGearPreset${presetName}`,
-      applyId: (presetName) => `equipGearPreset${presetName}`,
-      save: (presetName) => pageWindow.HordesKrMod.saveEquippedGearPreset(presetName),
-      apply: (presetName) => pageWindow.HordesKrMod.equipGearPreset(presetName),
-    });
-  }
-
-  function installSkillPresetHandlers(shadow) {
-    installPresetPanelHandlers(shadow, SKILL_PRESET_QUICK_NAMES, {
-      saveId: (presetName) => `saveSkillPreset${presetName}`,
-      applyId: (presetName) => `applySkillPreset${presetName}`,
-      save: (presetName) => pageWindow.HordesKrMod.saveSkillPreset(presetName),
-      apply: (presetName) => pageWindow.HordesKrMod.applySkillPreset(presetName),
-    });
-  }
-
-  function installPresetPanelHandlers(shadow, presetNames, actions) {
-    for (const presetName of presetNames) {
-      const save = shadow.getElementById(actions.saveId(presetName));
-      const apply = shadow.getElementById(actions.applyId(presetName));
-
-      if (save) {
-        save.addEventListener("click", () => {
-          actions.save(presetName);
-          refreshPresetQuickBarAndStatus();
-        });
-      }
-
-      if (apply) {
-        apply.addEventListener("click", () => {
-          runPresetPanelAction(() => actions.apply(presetName));
-        });
-      }
-    }
-  }
-
-  function renderFeatureToggles(shadow) {
-    setFeatureToggleButton(shadow, "toggleMinimapLabels", "미니맵", HIGHLIGHT_CONFIG.minimapLabelsEnabled);
-    setFeatureToggleButton(
-      shadow,
-      "toggleIncomingSkill",
-      "시전/주시",
-      FEATURE_CONFIG.incomingSkillOverlayEnabled !== false || FEATURE_CONFIG.incomingTargetWatchEnabled !== false
-    );
-    setFeatureToggleButton(shadow, "toggleTargetDistance", "타겟거리", FEATURE_CONFIG.targetDistanceEnabled);
-    renderChatTranslationToggle(shadow);
-    setFeatureToggleButton(shadow, "toggleTargetOrder", "타겟오더", TARGET_ORDER_CONFIG.enabled);
-    setFeatureToggleButton(shadow, "toggleTargetOrderAlert", "오더알림", TARGET_ORDER_CONFIG.alertEnabled);
-    setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
-    setFeatureToggleButton(shadow, "togglePartyUi", "파티창이동", PARTY_UI_CONFIG.enabled);
-    setFeatureToggleButton(shadow, "togglePartyCommandPanel", "파티패널", PARTY_COMMAND_CONFIG.enabled);
-    setFeatureToggleButton(shadow, "toggleSwiftshotTurbo", "스킬터보", FEATURE_CONFIG.swiftshotTurboEnabled);
-    const preset = shadow.getElementById("partyPreset5x2");
-    if (preset) {
-      preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
-      preset.title = "내 체력바 위에 5열 2행으로 배치";
-    }
-  }
-
-  function setFeatureToggleButton(shadow, id, label, enabled) {
-    const button = shadow.getElementById(id);
-    if (!button) return;
-
-    const text = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
-    setPanelButtonState(button, {
-      disabled: false,
-      off: !enabled,
-      text,
-      title: text,
-    });
-  }
-
-  function renderChatTranslationToggle(shadow) {
-    const button = shadow.getElementById("toggleChatTranslation");
-    if (!button) return;
-
-    if (!hasChatTranslationApiKey()) {
-      button.textContent = "채팅번역 키없음";
-      button.classList.add("off");
-      button.title = "패널의 채팅 번역 키에서 API 키를 저장한 뒤 켜세요.";
-      return;
-    }
-
-    setFeatureToggleButton(shadow, "toggleChatTranslation", "채팅번역", isChatTranslationEnabled());
-  }
-
-  function renderChatApiKeyUi(shadow) {
-    const status = shadow.getElementById("chatApiKeyStatus");
-    const input = shadow.getElementById("chatApiKeyInput");
-    if (!status) return;
-
-    const hasKey = hasChatTranslationApiKey();
-    const error = CHAT_TRANSLATION_STATE.lastError || "";
-    const active = isChatTranslationEnabled();
-    status.textContent = hasKey
-      ? active
-        ? "저장됨 / 번역 켜짐"
-        : "저장됨"
-      : error === "API 키 없음"
-        ? "키 없음"
-        : "미저장";
-
-    if (input) {
-      input.placeholder = hasKey ? "새 키 입력 시 교체" : "OpenAI API 키";
-    }
-  }
-
-  function renderTargetOrderUi(shadow) {
-    const status = shadow.getElementById("targetOrderStatus");
-    const server = shadow.getElementById("targetOrderServerInput");
-    const room = shadow.getElementById("targetOrderRoomInput");
-    const name = shadow.getElementById("targetOrderNameInput");
-    const token = shadow.getElementById("targetOrderTokenInput");
-    const hotkey = shadow.getElementById("targetOrderHotkeyInput");
-    const send = shadow.getElementById("sendTargetOrderNow");
-    const apply = shadow.getElementById("applyPendingTargetOrderNow");
-    const connect = shadow.getElementById("connectTargetOrderNow");
-    const note = shadow.getElementById("targetOrderNote");
-    const targetOrderStatus = getTargetOrderStatus();
-
-    if (status) {
-      status.textContent = getTargetOrderStatusText();
-      status.title = TARGET_ORDER_STATE.lastError || "";
-    }
-
-    const active = shadow.activeElement;
-    setInputValueUnlessActive(server, active, TARGET_ORDER_CONFIG.serverUrl);
-    setInputValueUnlessActive(room, active, TARGET_ORDER_CONFIG.roomId);
-    setInputValueUnlessActive(name, active, TARGET_ORDER_CONFIG.userName);
-    setInputValueUnlessActive(token, active, TARGET_ORDER_CONFIG.clientToken);
-    setInputValueUnlessActive(hotkey, active, formatKeyboardCode(TARGET_ORDER_CONFIG.hotkeyCode));
-
-    if (send) {
-      const disabled = !targetOrderStatus.enabled || !targetOrderStatus.connected;
-      setPanelButtonState(send, {
-        disabled,
-        title: disabled
-          ? "타겟오더를 켜고 서버에 연결된 뒤 현재 선택 타겟을 보낼 수 있습니다."
-          : "현재 선택한 타겟을 같은 방 사용자에게 보냅니다.",
-      });
-    }
-
-    if (apply) {
-      const pending = Boolean(targetOrderStatus.pendingCall);
-      setPanelButtonState(apply, {
-        disabled: !pending,
-        title: pending
-          ? `${targetOrderStatus.pendingCall.targetName} 타겟 적용`
-          : "3초 안에 수신된 타겟 오더가 있을 때 사용할 수 있습니다.",
-      });
-    }
-
-    if (connect) {
-      const ready = isTargetOrderConfigReady();
-      setPanelButtonState(connect, {
-        disabled: !targetOrderStatus.enabled || !ready,
-        off: !targetOrderStatus.enabled || !ready || targetOrderStatus.connected,
-        text: targetOrderStatus.connected ? "연결됨" : "연결",
-        title: ready
-          ? "타겟 오더 서버에 연결합니다."
-          : "서버 URL, 방 코드, 닉네임, 유저 토큰을 저장하세요.",
-      });
-    }
-
-    if (note) {
-      const pending = targetOrderStatus.pendingCall;
-      note.textContent = joinStatusParts([
-        "현재 타겟 보내기: 선택한 대상을 스크립트 사용자에게 전송",
-        `단축키: ${targetOrderStatus.hotkey}`,
-        pending ? `수신: ${pending.targetName}` : "",
-        TARGET_ORDER_STATE.lastError ? `오류: ${TARGET_ORDER_STATE.lastError}` : "",
-      ]);
-    }
-  }
-
-  function renderGearPresetUi(shadow) {
-    const status = shadow.getElementById("gearPresetStatus");
-    const note = shadow.getElementById("gearPresetNote");
-    if (!status) return;
-
-    const presets = GEAR_PRESET_QUICK_NAMES.map((presetName) => ({
-      name: presetName,
-      preset: getGearPreset(presetName),
-      save: shadow.getElementById(`saveGearPreset${presetName}`),
-      equip: shadow.getElementById(`equipGearPreset${presetName}`),
-    }));
-    const presetSummaryParts = presets.map(({ name, preset }) => {
-      const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
-      return `${name}:${count}`;
-    });
-    const equippedItems = STATUS_UI.panelOpen ? scanRuntimeEquippedGearItems().map(stripGearPresetElement) : [];
-    const runtimeItems = STATUS_UI.panelOpen ? scanRuntimeGearItems().map(stripGearPresetElement) : [];
-    const socket = getGearSocketStatus();
-    const socketText = getPresetSocketStatusText(socket);
-
-    const staleScanError =
-      GEAR_PRESET_STATE.lastState === "저장 실패" &&
-      GEAR_PRESET_STATE.lastError &&
-      equippedItems.length > 0;
-
-    if (GEAR_PRESET_STATE.running) {
-      status.textContent = "장착 중";
-    } else if (GEAR_PRESET_STATE.lastError && !staleScanError) {
-      status.textContent = GEAR_PRESET_STATE.lastState || "오류";
-    } else {
-      status.textContent = `장착 ${equippedItems.length}개 / ${presetSummaryParts.join(" ")} / ${socketText}`;
-    }
-    status.title = staleScanError ? "" : GEAR_PRESET_STATE.lastError || "";
-
-    presets.forEach(({ name, preset, save, equip }) => {
-      const presetCount = preset && Array.isArray(preset.items) ? preset.items.length : 0;
-      setPanelButtonState(save, {
-        disabled: GEAR_PRESET_STATE.running,
-        title: `현재 장착 중인 아이템의 고유 ID(dbid)를 프리셋 ${name}에 저장합니다.`,
-      });
-      setPanelButtonState(equip, {
-        disabled: GEAR_PRESET_STATE.running || presetCount === 0,
-        title: `프리셋 ${name}의 아이템 dbid를 현재 슬롯에서 찾아 서버 장착 명령을 보냅니다. 가방을 닫아도 실행 가능합니다.`,
-      });
-    });
-
-    if (note) {
-      const equippedSummary = summarizeGearPresetItems(equippedItems);
-      note.textContent = joinStatusParts([
-        equippedSummary ? `현재장착: ${equippedSummary}` : "현재 장착 정보 없음",
-        runtimeItems.length ? `인벤토리감지: ${runtimeItems.length}개` : "인벤토리 감지 없음",
-        socket.available ? "전송: dbid 검색 후 itemmove" : "전송: 새로고침 후 연결 감지",
-        GEAR_PRESET_STATE.lastResult
-          ? `최근: 장착 ${GEAR_PRESET_STATE.lastResult.equipped}/${GEAR_PRESET_STATE.lastResult.requested}, 해제 ${GEAR_PRESET_STATE.lastResult.unequipped || 0}${
-              GEAR_PRESET_STATE.lastResult.savedSlotFallback
-                ? `, 저장슬롯 ${GEAR_PRESET_STATE.lastResult.savedSlotFallback}개`
-                : ""
-            }`
-          : "",
-      ]);
-    }
-  }
-
-  function renderSkillPresetUi(shadow) {
-    const status = shadow.getElementById("skillPresetStatus");
-    const note = shadow.getElementById("skillPresetNote");
-    if (!status) return;
-
-    const presets = SKILL_PRESET_QUICK_NAMES.map((presetName) => ({
-      name: presetName,
-      preset: getSkillPreset(presetName),
-      save: shadow.getElementById(`saveSkillPreset${presetName}`),
-      apply: shadow.getElementById(`applySkillPreset${presetName}`),
-    }));
-    const presetSummaryParts = presets.map(({ name, preset }) => {
-      const count = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
-      return `${name}:${count}`;
-    });
-    const activeSkillIds = STATUS_UI.panelOpen ? scanRuntimeActiveSkillIds() : [];
-    const socket = getGearSocketStatus();
-    const socketText = getPresetSocketStatusText(socket);
-
-    const staleScanError =
-      SKILL_PRESET_STATE.lastState === "저장 실패" &&
-      SKILL_PRESET_STATE.lastError &&
-      activeSkillIds.length > 0;
-
-    if (SKILL_PRESET_STATE.running) {
-      status.textContent = "적용 중";
-    } else if (SKILL_PRESET_STATE.lastError && !staleScanError) {
-      status.textContent = SKILL_PRESET_STATE.lastState || "오류";
-    } else {
-      status.textContent = `활성 ${activeSkillIds.length}포인트 / ${presetSummaryParts.join(" ")} / ${socketText}`;
-    }
-    status.title = staleScanError ? "" : SKILL_PRESET_STATE.lastError || "";
-
-    presets.forEach(({ name, preset, save, apply }) => {
-      const presetCount = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
-      setPanelButtonState(save, {
-        disabled: SKILL_PRESET_STATE.running,
-        title: `현재 활성 스킬 구성을 프리셋 ${name}에 저장합니다.`,
-      });
-      setPanelButtonState(apply, {
-        disabled: SKILL_PRESET_STATE.running || presetCount === 0,
-        title: `프리셋 ${name}의 스킬 ID 목록을 skillconfig 명령으로 적용합니다.`,
-      });
-    });
-
-    if (note) {
-      note.textContent = joinStatusParts([
-        activeSkillIds.length ? `현재활성: ${summarizeSkillPresetIds(activeSkillIds)}` : "현재 활성 스킬 정보 없음",
-        socket.available ? "전송: skillconfig" : "전송: 새로고침 후 연결 감지",
-        SKILL_PRESET_STATE.lastResult
-          ? `최근: ${SKILL_PRESET_STATE.lastResult.sent ? "전송됨" : "전송없음"}${
-              SKILL_PRESET_STATE.lastResult.verify
-                ? `, 확인 ${SKILL_PRESET_STATE.lastResult.verify.matched}/${SKILL_PRESET_STATE.lastResult.verify.total}`
-                : ""
-            }`
-          : "",
-      ]);
-    }
-  }
-
-  function joinStatusParts(parts) {
-    return parts.filter(Boolean).join(" / ");
-  }
-
-  function getPresetSocketStatusText(socket) {
-    if (socket && socket.available) return "서버연결";
-    if (socket && socket.wrapped) return "서버대기";
-    return "서버미감지";
-  }
-
-  function setPanelButtonState(button, options = {}) {
-    if (!button) return;
-    const disabled = Boolean(options.disabled);
-    button.disabled = disabled;
-    button.classList.toggle("off", "off" in options ? Boolean(options.off) : disabled);
-    if ("text" in options) button.textContent = options.text;
-    if ("title" in options) button.title = options.title;
-  }
-
-  function summarizeGearPresetItems(items) {
-    const counts = new Map();
-    for (const item of items || []) {
-      const key = item.itemType || "item";
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-
-    return Array.from(counts.entries())
-      .map(([type, count]) => count > 1 ? `${type}x${count}` : type)
-      .join(", ");
-  }
-
-  function getTargetOrderStatusText() {
-    if (!TARGET_ORDER_CONFIG.enabled) return "꺼짐";
-    if (!isTargetOrderConfigReady()) return "설정 필요";
-    const suffix = TARGET_ORDER_STATE.users.length > 0 ? ` / ${TARGET_ORDER_STATE.users.length}명` : "";
-    return `${TARGET_ORDER_STATE.lastState || "대기"}${suffix}`;
-  }
-
-  function saveTargetOrderConfigFromUi() {
-    const shadow = STATUS_UI.shadow;
-    if (!shadow) return getTargetOrderStatus();
-
-    const nextConfig = {
-      serverUrl: getInputValue(shadow, "targetOrderServerInput"),
-      roomId: getInputValue(shadow, "targetOrderRoomInput"),
-      userName: getInputValue(shadow, "targetOrderNameInput"),
-      clientToken: getInputValue(shadow, "targetOrderTokenInput"),
-      hotkeyCode: TARGET_ORDER_CONFIG.hotkeyCode,
-    };
-    return setTargetOrderConfig(nextConfig);
   }
 
   function getInputValue(shadow, id) {
