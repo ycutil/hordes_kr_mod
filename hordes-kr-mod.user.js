@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.161-local
+// @version      0.9.162-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.161-local";
+  const BOOT_VERSION = "0.9.162-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -7029,6 +7029,293 @@
     const tag = element.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
     return Boolean(element.isContentEditable);
+  }
+
+  // Shared keyboard-code normalizer (was defined inside the removed target-order
+  // feature; the swiftshot-turbo hotkeys still depend on it).
+  function normalizeKeyboardCode(code) {
+    const value = String(code || "").trim();
+    if (!value) return "";
+    if (/^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|Numpad[0-9]|Arrow(?:Up|Down|Left|Right)|Space|Tab|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/i.test(value)) {
+      if (/^key[a-z]$/i.test(value)) return `Key${value.slice(-1).toUpperCase()}`;
+      if (/^digit[0-9]$/i.test(value)) return `Digit${value.slice(-1)}`;
+      return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    if (/^[a-z]$/i.test(value)) return `Key${value.toUpperCase()}`;
+    if (/^[0-9]$/.test(value)) return `Digit${value}`;
+    return "";
+  }
+
+  // ===== restored core panel helpers (had been interleaved with target-order) =====
+  function formatKeyboardCode(code) {
+    const normalized = normalizeKeyboardCode(code) || "";
+    if (/^Key[A-Z]$/.test(normalized)) return normalized.slice(3);
+    if (/^Digit[0-9]$/.test(normalized)) return normalized.slice(5);
+    return normalized;
+  }
+
+  function installGearPresetHandlers(shadow) {
+    installPresetPanelHandlers(shadow, GEAR_PRESET_QUICK_NAMES, {
+      saveId: (presetName) => `saveGearPreset${presetName}`,
+      applyId: (presetName) => `equipGearPreset${presetName}`,
+      save: (presetName) => pageWindow.HordesKrMod.saveEquippedGearPreset(presetName),
+      apply: (presetName) => pageWindow.HordesKrMod.equipGearPreset(presetName),
+    });
+  }
+
+  function installSkillPresetHandlers(shadow) {
+    installPresetPanelHandlers(shadow, SKILL_PRESET_QUICK_NAMES, {
+      saveId: (presetName) => `saveSkillPreset${presetName}`,
+      applyId: (presetName) => `applySkillPreset${presetName}`,
+      save: (presetName) => pageWindow.HordesKrMod.saveSkillPreset(presetName),
+      apply: (presetName) => pageWindow.HordesKrMod.applySkillPreset(presetName),
+    });
+  }
+
+  function renderFeatureToggles(shadow) {
+    setFeatureToggleButton(shadow, "toggleMinimapLabels", "미니맵", HIGHLIGHT_CONFIG.minimapLabelsEnabled);
+    setFeatureToggleButton(
+      shadow,
+      "toggleIncomingSkill",
+      "시전/주시",
+      FEATURE_CONFIG.incomingSkillOverlayEnabled !== false || FEATURE_CONFIG.incomingTargetWatchEnabled !== false
+    );
+    setFeatureToggleButton(shadow, "toggleTargetDistance", "타겟거리", FEATURE_CONFIG.targetDistanceEnabled);
+    renderChatTranslationToggle(shadow);
+    setFeatureToggleButton(shadow, "toggleHighlightList", "강조목록", HIGHLIGHT_CONFIG.minimapListEnabled);
+    setFeatureToggleButton(shadow, "togglePartyUi", "파티창이동", PARTY_UI_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "togglePartyCommandPanel", "파티패널", PARTY_COMMAND_CONFIG.enabled);
+    setFeatureToggleButton(shadow, "toggleSwiftshotTurbo", "스킬터보", FEATURE_CONFIG.swiftshotTurboEnabled);
+    const preset = shadow.getElementById("partyPreset5x2");
+    if (preset) {
+      preset.classList.toggle("off", PARTY_UI_CONFIG.preset !== "self5x2");
+      preset.title = "내 체력바 위에 5열 2행으로 배치";
+    }
+  }
+
+  function setFeatureToggleButton(shadow, id, label, enabled) {
+    const button = shadow.getElementById(id);
+    if (!button) return;
+
+    const text = `${label} ${enabled ? "켜짐" : "꺼짐"}`;
+    setPanelButtonState(button, {
+      disabled: false,
+      off: !enabled,
+      text,
+      title: text,
+    });
+  }
+
+  function renderGearPresetUi(shadow) {
+    const status = shadow.getElementById("gearPresetStatus");
+    const note = shadow.getElementById("gearPresetNote");
+    if (!status) return;
+
+    const presets = GEAR_PRESET_QUICK_NAMES.map((presetName) => ({
+      name: presetName,
+      preset: getGearPreset(presetName),
+      save: shadow.getElementById(`saveGearPreset${presetName}`),
+      equip: shadow.getElementById(`equipGearPreset${presetName}`),
+    }));
+    const presetSummaryParts = presets.map(({ name, preset }) => {
+      const count = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+      return `${name}:${count}`;
+    });
+    const equippedItems = STATUS_UI.panelOpen ? scanRuntimeEquippedGearItems().map(stripGearPresetElement) : [];
+    const runtimeItems = STATUS_UI.panelOpen ? scanRuntimeGearItems().map(stripGearPresetElement) : [];
+    const socket = getGearSocketStatus();
+    const socketText = getPresetSocketStatusText(socket);
+
+    const staleScanError =
+      GEAR_PRESET_STATE.lastState === "저장 실패" &&
+      GEAR_PRESET_STATE.lastError &&
+      equippedItems.length > 0;
+
+    if (GEAR_PRESET_STATE.running) {
+      status.textContent = "장착 중";
+    } else if (GEAR_PRESET_STATE.lastError && !staleScanError) {
+      status.textContent = GEAR_PRESET_STATE.lastState || "오류";
+    } else {
+      status.textContent = `장착 ${equippedItems.length}개 / ${presetSummaryParts.join(" ")} / ${socketText}`;
+    }
+    status.title = staleScanError ? "" : GEAR_PRESET_STATE.lastError || "";
+
+    presets.forEach(({ name, preset, save, equip }) => {
+      const presetCount = preset && Array.isArray(preset.items) ? preset.items.length : 0;
+      setPanelButtonState(save, {
+        disabled: GEAR_PRESET_STATE.running,
+        title: `현재 장착 중인 아이템의 고유 ID(dbid)를 프리셋 ${name}에 저장합니다.`,
+      });
+      setPanelButtonState(equip, {
+        disabled: GEAR_PRESET_STATE.running || presetCount === 0,
+        title: `프리셋 ${name}의 아이템 dbid를 현재 슬롯에서 찾아 서버 장착 명령을 보냅니다. 가방을 닫아도 실행 가능합니다.`,
+      });
+    });
+
+    if (note) {
+      const equippedSummary = summarizeGearPresetItems(equippedItems);
+      note.textContent = joinStatusParts([
+        equippedSummary ? `현재장착: ${equippedSummary}` : "현재 장착 정보 없음",
+        runtimeItems.length ? `인벤토리감지: ${runtimeItems.length}개` : "인벤토리 감지 없음",
+        socket.available ? "전송: dbid 검색 후 itemmove" : "전송: 새로고침 후 연결 감지",
+        GEAR_PRESET_STATE.lastResult
+          ? `최근: 장착 ${GEAR_PRESET_STATE.lastResult.equipped}/${GEAR_PRESET_STATE.lastResult.requested}, 해제 ${GEAR_PRESET_STATE.lastResult.unequipped || 0}${
+              GEAR_PRESET_STATE.lastResult.savedSlotFallback
+                ? `, 저장슬롯 ${GEAR_PRESET_STATE.lastResult.savedSlotFallback}개`
+                : ""
+            }`
+          : "",
+      ]);
+    }
+  }
+
+  function renderSkillPresetUi(shadow) {
+    const status = shadow.getElementById("skillPresetStatus");
+    const note = shadow.getElementById("skillPresetNote");
+    if (!status) return;
+
+    const presets = SKILL_PRESET_QUICK_NAMES.map((presetName) => ({
+      name: presetName,
+      preset: getSkillPreset(presetName),
+      save: shadow.getElementById(`saveSkillPreset${presetName}`),
+      apply: shadow.getElementById(`applySkillPreset${presetName}`),
+    }));
+    const presetSummaryParts = presets.map(({ name, preset }) => {
+      const count = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+      return `${name}:${count}`;
+    });
+    const activeSkillIds = STATUS_UI.panelOpen ? scanRuntimeActiveSkillIds() : [];
+    const socket = getGearSocketStatus();
+    const socketText = getPresetSocketStatusText(socket);
+
+    const staleScanError =
+      SKILL_PRESET_STATE.lastState === "저장 실패" &&
+      SKILL_PRESET_STATE.lastError &&
+      activeSkillIds.length > 0;
+
+    if (SKILL_PRESET_STATE.running) {
+      status.textContent = "적용 중";
+    } else if (SKILL_PRESET_STATE.lastError && !staleScanError) {
+      status.textContent = SKILL_PRESET_STATE.lastState || "오류";
+    } else {
+      status.textContent = `활성 ${activeSkillIds.length}포인트 / ${presetSummaryParts.join(" ")} / ${socketText}`;
+    }
+    status.title = staleScanError ? "" : SKILL_PRESET_STATE.lastError || "";
+
+    presets.forEach(({ name, preset, save, apply }) => {
+      const presetCount = filterConfigurableSkillPresetIds(preset && preset.skillIds || []).length;
+      setPanelButtonState(save, {
+        disabled: SKILL_PRESET_STATE.running,
+        title: `현재 활성 스킬 구성을 프리셋 ${name}에 저장합니다.`,
+      });
+      setPanelButtonState(apply, {
+        disabled: SKILL_PRESET_STATE.running || presetCount === 0,
+        title: `프리셋 ${name}의 스킬 ID 목록을 skillconfig 명령으로 적용합니다.`,
+      });
+    });
+
+    if (note) {
+      note.textContent = joinStatusParts([
+        activeSkillIds.length ? `현재활성: ${summarizeSkillPresetIds(activeSkillIds)}` : "현재 활성 스킬 정보 없음",
+        socket.available ? "전송: skillconfig" : "전송: 새로고침 후 연결 감지",
+        SKILL_PRESET_STATE.lastResult
+          ? `최근: ${SKILL_PRESET_STATE.lastResult.sent ? "전송됨" : "전송없음"}${
+              SKILL_PRESET_STATE.lastResult.verify
+                ? `, 확인 ${SKILL_PRESET_STATE.lastResult.verify.matched}/${SKILL_PRESET_STATE.lastResult.verify.total}`
+                : ""
+            }`
+          : "",
+      ]);
+    }
+  }
+
+  function renderChatApiKeyUi(shadow) {
+    const status = shadow.getElementById("chatApiKeyStatus");
+    const input = shadow.getElementById("chatApiKeyInput");
+    if (!status) return;
+
+    const hasKey = hasChatTranslationApiKey();
+    const error = CHAT_TRANSLATION_STATE.lastError || "";
+    const active = isChatTranslationEnabled();
+    status.textContent = hasKey
+      ? active
+        ? "저장됨 / 번역 켜짐"
+        : "저장됨"
+      : error === "API 키 없음"
+        ? "키 없음"
+        : "미저장";
+
+    if (input) {
+      input.placeholder = hasKey ? "새 키 입력 시 교체" : "OpenAI API 키";
+    }
+  }
+
+  function joinStatusParts(parts) {
+    return parts.filter(Boolean).join(" / ");
+  }
+
+
+  // ===== restored core panel helpers (batch 2) =====
+  function getPresetSocketStatusText(socket) {
+    if (socket && socket.available) return "서버연결";
+    if (socket && socket.wrapped) return "서버대기";
+    return "서버미감지";
+  }
+
+  function installPresetPanelHandlers(shadow, presetNames, actions) {
+    for (const presetName of presetNames) {
+      const save = shadow.getElementById(actions.saveId(presetName));
+      const apply = shadow.getElementById(actions.applyId(presetName));
+
+      if (save) {
+        save.addEventListener("click", () => {
+          actions.save(presetName);
+          refreshPresetQuickBarAndStatus();
+        });
+      }
+
+      if (apply) {
+        apply.addEventListener("click", () => {
+          runPresetPanelAction(() => actions.apply(presetName));
+        });
+      }
+    }
+  }
+
+  function renderChatTranslationToggle(shadow) {
+    const button = shadow.getElementById("toggleChatTranslation");
+    if (!button) return;
+
+    if (!hasChatTranslationApiKey()) {
+      button.textContent = "채팅번역 키없음";
+      button.classList.add("off");
+      button.title = "패널의 채팅 번역 키에서 API 키를 저장한 뒤 켜세요.";
+      return;
+    }
+
+    setFeatureToggleButton(shadow, "toggleChatTranslation", "채팅번역", isChatTranslationEnabled());
+  }
+
+  function setPanelButtonState(button, options = {}) {
+    if (!button) return;
+    const disabled = Boolean(options.disabled);
+    button.disabled = disabled;
+    button.classList.toggle("off", "off" in options ? Boolean(options.off) : disabled);
+    if ("text" in options) button.textContent = options.text;
+    if ("title" in options) button.title = options.title;
+  }
+
+  function summarizeGearPresetItems(items) {
+    const counts = new Map();
+    for (const item of items || []) {
+      const key = item.itemType || "item";
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+
+    return Array.from(counts.entries())
+      .map(([type, count]) => count > 1 ? `${type}x${count}` : type)
+      .join(", ");
   }
 
   function isPartyCommandEditableEvent(event) {
