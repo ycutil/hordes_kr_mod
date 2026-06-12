@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.156-local
+// @version      0.9.157-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.156-local";
+  const BOOT_VERSION = "0.9.157-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -378,6 +378,12 @@
   const AUTO_DEFENSE_LOCKOUT_MS = 8000;     // min gap between auto-defense triggers
   const WATCH_BEEP_MIN_GAP_MS = 1500;       // min gap between new-watcher beeps
   const THREAT_FLASH_MS = 1200;             // threat HUD flash duration on a new watcher
+  // Auto-interrupt: when a highlighted enemy in range starts casting a trigger skill,
+  // target them and fire an interrupt slot. Retries alternate slots while the cast is
+  // still live, rate-limited so the GCD/packet round-trip can land.
+  const AUTO_INTERRUPT_GAP_MS = 600;        // min gap between interrupt cast attempts
+  const AUTO_INTERRUPT_MAX_TRIES = 4;       // attempts per single enemy cast instance
+  const AUTO_INTERRUPT_MIN_REMAIN_S = 0.25; // ignore casts about to resolve anyway
   const INCOMING_TARGET_WATCH_NESTED_SCAN_DEPTH = 3;
   const INCOMING_TARGET_WATCH_NESTED_SCAN_OBJECTS = 180;
   const INCOMING_TARGET_WATCH_NESTED_CHILD_LIMIT = 64;
@@ -672,6 +678,10 @@
     autoDefenseSlot: 0,
     autoDefenseHpPct: 35,
     autoRotationSlots: [],
+    autoInterruptEnabled: false,
+    autoInterruptSlots: [5, 9],
+    autoInterruptRangeM: 30,
+    autoInterruptSkillIds: [45, 52, 35],
     chatTranslationEnabled: false,
     swiftshotTurboEnabled: true,
     swiftshotTurboKeyCodes: SWIFTSHOT_TURBO_DEFAULT_KEY_CODES,
@@ -693,6 +703,16 @@
   FEATURE_CONFIG.autoRotationSlots = Array.isArray(FEATURE_CONFIG.autoRotationSlots)
     ? FEATURE_CONFIG.autoRotationSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 8)
     : [];
+  FEATURE_CONFIG.autoInterruptEnabled = FEATURE_CONFIG.autoInterruptEnabled === true;
+  FEATURE_CONFIG.autoInterruptSlots = Array.isArray(FEATURE_CONFIG.autoInterruptSlots)
+    ? FEATURE_CONFIG.autoInterruptSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4)
+    : [5, 9];
+  if (!FEATURE_CONFIG.autoInterruptSlots.length) FEATURE_CONFIG.autoInterruptSlots = [5, 9];
+  FEATURE_CONFIG.autoInterruptRangeM = clamp(Math.round(Number(FEATURE_CONFIG.autoInterruptRangeM) || 30), 5, 80);
+  FEATURE_CONFIG.autoInterruptSkillIds = Array.isArray(FEATURE_CONFIG.autoInterruptSkillIds)
+    ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
+    : [45, 52, 35];
+  if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35];
   if (localStorage.getItem(INCOMING_TARGET_WATCH_DEFAULT_VERSION_KEY) !== INCOMING_TARGET_WATCH_DEFAULT_VERSION) {
     FEATURE_CONFIG.incomingTargetWatchEnabled = true;
     try {
@@ -1026,6 +1046,11 @@
     audioCtx: null,
     fastPathHits: 0,
     fastPathLastAt: 0,
+    // auto-interrupt bookkeeping
+    interruptTries: new Map(),   // castKey -> attempt count
+    lastInterruptAt: 0,
+    lastInterruptInfo: "",
+    interruptHits: 0,
   };
 
   const HIGHLIGHT_STATE = {
@@ -3239,6 +3264,36 @@
     toggleAutoRotation() {
       return setAutoRotationOn(!COMBAT_ASSIST_STATE.rotationOn);
     },
+    toggleAutoInterrupt() {
+      FEATURE_CONFIG.autoInterruptEnabled = !FEATURE_CONFIG.autoInterruptEnabled;
+      saveFeatureConfig();
+      renderStatusUi();
+      if (FEATURE_CONFIG.autoInterruptEnabled && !HIGHLIGHT_CONFIG.names.length) {
+        return "자동끊기 켜짐 — 강조 ID 목록이 비어 있습니다. 강조 목록의 적이 시전할 때만 끊습니다.";
+      }
+      return FEATURE_CONFIG.autoInterruptEnabled
+        ? `자동끊기 켜짐: 강조 대상이 ${FEATURE_CONFIG.autoInterruptRangeM}m 내에서 [${FEATURE_CONFIG.autoInterruptSkillIds.join(",")}] 시전 시 ${FEATURE_CONFIG.autoInterruptSlots.join("→")}번으로 끊기`
+        : "자동끊기 꺼짐";
+    },
+    setAutoInterruptSlots(slots) {
+      const list = (Array.isArray(slots) ? slots : [slots])
+        .map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4);
+      if (list.length) FEATURE_CONFIG.autoInterruptSlots = list;
+      saveFeatureConfig();
+      return `자동끊기 슬롯: ${FEATURE_CONFIG.autoInterruptSlots.join(" → ")}`;
+    },
+    setAutoInterruptRange(meters) {
+      FEATURE_CONFIG.autoInterruptRangeM = clamp(Math.round(Number(meters) || 30), 5, 80);
+      saveFeatureConfig();
+      return `자동끊기 거리: ${FEATURE_CONFIG.autoInterruptRangeM}m`;
+    },
+    setAutoInterruptSkills(skillIds) {
+      const list = (Array.isArray(skillIds) ? skillIds : [skillIds])
+        .map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12);
+      if (list.length) FEATURE_CONFIG.autoInterruptSkillIds = list;
+      saveFeatureConfig();
+      return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 46=휠윈드)`;
+    },
     setAutoRotationSlots(slots) {
       const list = (Array.isArray(slots) ? slots : [slots])
         .map((slot) => Math.round(Number(slot)))
@@ -3269,6 +3324,15 @@
           on: COMBAT_ASSIST_STATE.rotationOn,
           slots: FEATURE_CONFIG.autoRotationSlots,
           lastCastAgoMs: COMBAT_ASSIST_STATE.lastRotationCastAt ? Date.now() - COMBAT_ASSIST_STATE.lastRotationCastAt : null,
+        },
+        autoInterrupt: {
+          enabled: FEATURE_CONFIG.autoInterruptEnabled,
+          slots: FEATURE_CONFIG.autoInterruptSlots,
+          rangeM: FEATURE_CONFIG.autoInterruptRangeM,
+          triggerSkillIds: FEATURE_CONFIG.autoInterruptSkillIds,
+          hits: COMBAT_ASSIST_STATE.interruptHits,
+          last: COMBAT_ASSIST_STATE.lastInterruptInfo,
+          lastAgoMs: COMBAT_ASSIST_STATE.lastInterruptAt ? Date.now() - COMBAT_ASSIST_STATE.lastInterruptAt : null,
         },
         lastError: COMBAT_ASSIST_STATE.lastError,
       };
@@ -14307,6 +14371,76 @@
     return null;
   }
 
+  // Scan highlighted enemies in range for a live cast of a trigger skill; target the
+  // caster and fire the next interrupt slot. One enemy cast = one castKey (entity id +
+  // skill id + cast start), retried up to AUTO_INTERRUPT_MAX_TRIES across the slots.
+  function autoInterruptTick(runtime, engine, me, now) {
+    if (!FEATURE_CONFIG.autoInterruptEnabled) return;
+    const slots = FEATURE_CONFIG.autoInterruptSlots;
+    if (!slots.length) return;
+    if (now - COMBAT_ASSIST_STATE.lastInterruptAt < AUTO_INTERRUPT_GAP_MS) return;
+    const names = HIGHLIGHT_CONFIG.names;
+    if (!names.length) return;
+    const arr = engine.entities && engine.entities.array;
+    if (!arr) return;
+    const engineTime = typeof engine.time === "number" ? engine.time : null;
+    if (engineTime === null) return;
+    const triggers = FEATURE_CONFIG.autoInterruptSkillIds;
+    const rangeM = FEATURE_CONFIG.autoInterruptRangeM;
+
+    for (const entity of arr) {
+      if (!entity || entity.type !== 0 || entity.id === me.id) continue;
+      if (entity.faction === undefined || me.faction === undefined || entity.faction === me.faction) continue;
+
+      let castSkillId = null, castEnd = 0, castStart = 0;
+      try {
+        const entitySkills = entity.skills;
+        const timedSkill = entitySkills && entitySkills.timedSkill;
+        if (!timedSkill || timedSkill.id == null) continue;
+        if (triggers.indexOf(Number(timedSkill.id)) < 0) continue;
+        const timedCast = entitySkills.timedCast;
+        if (!timedCast) continue;
+        castEnd = Number(timedCast.end);
+        castStart = Number(timedCast.start);
+        if (!Number.isFinite(castEnd) || engineTime > castEnd - AUTO_INTERRUPT_MIN_REMAIN_S) continue;
+        castSkillId = Number(timedSkill.id);
+      } catch {
+        continue;
+      }
+
+      const name = String(entity.name || "");
+      if (!name || !getMatchingHighlightName(name)) continue;
+
+      let distance = Infinity;
+      try {
+        const pos = entity.pos || entity.visualPosition;
+        const myPos = me.pos || me.visualPosition;
+        if (pos && myPos) distance = Math.hypot(pos[0] - myPos[0], pos[2] - myPos[2]);
+      } catch {
+        continue;
+      }
+      if (!(distance <= rangeM)) continue;
+
+      const castKey = `${entity.id}:${castSkillId}:${Math.round(castStart * 10)}`;
+      const tries = COMBAT_ASSIST_STATE.interruptTries.get(castKey) || 0;
+      if (tries >= AUTO_INTERRUPT_MAX_TRIES) continue;
+      COMBAT_ASSIST_STATE.interruptTries.set(castKey, tries + 1);
+      if (COMBAT_ASSIST_STATE.interruptTries.size > 64) {
+        COMBAT_ASSIST_STATE.interruptTries.delete(COMBAT_ASSIST_STATE.interruptTries.keys().next().value);
+      }
+
+      try { if (readEntityTargetId(me) !== entity.id && typeof runtime.changeTarget === "function") runtime.changeTarget(entity.id); } catch { /* keep casting */ }
+      const slot = slots[tries % slots.length];
+      callRuntimeUseSkillbarSlot(runtime, slot);
+      COMBAT_ASSIST_STATE.lastInterruptAt = now;
+      COMBAT_ASSIST_STATE.interruptHits++;
+      const skillLabel = KEY_CAST_SKILL_MAP[castSkillId] || `#${castSkillId}`;
+      COMBAT_ASSIST_STATE.lastInterruptInfo = `${name} ${skillLabel} → ${slot}번`;
+      try { showGearPresetProgressOverlay(`⚔ 끊기: ${name} ${skillLabel} → ${slot}번`, "running", 1600); } catch { /* toast optional */ }
+      return; // one interrupt attempt per pulse
+    }
+  }
+
   function combatAssistTick() {
     try {
       const runtime = getExposedRuntime();
@@ -14314,6 +14448,8 @@
       const me = engine && engine.player;
       if (!me) return;
       const now = Date.now();
+
+      autoInterruptTick(runtime, engine, me, now);
 
       if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot >= 1) {
         const hp = entityHpFraction(me);
@@ -19385,6 +19521,7 @@
               <button id="toggleHighlightList" class="action" type="button"></button>
               <button id="toggleAutoRotation" class="action" type="button"></button>
               <button id="toggleAutoDefense" class="action" type="button"></button>
+              <button id="toggleAutoInterrupt" class="action" type="button"></button>
             </div>
             <details class="section">
               <summary>프리셋</summary>
@@ -19759,6 +19896,7 @@
     setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
     setFeatureToggleButton(shadow, "toggleAutoRotation", "자동시전", COMBAT_ASSIST_STATE.rotationOn);
     setFeatureToggleButton(shadow, "toggleAutoDefense", "자동방어", FEATURE_CONFIG.autoDefenseEnabled);
+    setFeatureToggleButton(shadow, "toggleAutoInterrupt", "자동끊기", FEATURE_CONFIG.autoInterruptEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
     renderTargetOrderUi(shadow);
@@ -19783,6 +19921,7 @@
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
       toggleAutoRotation: () => pageWindow.HordesKrMod.toggleAutoRotation(),
       toggleAutoDefense: () => pageWindow.HordesKrMod.toggleAutoDefense(),
+      toggleAutoInterrupt: () => pageWindow.HordesKrMod.toggleAutoInterrupt(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
       toggleSwiftshotTurbo: () => pageWindow.HordesKrMod.toggleSwiftshotTurbo(),
