@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.159-local
+// @version      0.9.160-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.159-local";
+  const BOOT_VERSION = "0.9.160-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -396,7 +396,7 @@
   const TEAM_SYNC_ROOM_DEFAULT = "guild";
   const TEAM_SYNC_POLL_COMBAT_MS = 1500;    // sync cadence while in combat
   const TEAM_SYNC_POLL_IDLE_MS = 4000;      // sync cadence while idle
-  const TEAM_SYNC_CANDLE_ICON_PREFIX = "items/charm/charm11_"; // Ghost Candles (candle)
+  const TEAM_SYNC_CANDLE_TIER = 11; // charm item.tier for Ghost Candles (candle); verified live
   // Per-class key skills to share, keyed by class index. id == icon number (verified
   // live this session). k: aoe = 주요 광역, buff = 자버프.
   const TEAM_SYNC_CLASS_SKILLS = {
@@ -14637,35 +14637,30 @@
     }
   }
 
-  // Candle charm state: must be EQUIPPED (worn in an equip slot) AND placed in a
-  // skillbar shortcut to be usable; reports {equipped, slotted, remain}. Detected by
-  // the charm icon prefix (items/charm/charm11_). NOTE: the exact cooldown field is to
-  // be confirmed live (no candle-equipped char available at build time) — best-effort.
+  // Candle (Ghost Candles) charm state. Verified live: a charm is item.type==="charm"
+  // with item.tier === the charm index (11 = Ghost Candles). Usable only when EQUIPPED
+  // (a worn charm slot, key >= 100; the charm bag sits at 33-50) AND placed in a
+  // skillbar shortcut. The shortcut entry's .id is the use-skill whose cd
+  // (player.skills.skills.get(id).cd) is the candle cooldown.
+  // { equipped, slotted, remain } — remain seconds, 0 = ready, null = unknown.
   function readCandleState(runtime, engine, me) {
     const result = { equipped: false, slotted: false, remain: null };
+    const TIER = TEAM_SYNC_CANDLE_TIER;
     try {
-      const inv = me.inventory;
-      const slots = inv && inv.slots;
-      const iconOf = (it) => String((it && (it.icon || (it.logic && it.logic.icon))) || "");
+      const slots = me.inventory && me.inventory.slots;
       if (slots && typeof slots.forEach === "function") {
         slots.forEach((it, key) => {
-          if (!it) return;
-          if (Number(key) >= 100 && iconOf(it).indexOf(TEAM_SYNC_CANDLE_ICON_PREFIX) === 0) result.equipped = true;
+          if (it && Number(key) >= 100 && it.type === "charm" && Number(it.tier) === TIER) result.equipped = true;
         });
       }
-      // skillbar shortcut holding the candle item
       const settings = runtime && runtime.settings;
       const bar = settings && settings.skillbarsettings && settings.skillbarsettings[me.name];
       if (Array.isArray(bar)) {
-        for (let i = 0; i < bar.length; i++) {
-          const entry = bar[i];
+        for (const entry of bar) {
           const it = entry && entry.item;
-          if (it && iconOf(it).indexOf(TEAM_SYNC_CANDLE_ICON_PREFIX) === 0) {
+          if (it && it.type === "charm" && Number(it.tier) === TIER) {
             result.slotted = true;
-            const def = it.logic || it;
-            const cd = def && def.cd;
-            const t = engine && engine.time;
-            if (cd && typeof cd.end === "number" && typeof t === "number") result.remain = Math.max(0, Math.round((cd.end - t) * 10) / 10);
+            result.remain = skillCooldownRemaining(engine, me, entry.id);
             break;
           }
         }
