@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.168-local
+// @version      0.9.169-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.168-local";
+  const BOOT_VERSION = "0.9.169-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -742,11 +742,13 @@
     ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
     : [45, 52, 35, 33];
   if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35, 33];
-  // One-time: fold Charge(돌진, 33) into existing saved trigger lists.
+  // One-time: fold Charge(돌진, 33) into existing saved trigger lists, and PERSIST it
+  // (else the in-memory push is lost on the next reload — the v0.9.168 bug).
   try {
-    if (localStorage.getItem("hordesKrMod.autoInterrupt.chargeV1") !== "1") {
+    if (localStorage.getItem("hordesKrMod.autoInterrupt.chargeV2") !== "1") {
       if (!FEATURE_CONFIG.autoInterruptSkillIds.includes(33)) FEATURE_CONFIG.autoInterruptSkillIds.push(33);
-      localStorage.setItem("hordesKrMod.autoInterrupt.chargeV1", "1");
+      localStorage.setItem("hordesKrMod.autoInterrupt.chargeV2", "1");
+      saveFeatureConfig();
     }
   } catch { /* storage may be unavailable */ }
   FEATURE_CONFIG.autoInterruptHighlightOnly = FEATURE_CONFIG.autoInterruptHighlightOnly === true;
@@ -8325,7 +8327,7 @@
       }
 
       let replaced = 0;
-      const roots = Array.from(DOM_TRANSLATION_STATE.queuedRoots).slice(0, 60);
+      const roots = Array.from(DOM_TRANSLATION_STATE.queuedRoots).slice(0, 150);
       DOM_TRANSLATION_STATE.queuedRoots.clear();
       roots.forEach((root) => {
         replaced += translateDomTree(root, DOM_TRANSLATION_STATE.dictionary);
@@ -8458,6 +8460,10 @@
   function shouldSkipNode(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return false;
+    // Skip ALL mod-owned UI (hkr-* / hordes-kr-* hosts). These re-render constantly
+    // (threat HUD, damage log, teamsync panel, 강조목록 list, toasts) and would otherwise
+    // flood the 60-root translation queue, dropping real game text → intermittent + slow.
+    if (element.closest('[id^="hkr-"], [id^="hordes-kr-"]')) return true;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
     if (element.closest("#hordes-kr-chat-translation-toggle")) return true;
     if (element.closest(".hordes-kr-chat-inline-translation")) return true;
@@ -9086,6 +9092,8 @@
   function shouldSkipHighlightNode(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return true;
+    // Skip all mod-owned UI so our own panels don't flood the highlight refresh queue.
+    if (element.closest('[id^="hkr-"], [id^="hordes-kr-"]')) return true;
     if (element.closest("#hordes-kr-mod-status-root")) return true;
     if (element.closest("#hordes-kr-runtime-name-overlay")) return true;
     if (element.closest("#hordes-kr-target-distance-overlay")) return true;
