@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.170-local
+// @version      0.9.171-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.170-local";
+  const BOOT_VERSION = "0.9.171-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -363,6 +363,8 @@
     52: "Frostcall (프로스트콜)",
     35: "소환 (Summon)",
     33: "Charge (돌진)",
+    51: "Shatter (쉐터)",
+    54: "Bone Shot (본샷)",
   };
   // Charge (33) is an instant gap-closer, so different interrupt response: Blind only.
   const AUTO_INTERRUPT_CHARGE_ID = 33;
@@ -706,7 +708,7 @@
     autoInterruptEnabled: false,
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
-    autoInterruptSkillIds: [45, 52, 35, 33], // Volley, Frostcall, Summon, Charge(돌진)
+    autoInterruptSkillIds: [45, 52, 35, 33, 51, 54], // Volley, Frostcall, Summon, Charge, Shatter(쉐터), Bone Shot(본샷)
     autoInterruptHighlightOnly: false, // false = interrupt ANY hostile in range (강조 무관)
     teamSyncEnabled: true, // 설치 기본값: 팀공유 ON
     teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
@@ -741,14 +743,16 @@
   FEATURE_CONFIG.autoInterruptRangeM = clamp(Math.round(Number(FEATURE_CONFIG.autoInterruptRangeM) || 30), 5, 80);
   FEATURE_CONFIG.autoInterruptSkillIds = Array.isArray(FEATURE_CONFIG.autoInterruptSkillIds)
     ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
-    : [45, 52, 35, 33];
-  if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35, 33];
-  // One-time: fold Charge(돌진, 33) into existing saved trigger lists, and PERSIST it
-  // (else the in-memory push is lost on the next reload — the v0.9.168 bug).
+    : [45, 52, 35, 33, 51, 54];
+  if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35, 33, 51, 54];
+  // One-time: fold newly-added trigger skills into existing saved lists and PERSIST
+  // (else the in-memory push is lost on reload). 33=Charge, 51=Shatter, 54=Bone Shot.
   try {
-    if (localStorage.getItem("hordesKrMod.autoInterrupt.chargeV2") !== "1") {
-      if (!FEATURE_CONFIG.autoInterruptSkillIds.includes(33)) FEATURE_CONFIG.autoInterruptSkillIds.push(33);
-      localStorage.setItem("hordesKrMod.autoInterrupt.chargeV2", "1");
+    if (localStorage.getItem("hordesKrMod.autoInterrupt.triggersV3") !== "1") {
+      for (const id of [33, 51, 54]) {
+        if (!FEATURE_CONFIG.autoInterruptSkillIds.includes(id)) FEATURE_CONFIG.autoInterruptSkillIds.push(id);
+      }
+      localStorage.setItem("hordesKrMod.autoInterrupt.triggersV3", "1");
       saveFeatureConfig();
     }
   } catch { /* storage may be unavailable */ }
@@ -3328,7 +3332,7 @@
         .map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12);
       if (list.length) FEATURE_CONFIG.autoInterruptSkillIds = list;
       saveFeatureConfig();
-      return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 33=Charge돌진, 46=휠윈드)`;
+      return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 33=Charge돌진, 51=Shatter쉐터, 54=BoneShot본샷, 46=휠윈드)`;
     },
     toggleTeamSync() {
       const on = setTeamSyncEnabled(!isTeamSyncEnabled());
