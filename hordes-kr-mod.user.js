@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.169-local
+// @version      0.9.170-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.169-local";
+  const BOOT_VERSION = "0.9.170-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -436,6 +436,7 @@
   const CHAT_TRANSLATION_MAX_CONCURRENT = 2;
   const CHAT_TRANSLATION_BATCH_SIZE = 1;
   const CHAT_TRANSLATION_MAX_TEXT_LENGTH = 220;
+  const CHAT_TRANSLATION_QUOTA_COOLDOWN_MS = 120000; // after a 429/quota error, stop hammering for 2 min
   const CHAT_TRANSLATION_TOGGLE_REFRESH_MS = 1000;
   // Damage log overlay (above the chat panel).
   const DAMAGE_LOG_REFRESH_MS = 140;
@@ -930,6 +931,7 @@
     lastBridgeTiming: null,
     lastError: "",
     lastAt: null,
+    quotaBlockedUntil: 0, // circuit-breaker: pause requests after an OpenAI 429/quota error
   };
   migrateChatTranslationDefaultModel();
   const PARTY_UI_STATE = {
@@ -3886,6 +3888,7 @@
     }
 
     CHAT_TRANSLATION_STATE.lastError = "";
+    CHAT_TRANSLATION_STATE.quotaBlockedUntil = 0; // new key → clear the quota breaker
     if (!normalized && isChatTranslationEnabled()) {
       FEATURE_CONFIG.chatTranslationEnabled = false;
       saveFeatureConfig();
@@ -4565,8 +4568,29 @@
     trimChatTranslationQueue();
   }
 
+  // Record a chat-translation failure. If it's an OpenAI 429 / quota / billing error,
+  // trip a circuit breaker: drop the backlog and stop sending requests for a cooldown,
+  // so a dead key can't drag performance (each failing request hangs ~12s) or back up
+  // the queue. The user gets one clear toast instead of silent, slow failures.
+  function noteChatTranslationFailure(message) {
+    const msg = String(message == null ? "" : message);
+    CHAT_TRANSLATION_STATE.lastError = msg.slice(0, 260);
+    const isQuota = /\b429\b/.test(msg) || /quota|insufficient_quota|billing|exceeded your current quota/i.test(msg);
+    if (isQuota) {
+      const wasBlocked = Date.now() < CHAT_TRANSLATION_STATE.quotaBlockedUntil;
+      CHAT_TRANSLATION_STATE.quotaBlockedUntil = Date.now() + CHAT_TRANSLATION_QUOTA_COOLDOWN_MS;
+      CHAT_TRANSLATION_STATE.queue.length = 0;
+      CHAT_TRANSLATION_STATE.queuedKeys.clear();
+      if (!wasBlocked) {
+        try { showGearPresetProgressOverlay("채팅 번역 일시중단: OpenAI 크레딧/할당량 소진(429). platform.openai.com 결제 확인 필요", "error", 6000); } catch { /* toast optional */ }
+      }
+    }
+  }
+
   function processChatTranslationQueue() {
     if (!isChatTranslationEnabled()) return;
+    // Quota circuit-breaker: skip sending while cooling down, then probe once.
+    if (Date.now() < CHAT_TRANSLATION_STATE.quotaBlockedUntil) return;
 
     prioritizeChatTranslationQueue();
     trimChatTranslationQueue();
@@ -4648,7 +4672,7 @@
       appendChatTranslation(item.element, translation, item.text);
     } catch (error) {
       item.element.dataset.hordesKrChatTranslation = "error";
-      CHAT_TRANSLATION_STATE.lastError = error && error.message ? error.message : String(error);
+      noteChatTranslationFailure(error && error.message ? error.message : String(error));
     }
   }
 
@@ -4675,7 +4699,7 @@
           item.element.dataset.hordesKrChatTranslation = "error";
         }
       }
-      CHAT_TRANSLATION_STATE.lastError = error && error.message ? error.message : String(error);
+      noteChatTranslationFailure(error && error.message ? error.message : String(error));
     }
   }
 
@@ -6414,6 +6438,7 @@
       lastTranslation: CHAT_TRANSLATION_STATE.lastTranslation,
       lastError: CHAT_TRANSLATION_STATE.lastError,
       lastAt: CHAT_TRANSLATION_STATE.lastAt,
+      quotaBlockedMs: Math.max(0, CHAT_TRANSLATION_STATE.quotaBlockedUntil - Date.now()),
       quickToggle: {
         host: Boolean(CHAT_TRANSLATION_STATE.quickToggleHost && document.contains(CHAT_TRANSLATION_STATE.quickToggleHost)),
         hidden: CHAT_TRANSLATION_STATE.quickToggleHost ? CHAT_TRANSLATION_STATE.quickToggleHost.hidden : true,
