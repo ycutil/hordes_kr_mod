@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.172-local
+// @version      0.9.173-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.172-local";
+  const BOOT_VERSION = "0.9.173-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -393,9 +393,12 @@
   // Auto-interrupt: when a highlighted enemy in range starts casting a trigger skill,
   // target them and fire the first interrupt slot that is OFF COOLDOWN (local cd read,
   // no waiting) — e.g. slot 5 instantly, slot 9 in the same tick when 5 is on cd.
-  // Runs on its own fast pulse; the flat entity scan costs ~0.002ms so even 50ms
-  // ticks are free. Retries (both slots on cd / packet lost) are rate-limited.
-  const AUTO_INTERRUPT_TICK_MS = 50;        // dedicated detection pulse (≤50ms latency)
+  // Runs on its own fast pulse; the flat entity scan costs ~0.002ms so the rate is free.
+  // Tuned to ~one engine tick (game runs 60Hz, timestep 16.67ms): enemy cast state only
+  // refreshes per tick, so 16ms catches a new cast on the first tick it appears — the
+  // fastest the client can react. Polling faster gains nothing (data doesn't change
+  // between ticks); the real floor is network RTT (~200ms), not this pulse.
+  const AUTO_INTERRUPT_TICK_MS = 16;        // detection pulse ≈ engine tick (was 50ms)
   const AUTO_INTERRUPT_GAP_MS = 250;        // min gap between interrupt cast attempts
   const AUTO_INTERRUPT_MAX_TRIES = 4;       // attempts per single enemy cast instance
   const AUTO_INTERRUPT_MIN_REMAIN_S = 0.25; // ignore casts about to resolve anyway
