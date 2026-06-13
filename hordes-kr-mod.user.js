@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.171-local
+// @version      0.9.172-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.171-local";
+  const BOOT_VERSION = "0.9.172-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -5782,6 +5782,8 @@
       #hordes-kr-damage-log .dmg-line.dir-out.crit { color: #fff3a6; font-weight: 800; }
       #hordes-kr-damage-log .dmg-line.dir-in.crit { color: #ff6552; font-weight: 800; }
       #hordes-kr-damage-log .dmg-line.miss { color: #b9c2cc; font-weight: 600; }
+      #hordes-kr-damage-log .dmg-line.dmg-note { color: #8fe3ff; font-weight: 700; }
+      #hordes-kr-damage-log .dmg-line.dmg-interrupt { color: #66e0ff; font-weight: 800; }
       #hordes-kr-damage-log .dmg-line .dmg-num { font-weight: 800; }
       #hordes-kr-damage-log .dmg-line .dmg-tag { opacity: 0.85; }
     `;
@@ -5907,6 +5909,16 @@
     }
   }
 
+  // Inject a non-damage note (e.g. auto-interrupt) into the live combat log. Lines-only
+  // (not history), so it shows alongside damage but never pollutes the saved CSV/stats.
+  function pushDamageLogNote(text, kind) {
+    if (!isDamageLogEnabled() || !text) return;
+    DAMAGE_LOG_STATE.lines.push({ event: { note: String(text), kind: kind || "" }, at: Date.now() });
+    if (DAMAGE_LOG_STATE.lines.length > DAMAGE_LOG_MAX_LINES) {
+      DAMAGE_LOG_STATE.lines.splice(0, DAMAGE_LOG_STATE.lines.length - DAMAGE_LOG_MAX_LINES);
+    }
+  }
+
   function renderDamageLogLines(now) {
     const list = DAMAGE_LOG_STATE.listEl;
     if (!list) return;
@@ -5922,6 +5934,15 @@
 
   function buildDamageLogLineEl(line, now) {
     const event = line.event;
+    if (event.note) {
+      const noteEl = document.createElement("div");
+      noteEl.className = "dmg-line dmg-note" + (event.kind ? ` ${event.kind}` : "");
+      noteEl.textContent = event.note;
+      const noteAge = now - line.at;
+      const noteFade = DAMAGE_LOG_LINE_TTL_MS - 1500;
+      noteEl.style.opacity = noteAge > noteFade ? String(Math.max(0.15, (DAMAGE_LOG_LINE_TTL_MS - noteAge) / 1500)) : "1";
+      return noteEl;
+    }
     const el = document.createElement("div");
     const classes = ["dmg-line", event.dir === "in" ? "dir-in" : "dir-out"];
     if (event.crit) classes.push("crit");
@@ -14382,6 +14403,9 @@
         slotTried: slot, skill: skillLabel, at: now,
       };
       COMBAT_ASSIST_STATE.lastInterruptInfo = `${name} ${skillLabel} → ${slot}번`;
+      const castOk = !castResult || typeof castResult !== "object" || castResult.ok !== false;
+      const slotName = slots.length && slot === slots[slots.length - 1] && slot !== slots[0] ? "블라인드" : "뱀프";
+      pushDamageLogNote(`⚔ 끊기 ${name} · ${skillLabel} → ${slotName}(${slot})${castOk ? "" : " ✖실패"}`, "dmg-interrupt");
       try { showGearPresetProgressOverlay(`⚔ 끊기: ${name} ${skillLabel} → ${slot}번`, "running", 1600); } catch { /* toast optional */ }
       return; // one interrupt attempt per pulse
     }
@@ -17801,6 +17825,11 @@
     const direct = findRuntimeEntityByIdDirect(runtime, id, expected, selfEntity);
     if (direct) return direct;
 
+    // If the engine exposes its authoritative entity Map, a Direct miss is definitive —
+    // skip the expensive deep object scan (the prior per-unloaded-id cost).
+    const authMap = safeReadValue(safeReadValue(safeReadValue(runtime, "engine"), "entities"), "map");
+    if (authMap && typeof authMap.get === "function" && Number(authMap.size) > 0) return null;
+
     return getCachedDeepRuntimeSearch(`id:${expected}`, () =>
       findBestRuntimeEntity(runtime, (value) => {
         if (isSameRuntimeEntity(value, selfEntity)) return 0;
@@ -17816,6 +17845,22 @@
     if (!runtime || expected === "") return null;
 
     const engine = safeReadValue(runtime, "engine");
+    const entities = safeReadValue(engine, "entities");
+
+    // Fast path: engine.entities.map is the authoritative Map(numberId -> entity). When
+    // populated, a get() resolves O(1) and a miss means "not loaded", so we skip the
+    // accessor probes + linear scans over 9 collections (the profiled hot path).
+    const directMap = safeReadValue(entities, "map");
+    if (directMap && typeof directMap.get === "function" && Number(directMap.size) > 0) {
+      const numId = Number(expected);
+      if (Number.isFinite(numId)) {
+        const hit = directMap.get(numId);
+        return hit && isResolvedRuntimeEntity(hit, selfEntity, expected)
+          ? { entity: hit, path: "runtime.engine.entities.map", source: "runtime.engine.entities.map" }
+          : null;
+      }
+    }
+
     const methodArgs = [...new Set([rawId, expected, Number(expected)].filter((value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value))))];
     for (const method of ["getEntityById", "getEntity", "entity"]) {
       const fn = safeReadValue(engine, method);
@@ -17833,7 +17878,6 @@
       }
     }
 
-    const entities = safeReadValue(engine, "entities");
     const entityArray = safeReadValue(entities, "array");
     const byArray = findRuntimeEntityInIndexedCollection(entityArray, expected, selfEntity, "runtime.engine.entities.array");
     if (byArray) return byArray;
