@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.167-local
+// @version      0.9.168-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.167-local";
+  const BOOT_VERSION = "0.9.168-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -362,7 +362,10 @@
     45: "Volley (볼리)",
     52: "Frostcall (프로스트콜)",
     35: "소환 (Summon)",
+    33: "Charge (돌진)",
   };
+  // Charge (33) is an instant gap-closer, so different interrupt response: Blind only.
+  const AUTO_INTERRUPT_CHARGE_ID = 33;
   // Status dashboard: small draggable HUD showing runtime/feature health at a glance.
   const DASHBOARD_REFRESH_MS = 700;
   const DASHBOARD_ACTIVE_WINDOW_MS = 2500; // "recent activity" window for a feature to count as live
@@ -702,7 +705,7 @@
     autoInterruptEnabled: false,
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
-    autoInterruptSkillIds: [45, 52, 35],
+    autoInterruptSkillIds: [45, 52, 35, 33], // Volley, Frostcall, Summon, Charge(돌진)
     autoInterruptHighlightOnly: false, // false = interrupt ANY hostile in range (강조 무관)
     teamSyncEnabled: true, // 설치 기본값: 팀공유 ON
     teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
@@ -737,8 +740,15 @@
   FEATURE_CONFIG.autoInterruptRangeM = clamp(Math.round(Number(FEATURE_CONFIG.autoInterruptRangeM) || 30), 5, 80);
   FEATURE_CONFIG.autoInterruptSkillIds = Array.isArray(FEATURE_CONFIG.autoInterruptSkillIds)
     ? FEATURE_CONFIG.autoInterruptSkillIds.map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12)
-    : [45, 52, 35];
-  if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35];
+    : [45, 52, 35, 33];
+  if (!FEATURE_CONFIG.autoInterruptSkillIds.length) FEATURE_CONFIG.autoInterruptSkillIds = [45, 52, 35, 33];
+  // One-time: fold Charge(돌진, 33) into existing saved trigger lists.
+  try {
+    if (localStorage.getItem("hordesKrMod.autoInterrupt.chargeV1") !== "1") {
+      if (!FEATURE_CONFIG.autoInterruptSkillIds.includes(33)) FEATURE_CONFIG.autoInterruptSkillIds.push(33);
+      localStorage.setItem("hordesKrMod.autoInterrupt.chargeV1", "1");
+    }
+  } catch { /* storage may be unavailable */ }
   FEATURE_CONFIG.autoInterruptHighlightOnly = FEATURE_CONFIG.autoInterruptHighlightOnly === true;
   FEATURE_CONFIG.teamSyncEnabled = FEATURE_CONFIG.teamSyncEnabled === true;
   FEATURE_CONFIG.teamSyncRoom = String(FEATURE_CONFIG.teamSyncRoom || TEAM_SYNC_ROOM_DEFAULT).replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 48) || TEAM_SYNC_ROOM_DEFAULT;
@@ -1048,6 +1058,10 @@
     lastInterruptAt: 0,
     lastInterruptInfo: "",
     interruptHits: 0,
+    // diagnostics: what the interrupt last SAW / why it did/didn't fire
+    lastInterruptDetect: null,   // {name, skill, distM, remainS, at}
+    lastInterruptSkip: null,     // {reason, name, skill, at}
+    lastInterruptResult: null,   // useSkillbarSlot return {ok, slot, id, reason} + at
   };
 
   // Declared before installCombatAssist() runs at init — scheduleTeamSync() reads it
@@ -3310,7 +3324,7 @@
         .map((id) => Math.round(Number(id))).filter((id) => id >= 0).slice(0, 12);
       if (list.length) FEATURE_CONFIG.autoInterruptSkillIds = list;
       saveFeatureConfig();
-      return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 46=휠윈드)`;
+      return `자동끊기 트리거 스킬: [${FEATURE_CONFIG.autoInterruptSkillIds.join(", ")}] (45=Volley, 52=Frostcall, 35=소환, 33=Charge돌진, 46=휠윈드)`;
     },
     toggleTeamSync() {
       const on = setTeamSyncEnabled(!isTeamSyncEnabled());
@@ -3384,6 +3398,15 @@
           hits: COMBAT_ASSIST_STATE.interruptHits,
           last: COMBAT_ASSIST_STATE.lastInterruptInfo,
           lastAgoMs: COMBAT_ASSIST_STATE.lastInterruptAt ? Date.now() - COMBAT_ASSIST_STATE.lastInterruptAt : null,
+          detect: COMBAT_ASSIST_STATE.lastInterruptDetect
+            ? { ...COMBAT_ASSIST_STATE.lastInterruptDetect, agoMs: Date.now() - COMBAT_ASSIST_STATE.lastInterruptDetect.at }
+            : null,
+          skip: COMBAT_ASSIST_STATE.lastInterruptSkip
+            ? { ...COMBAT_ASSIST_STATE.lastInterruptSkip, agoMs: Date.now() - COMBAT_ASSIST_STATE.lastInterruptSkip.at }
+            : null,
+          castResult: COMBAT_ASSIST_STATE.lastInterruptResult
+            ? { ...COMBAT_ASSIST_STATE.lastInterruptResult, agoMs: Date.now() - COMBAT_ASSIST_STATE.lastInterruptResult.at }
+            : null,
         },
         lastError: COMBAT_ASSIST_STATE.lastError,
       };
@@ -14245,22 +14268,32 @@
       if (!entity || entity.type !== 0 || entity.id === me.id) continue;
       if (entity.faction === undefined || me.faction === undefined || entity.faction === me.faction) continue;
 
-      let castSkillId = null, castEnd = 0, castStart = 0;
+      let castSkillId = null, castEnd = 0, castStart = 0, instant = false;
       try {
         const entitySkills = entity.skills;
         const timedSkill = entitySkills && entitySkills.timedSkill;
         if (!timedSkill || timedSkill.id == null) continue;
-        if (triggers.indexOf(Number(timedSkill.id)) < 0) continue;
+        const sid = Number(timedSkill.id);
+        if (triggers.indexOf(sid) < 0) continue;
         const timedCast = entitySkills.timedCast;
-        if (!timedCast) continue;
-        castEnd = Number(timedCast.end);
-        castStart = Number(timedCast.start);
-        if (!Number.isFinite(castEnd) || engineTime > castEnd - AUTO_INTERRUPT_MIN_REMAIN_S) continue;
-        castSkillId = Number(timedSkill.id);
+        castEnd = Number(timedCast && timedCast.end);
+        castStart = Number(timedCast && timedCast.start);
+        if (Number.isFinite(castEnd) && Number.isFinite(castStart) && castEnd > castStart) {
+          // Channeled/cast skill (Volley/Frostcall/Summon): only worth cutting while the
+          // cast is still meaningfully in flight.
+          if (engineTime > castEnd - AUTO_INTERRUPT_MIN_REMAIN_S) continue;
+        } else {
+          // Instant skill (Charge/돌진): no real cast bar — react on first sight. Bucket
+          // the key by ~1s so repeated uses are distinct events but one use isn't spammed.
+          instant = true;
+          castStart = Math.floor(engineTime);
+        }
+        castSkillId = sid;
       } catch {
         continue;
       }
 
+      const skillLabel = KEY_CAST_SKILL_MAP[castSkillId] || `#${castSkillId}`;
       const name = String(entity.name || "");
       if (highlightOnly && (!name || !getMatchingHighlightName(name))) continue;
 
@@ -14272,17 +14305,31 @@
       } catch {
         continue;
       }
-      if (!(distance <= rangeM)) continue;
+      // Record what we saw (for diagnostics — combatAssistStatus().autoInterrupt.detect).
+      COMBAT_ASSIST_STATE.lastInterruptDetect = {
+        name, skill: skillLabel, distM: Number.isFinite(distance) ? Math.round(distance) : null,
+        remainS: instant ? 0 : +(castEnd - engineTime).toFixed(2), at: now,
+      };
+      if (!(distance <= rangeM)) {
+        COMBAT_ASSIST_STATE.lastInterruptSkip = { reason: `사거리 밖 (${Math.round(distance)}m>${rangeM}m)`, name, skill: skillLabel, at: now };
+        continue;
+      }
 
       const castKey = `${entity.id}:${castSkillId}:${Math.round(castStart * 10)}`;
       const tries = COMBAT_ASSIST_STATE.interruptTries.get(castKey) || 0;
       if (tries >= AUTO_INTERRUPT_MAX_TRIES) continue;
 
-      // Pick the first slot that is actually off cooldown — when slot 5 is cooling
-      // down, slot 9 fires in this same tick. If everything is on cd, consume nothing
-      // and re-check on the next 50ms pulse (fires the instant a slot frees up).
-      const slot = pickReadyInterruptSlot(runtime, engine, me, slots);
-      if (!slot) continue;
+      // Per-skill response: Charge gets Blind only (the last configured slot); everything
+      // else tries the full list (Vamp first, Blind fallback). Pick the first slot that is
+      // actually off cooldown so "5 on cd -> fire 9" happens in this same tick.
+      const responseSlots = (castSkillId === AUTO_INTERRUPT_CHARGE_ID && slots.length > 1)
+        ? [slots[slots.length - 1]]
+        : slots;
+      const slot = pickReadyInterruptSlot(runtime, engine, me, responseSlots);
+      if (!slot) {
+        COMBAT_ASSIST_STATE.lastInterruptSkip = { reason: "대응 슬롯이 모두 쿨타임", name, skill: skillLabel, at: now };
+        continue;
+      }
 
       COMBAT_ASSIST_STATE.interruptTries.set(castKey, tries + 1);
       if (COMBAT_ASSIST_STATE.interruptTries.size > 64) {
@@ -14290,10 +14337,13 @@
       }
 
       try { if (readEntityTargetId(me) !== entity.id && typeof runtime.changeTarget === "function") runtime.changeTarget(entity.id); } catch { /* keep casting */ }
-      callRuntimeUseSkillbarSlot(runtime, slot);
+      const castResult = callRuntimeUseSkillbarSlot(runtime, slot);
       COMBAT_ASSIST_STATE.lastInterruptAt = now;
       COMBAT_ASSIST_STATE.interruptHits++;
-      const skillLabel = KEY_CAST_SKILL_MAP[castSkillId] || `#${castSkillId}`;
+      COMBAT_ASSIST_STATE.lastInterruptResult = {
+        ...(castResult && typeof castResult === "object" ? castResult : { raw: castResult }),
+        slotTried: slot, skill: skillLabel, at: now,
+      };
       COMBAT_ASSIST_STATE.lastInterruptInfo = `${name} ${skillLabel} → ${slot}번`;
       try { showGearPresetProgressOverlay(`⚔ 끊기: ${name} ${skillLabel} → ${slot}번`, "running", 1600); } catch { /* toast optional */ }
       return; // one interrupt attempt per pulse
