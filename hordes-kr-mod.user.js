@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.173-local
+// @version      0.9.174-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.173-local";
+  const BOOT_VERSION = "0.9.174-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -713,6 +713,7 @@
     autoInterruptRangeM: 30,
     autoInterruptSkillIds: [45, 52, 35, 33, 51, 54], // Volley, Frostcall, Summon, Charge, Shatter(쉐터), Bone Shot(본샷)
     autoInterruptHighlightOnly: false, // false = interrupt ANY hostile in range (강조 무관)
+    autoInterruptWsHook: true, // experimental: also run detection on WS message arrival (saves ~poll latency)
     teamSyncEnabled: true, // 설치 기본값: 팀공유 ON
     teamSyncRoom: TEAM_SYNC_ROOM_DEFAULT,
     teamSyncServer: TEAM_SYNC_SERVER_DEFAULT,
@@ -760,6 +761,7 @@
     }
   } catch { /* storage may be unavailable */ }
   FEATURE_CONFIG.autoInterruptHighlightOnly = FEATURE_CONFIG.autoInterruptHighlightOnly === true;
+  FEATURE_CONFIG.autoInterruptWsHook = FEATURE_CONFIG.autoInterruptWsHook !== false;
   FEATURE_CONFIG.teamSyncEnabled = FEATURE_CONFIG.teamSyncEnabled === true;
   FEATURE_CONFIG.teamSyncRoom = String(FEATURE_CONFIG.teamSyncRoom || TEAM_SYNC_ROOM_DEFAULT).replace(/[^A-Za-z0-9_\-]/g, "").slice(0, 48) || TEAM_SYNC_ROOM_DEFAULT;
   FEATURE_CONFIG.teamSyncServer = String(FEATURE_CONFIG.teamSyncServer || TEAM_SYNC_SERVER_DEFAULT).trim() || TEAM_SYNC_SERVER_DEFAULT;
@@ -1073,6 +1075,12 @@
     lastInterruptDetect: null,   // {name, skill, distM, remainS, at}
     lastInterruptSkip: null,     // {reason, name, skill, at}
     lastInterruptResult: null,   // useSkillbarSlot return {ok, slot, id, reason} + at
+    // experimental WS-hook: event-driven detection on socket message arrival
+    wsHookAttached: false,       // listener attached to the live game socket
+    wsHookPending: false,        // a microtask check is already queued (debounce)
+    wsHookMsgCount: 0,           // messages observed
+    wsHookFires: 0,              // interrupts fired from the WS-hook path
+    lastWsHookAt: 0,
   };
 
   // Declared before installCombatAssist() runs at init — scheduleTeamSync() reads it
@@ -3318,6 +3326,13 @@
         ? "자동끊기: 강조 대상만 끊기"
         : "자동끊기: 모든 적 끊기 (강조 무관)";
     },
+    toggleInterruptWsHook(on) {
+      FEATURE_CONFIG.autoInterruptWsHook = on === undefined ? !FEATURE_CONFIG.autoInterruptWsHook : on === true;
+      saveFeatureConfig();
+      return FEATURE_CONFIG.autoInterruptWsHook
+        ? `WS 후킹 켜짐 — 메시지 도착 즉시 감지(폴링 지연 제거). attached=${COMBAT_ASSIST_STATE.wsHookAttached}, msgs=${COMBAT_ASSIST_STATE.wsHookMsgCount}, wsFires=${COMBAT_ASSIST_STATE.wsHookFires}`
+        : "WS 후킹 꺼짐 — 16ms 폴링만 사용";
+    },
     setAutoInterruptSlots(slots) {
       const list = (Array.isArray(slots) ? slots : [slots])
         .map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4);
@@ -3406,6 +3421,13 @@
           slots: FEATURE_CONFIG.autoInterruptSlots,
           rangeM: FEATURE_CONFIG.autoInterruptRangeM,
           triggerSkillIds: FEATURE_CONFIG.autoInterruptSkillIds,
+          wsHook: {
+            enabled: FEATURE_CONFIG.autoInterruptWsHook,
+            attached: COMBAT_ASSIST_STATE.wsHookAttached,
+            msgCount: COMBAT_ASSIST_STATE.wsHookMsgCount,
+            fires: COMBAT_ASSIST_STATE.wsHookFires,
+            lastAgoMs: COMBAT_ASSIST_STATE.lastWsHookAt ? Date.now() - COMBAT_ASSIST_STATE.lastWsHookAt : null,
+          },
           hits: COMBAT_ASSIST_STATE.interruptHits,
           last: COMBAT_ASSIST_STATE.lastInterruptInfo,
           lastAgoMs: COMBAT_ASSIST_STATE.lastInterruptAt ? Date.now() - COMBAT_ASSIST_STATE.lastInterruptAt : null,
@@ -14415,17 +14437,37 @@
   }
 
   // Dedicated fast pulse for the interrupt only — detection latency ≤ AUTO_INTERRUPT_TICK_MS.
-  function autoInterruptFastTick() {
+  function autoInterruptFastTick(fromWs) {
     try {
       if (!FEATURE_CONFIG.autoInterruptEnabled) return;
       const runtime = pageWindow.__HORDES_KR_RUNTIME__;
       const engine = runtime && runtime.engine;
       const me = engine && engine.player;
       if (!me) return;
+      const before = COMBAT_ASSIST_STATE.interruptHits;
       autoInterruptTick(runtime, engine, me, Date.now());
+      if (fromWs && COMBAT_ASSIST_STATE.interruptHits > before) COMBAT_ASSIST_STATE.wsHookFires++;
     } catch (error) {
       COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
     }
+  }
+
+  // Experimental: event-driven interrupt detection. The game decodes each inbound WS
+  // message and updates entity.skills.timedSkill; we listen on the same socket and, via a
+  // debounced microtask (which runs AFTER the game's handler finished the dispatch, so the
+  // state is fresh regardless of listener order), run the detection immediately — shaving
+  // the up-to-one-pulse polling delay. We never read/decode the binary ourselves, so the
+  // game's message processing is untouched.
+  function onGameSocketMessageForInterrupt() {
+    COMBAT_ASSIST_STATE.wsHookMsgCount++;
+    if (!FEATURE_CONFIG.autoInterruptEnabled || FEATURE_CONFIG.autoInterruptWsHook === false) return;
+    if (COMBAT_ASSIST_STATE.wsHookPending) return;
+    COMBAT_ASSIST_STATE.wsHookPending = true;
+    queueMicrotask(() => {
+      COMBAT_ASSIST_STATE.wsHookPending = false;
+      COMBAT_ASSIST_STATE.lastWsHookAt = Date.now();
+      autoInterruptFastTick(true);
+    });
   }
 
   function combatAssistTick() {
@@ -18264,7 +18306,13 @@
       });
       socket.addEventListener("close", () => {
         if (GEAR_PRESET_STATE.gameSocket === socket) GEAR_PRESET_STATE.gameSocket = null;
+        COMBAT_ASSIST_STATE.wsHookAttached = false;
       });
+      // Event-driven auto-interrupt: react the instant a message updates entity state.
+      try {
+        socket.addEventListener("message", onGameSocketMessageForInterrupt);
+        COMBAT_ASSIST_STATE.wsHookAttached = true;
+      } catch { /* listener attach is best-effort */ }
     }
   }
 
