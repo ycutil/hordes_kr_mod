@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.175-local
+// @version      0.9.176-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.175-local";
+  const BOOT_VERSION = "0.9.176-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -14361,15 +14361,20 @@
         const timedCast = entitySkills.timedCast;
         castEnd = Number(timedCast && timedCast.end);
         castStart = Number(timedCast && timedCast.start);
-        if (Number.isFinite(castEnd) && Number.isFinite(castStart) && castEnd > castStart) {
-          // Channeled/cast skill (Volley/Frostcall/Summon): only worth cutting while the
-          // cast is still meaningfully in flight.
+        if (Number.isFinite(castEnd) && castEnd > engineTime) {
+          // A real cast/channel bar is still AHEAD of us (future end). Skip only if it's
+          // basically done — interrupting a cast 0.2s from firing just wastes the tool.
           if (engineTime > castEnd - AUTO_INTERRUPT_MIN_REMAIN_S) continue;
         } else {
-          // Instant skill (Charge/돌진): no real cast bar — react on first sight. Bucket
-          // the key by ~1s so repeated uses are distinct events but one use isn't spammed.
+          // timedSkill is active but there is NO future cast-bar end. Two cases, both
+          // "happening right now → cut immediately":
+          //   - an ongoing CHANNEL (Volley = 3s arrow stream; its timedCast doesn't track
+          //     the whole channel, so the old code wrongly skipped it as "cast done"),
+          //   - an INSTANT skill (Charge).
+          // Bucket the key by ~0.5s so a long channel keeps retrying as interrupt slots
+          // free up, while one short use isn't spammed (the 250ms gap also caps fire rate).
           instant = true;
-          castStart = Math.floor(engineTime);
+          castStart = Math.floor(engineTime * 2) / 2;
         }
         castSkillId = sid;
       } catch {
