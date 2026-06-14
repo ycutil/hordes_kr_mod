@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.176-local
+// @version      0.9.177-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.176-local";
+  const BOOT_VERSION = "0.9.177-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -691,10 +691,19 @@
   const UI_CONFIG = loadJsonConfig(UI_CONFIG_KEY, {
     x: null,
     y: null,
-    width: 320,
+    width: 400,
     height: null,
     fontScale: 1,
   });
+  // One-time: adopt the wider default panel. Only bumps users still on the old 320px
+  // default (or narrower); a custom-resized wider panel is left alone.
+  try {
+    if (localStorage.getItem("hordesKrMod.ui.widthV2") !== "1") {
+      if (!Number.isFinite(UI_CONFIG.width) || UI_CONFIG.width <= 320) UI_CONFIG.width = 400;
+      localStorage.setItem("hordesKrMod.ui.widthV2", "1");
+      saveJsonConfig(UI_CONFIG_KEY, UI_CONFIG);
+    }
+  } catch { /* storage may be unavailable */ }
   const FEATURE_CONFIG = loadJsonConfig(FEATURE_CONFIG_KEY, {
     domTranslationEnabled: true,
     targetDistanceEnabled: true,
@@ -19677,7 +19686,7 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             color: #dff8f5;
             pointer-events: auto;
-            --panel-width: 320px;
+            --panel-width: 400px;
             --panel-height: auto;
             --font-scale: 1;
           }
@@ -19724,7 +19733,7 @@
           .panel {
             width: var(--panel-width);
             height: var(--panel-height);
-            min-width: 280px;
+            min-width: 340px;
             min-height: 250px;
             max-width: calc(100vw - 24px);
             max-height: calc(100vh - 24px);
@@ -19743,10 +19752,10 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 12px;
+            padding: 11px 14px;
             background: rgba(245, 194, 71, 0.1);
             border-bottom: 1px solid rgba(166, 220, 213, 0.16);
-            font-size: calc(13px * var(--font-scale));
+            font-size: calc(14px * var(--font-scale));
             font-weight: 800;
             cursor: move;
             user-select: none;
@@ -19758,9 +19767,20 @@
           }
           .body {
             display: grid;
-            gap: 8px;
-            padding: 10px 12px 12px;
-            font-size: calc(12px * var(--font-scale));
+            gap: 10px;
+            padding: 12px 14px 14px;
+            font-size: calc(13px * var(--font-scale));
+          }
+          .group-title {
+            color: #f5c247;
+            font-size: calc(11px * var(--font-scale));
+            font-weight: 900;
+            letter-spacing: 0.5px;
+            margin: 0 0 7px;
+            opacity: 0.95;
+          }
+          .group-title:not(:first-child) {
+            margin-top: 10px;
           }
           .row {
             display: grid;
@@ -19795,15 +19815,15 @@
           .feature-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 6px;
+            gap: 7px;
           }
           .action {
             border: 1px solid rgba(166, 220, 213, 0.28);
             background: rgba(61, 89, 95, 0.75);
             color: #dff8f5;
             border-radius: 5px;
-            padding: 6px 8px;
-            font-size: 12px;
+            padding: 8px 10px;
+            font-size: calc(13px * var(--font-scale));
             font-weight: 800;
             cursor: pointer;
           }
@@ -19969,19 +19989,25 @@
             <div class="section">
               <div class="row"><span class="label">타겟 거리</span><span id="targetDistance" class="value"></span></div>
             </div>
-            <div class="section feature-grid">
-              <button id="toggle" class="action" type="button"></button>
-              <button id="toggleHighlight" class="action" type="button"></button>
-              <button id="toggleSelfHighlight" class="action" type="button"></button>
-              <button id="toggleChatTranslation" class="action" type="button"></button>
-              <button id="toggleMinimapLabels" class="action" type="button"></button>
-              <button id="toggleIncomingSkill" class="action" type="button"></button>
-              <button id="toggleTargetDistance" class="action" type="button"></button>
-              <button id="toggleHighlightList" class="action" type="button"></button>
-              <button id="toggleAutoRotation" class="action" type="button"></button>
-              <button id="toggleAutoDefense" class="action" type="button"></button>
-              <button id="toggleAutoInterrupt" class="action" type="button"></button>
-              <button id="toggleTeamSync" class="action" type="button"></button>
+            <div class="section">
+              <div class="group-title">표시 · 번역</div>
+              <div class="feature-grid">
+                <button id="toggle" class="action" type="button"></button>
+                <button id="toggleChatTranslation" class="action" type="button"></button>
+                <button id="toggleHighlight" class="action" type="button"></button>
+                <button id="toggleSelfHighlight" class="action" type="button"></button>
+                <button id="toggleMinimapLabels" class="action" type="button"></button>
+                <button id="toggleHighlightList" class="action" type="button"></button>
+                <button id="toggleTargetDistance" class="action" type="button"></button>
+                <button id="toggleIncomingSkill" class="action" type="button"></button>
+              </div>
+              <div class="group-title">전투 보조</div>
+              <div class="feature-grid">
+                <button id="toggleAutoInterrupt" class="action" type="button"></button>
+                <button id="toggleAutoDefense" class="action" type="button"></button>
+                <button id="toggleAutoRotation" class="action" type="button"></button>
+                <button id="toggleTeamSync" class="action" type="button"></button>
+              </div>
             </div>
             <details class="section">
               <summary>프리셋</summary>
@@ -20193,7 +20219,7 @@
     const host = STATUS_UI.host;
     if (!host) return;
 
-    host.style.setProperty("--panel-width", `${clamp(UI_CONFIG.width || 320, 280, 520)}px`);
+    host.style.setProperty("--panel-width", `${clamp(UI_CONFIG.width || 400, 280, 560)}px`);
     host.style.setProperty("--font-scale", String(clamp(UI_CONFIG.fontScale || 1, 0.85, 1.25)));
     if (UI_CONFIG.height) {
       host.style.setProperty("--panel-height", `${clamp(UI_CONFIG.height, 250, window.innerHeight - 24)}px`);
