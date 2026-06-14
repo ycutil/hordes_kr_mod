@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.177-local
+// @version      0.9.178-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.177-local";
+  const BOOT_VERSION = "0.9.178-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -382,12 +382,10 @@
   const TARGET_DISTANCE_MAX_DEPTH = 5;
   const TARGET_DISTANCE_OVERLAY_OFFSET_Y = -2;
   const INCOMING_WARNING_SCAN_LIMIT = 700;
-  // Combat assist: threat HUD + auto-defense + auto-rotation. The incoming-watch
+  // Combat assist: threat HUD + auto-interrupt. The incoming-watch
   // fast path reads entity.target (the engine's authoritative field — verified live:
   // 89/98 loaded entities expose it; one full scan costs ~0.002ms) instead of the
   // legacy per-entity reflection BFS (180 objects x 64 keys x 700 entities).
-  const COMBAT_ASSIST_TICK_MS = 200;        // auto-defense / auto-rotation pulse
-  const AUTO_DEFENSE_LOCKOUT_MS = 8000;     // min gap between auto-defense triggers
   const WATCH_BEEP_MIN_GAP_MS = 1500;       // min gap between new-watcher beeps
   const THREAT_FLASH_MS = 1200;             // threat HUD flash duration on a new watcher
   // Auto-interrupt: when a highlighted enemy in range starts casting a trigger skill,
@@ -713,10 +711,6 @@
     dashboardEnabled: true,
     threatHudEnabled: true,
     watchBeepEnabled: true,
-    autoDefenseEnabled: false,
-    autoDefenseSlot: 0,
-    autoDefenseHpPct: 35,
-    autoRotationSlots: [],
     autoInterruptEnabled: false,
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
@@ -742,12 +736,6 @@
   FEATURE_CONFIG.dashboardEnabled = FEATURE_CONFIG.dashboardEnabled !== false;
   FEATURE_CONFIG.threatHudEnabled = FEATURE_CONFIG.threatHudEnabled !== false;
   FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled !== false;
-  FEATURE_CONFIG.autoDefenseEnabled = FEATURE_CONFIG.autoDefenseEnabled === true;
-  FEATURE_CONFIG.autoDefenseSlot = clamp(Math.round(Number(FEATURE_CONFIG.autoDefenseSlot) || 0), 0, 12);
-  FEATURE_CONFIG.autoDefenseHpPct = clamp(Math.round(Number(FEATURE_CONFIG.autoDefenseHpPct) || 35), 5, 90);
-  FEATURE_CONFIG.autoRotationSlots = Array.isArray(FEATURE_CONFIG.autoRotationSlots)
-    ? FEATURE_CONFIG.autoRotationSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 8)
-    : [];
   FEATURE_CONFIG.autoInterruptEnabled = FEATURE_CONFIG.autoInterruptEnabled === true;
   FEATURE_CONFIG.autoInterruptSlots = Array.isArray(FEATURE_CONFIG.autoInterruptSlots)
     ? FEATURE_CONFIG.autoInterruptSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4)
@@ -1058,12 +1046,7 @@
   };
 
   const COMBAT_ASSIST_STATE = {
-    timer: null,
     interruptTimer: null,
-    rotationOn: false,        // session-only: never persisted, always boots OFF
-    rotationCursor: 0,
-    lastDefenseAt: 0,
-    lastRotationCastAt: 0,
     lastError: "",
     // threat tracking (fed by the fast incoming-watch scan)
     watcherIds: new Set(),
@@ -3299,26 +3282,6 @@
       saveFeatureConfig();
       return FEATURE_CONFIG.watchBeepEnabled ? "주시 경고음 켜짐" : "주시 경고음 꺼짐";
     },
-    toggleAutoDefense() {
-      FEATURE_CONFIG.autoDefenseEnabled = !FEATURE_CONFIG.autoDefenseEnabled;
-      saveFeatureConfig();
-      renderStatusUi();
-      if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot < 1) {
-        return "자동방어 켜짐 — 슬롯 미지정: HordesKrMod.setAutoDefense(슬롯, HP%) 로 설정하세요 (예: setAutoDefense(8, 35))";
-      }
-      return FEATURE_CONFIG.autoDefenseEnabled
-        ? `자동방어 켜짐 (HP ${FEATURE_CONFIG.autoDefenseHpPct}% 미만 → ${FEATURE_CONFIG.autoDefenseSlot}번 시전)`
-        : "자동방어 꺼짐";
-    },
-    setAutoDefense(slot, hpPct) {
-      FEATURE_CONFIG.autoDefenseSlot = clamp(Math.round(Number(slot) || 0), 0, 12);
-      if (hpPct !== undefined) FEATURE_CONFIG.autoDefenseHpPct = clamp(Math.round(Number(hpPct) || 35), 5, 90);
-      saveFeatureConfig();
-      return `자동방어 설정: HP ${FEATURE_CONFIG.autoDefenseHpPct}% 미만 → ${FEATURE_CONFIG.autoDefenseSlot}번 (현재 ${FEATURE_CONFIG.autoDefenseEnabled ? "켜짐" : "꺼짐"})`;
-    },
-    toggleAutoRotation() {
-      return setAutoRotationOn(!COMBAT_ASSIST_STATE.rotationOn);
-    },
     toggleAutoInterrupt() {
       FEATURE_CONFIG.autoInterruptEnabled = !FEATURE_CONFIG.autoInterruptEnabled;
       saveFeatureConfig();
@@ -3393,17 +3356,6 @@
         lastError: TEAM_SYNC_STATE.lastError,
       };
     },
-    setAutoRotationSlots(slots) {
-      const list = (Array.isArray(slots) ? slots : [slots])
-        .map((slot) => Math.round(Number(slot)))
-        .filter((slot) => slot >= 1 && slot <= 12)
-        .slice(0, 8);
-      FEATURE_CONFIG.autoRotationSlots = list;
-      saveFeatureConfig();
-      return list.length
-        ? `자동시전 슬롯: ${list.join(" → ")} (Alt+R 또는 패널 '자동시전'으로 켬)`
-        : "자동시전 슬롯 비움";
-    },
     combatAssistStatus() {
       return {
         threatHud: FEATURE_CONFIG.threatHudEnabled !== false,
@@ -3413,17 +3365,6 @@
         mobAggro: COMBAT_ASSIST_STATE.mobAggroCount,
         fastPathHits: COMBAT_ASSIST_STATE.fastPathHits,
         fastPathLastAgoMs: COMBAT_ASSIST_STATE.fastPathLastAt ? Date.now() - COMBAT_ASSIST_STATE.fastPathLastAt : null,
-        autoDefense: {
-          enabled: FEATURE_CONFIG.autoDefenseEnabled,
-          slot: FEATURE_CONFIG.autoDefenseSlot,
-          hpPct: FEATURE_CONFIG.autoDefenseHpPct,
-          lastTriggerAgoMs: COMBAT_ASSIST_STATE.lastDefenseAt ? Date.now() - COMBAT_ASSIST_STATE.lastDefenseAt : null,
-        },
-        autoRotation: {
-          on: COMBAT_ASSIST_STATE.rotationOn,
-          slots: FEATURE_CONFIG.autoRotationSlots,
-          lastCastAgoMs: COMBAT_ASSIST_STATE.lastRotationCastAt ? Date.now() - COMBAT_ASSIST_STATE.lastRotationCastAt : null,
-        },
         autoInterrupt: {
           enabled: FEATURE_CONFIG.autoInterruptEnabled,
           highlightOnly: FEATURE_CONFIG.autoInterruptHighlightOnly,
@@ -11807,14 +11748,6 @@
         ...dashboardFeatureRow(FEATURE_CONFIG.domTranslationEnabled !== false, false, healthy, MOD_STATUS.domReplacedCount > 0, "적용", "대기"),
       },
       {
-        key: "rot",
-        label: "자동시전",
-        dot: COMBAT_ASSIST_STATE.rotationOn ? "ok" : "off",
-        text: COMBAT_ASSIST_STATE.rotationOn
-          ? `ON ${FEATURE_CONFIG.autoRotationSlots.join("→")}`
-          : "꺼짐(Alt+R)",
-      },
-      {
         key: "threat",
         label: "위협",
         dot: COMBAT_ASSIST_STATE.watcherIds.size > 0 ? "err" : (COMBAT_ASSIST_STATE.mobAggroCount > 0 ? "warn" : "ok"),
@@ -14280,10 +14213,8 @@
     host.style.fontSize = flash ? "19px" : "16px";
   }
 
-  // ===== Combat assist: auto-defense (HP trigger) + auto-rotation (toggled) =====
-  // Casting goes through runtime.useSkillbarSlot (the same packet path a keypress
-  // takes). Auto-rotation is session-only: it always boots OFF and is toggled by
-  // Alt+R, the panel button, or HordesKrMod.toggleAutoRotation().
+  // Casting goes through runtime.useSkillbarSlot (the same packet path a keypress takes).
+  // Used by the auto-interrupt path.
   function callRuntimeUseSkillbarSlot(runtime, slot) {
     try {
       if (runtime && typeof runtime.useSkillbarSlot === "function") return runtime.useSkillbarSlot(slot);
@@ -14483,58 +14414,6 @@
       COMBAT_ASSIST_STATE.lastWsHookAt = Date.now();
       autoInterruptFastTick(true);
     });
-  }
-
-  function combatAssistTick() {
-    try {
-      const runtime = getExposedRuntime();
-      const engine = runtime && runtime.engine;
-      const me = engine && engine.player;
-      if (!me) return;
-      const now = Date.now();
-
-      if (FEATURE_CONFIG.autoDefenseEnabled && FEATURE_CONFIG.autoDefenseSlot >= 1) {
-        const hp = entityHpFraction(me);
-        if (hp >= 0 && hp * 100 < FEATURE_CONFIG.autoDefenseHpPct
-            && now - COMBAT_ASSIST_STATE.lastDefenseAt > AUTO_DEFENSE_LOCKOUT_MS) {
-          COMBAT_ASSIST_STATE.lastDefenseAt = now; // lock out even on failure: no spam
-          callRuntimeUseSkillbarSlot(runtime, FEATURE_CONFIG.autoDefenseSlot);
-        }
-      }
-
-      if (COMBAT_ASSIST_STATE.rotationOn) {
-        const slots = FEATURE_CONFIG.autoRotationSlots;
-        if (!slots.length) return;
-        const mySkills = me.skills;
-        const engineTime = typeof engine.time === "number" ? engine.time : null;
-        if (mySkills && typeof mySkills.gcdEnd === "number" && engineTime !== null && engineTime < mySkills.gcdEnd) return;
-        const targetId = readEntityTargetId(me);
-        if (targetId === null) return;
-        const target = findEngineEntityById(engine, targetId);
-        if (!target) return;
-        const hostileTarget = target.type === 1
-          || (target.type === 0 && target.faction !== undefined && me.faction !== undefined && target.faction !== me.faction);
-        if (!hostileTarget || entityHpFraction(target) <= 0) return;
-        const slot = slots[COMBAT_ASSIST_STATE.rotationCursor % slots.length];
-        COMBAT_ASSIST_STATE.rotationCursor = (COMBAT_ASSIST_STATE.rotationCursor + 1) % 1000;
-        callRuntimeUseSkillbarSlot(runtime, slot);
-        COMBAT_ASSIST_STATE.lastRotationCastAt = now;
-      }
-    } catch (error) {
-      COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
-    }
-  }
-
-  function setAutoRotationOn(value) {
-    const slots = FEATURE_CONFIG.autoRotationSlots;
-    if (value && !slots.length) {
-      return "자동시전 슬롯이 비어 있습니다 — HordesKrMod.setAutoRotationSlots([7,5]) 처럼 우선순위 슬롯을 먼저 지정하세요.";
-    }
-    COMBAT_ASSIST_STATE.rotationOn = Boolean(value);
-    renderStatusUi();
-    return COMBAT_ASSIST_STATE.rotationOn
-      ? `자동시전 켜짐 (슬롯 ${slots.join("→")}) — Alt+R 또는 패널로 끔`
-      : "자동시전 꺼짐";
   }
 
   // ===== Team sync (팀파이트 멤버 상태 공유) =====
@@ -14922,19 +14801,9 @@
   }
 
   function installCombatAssist() {
-    if (COMBAT_ASSIST_STATE.timer) return;
-    COMBAT_ASSIST_STATE.timer = setInterval(combatAssistTick, COMBAT_ASSIST_TICK_MS);
+    if (COMBAT_ASSIST_STATE.interruptTimer) return;
     COMBAT_ASSIST_STATE.interruptTimer = setInterval(autoInterruptFastTick, AUTO_INTERRUPT_TICK_MS);
     scheduleTeamSync();
-    try {
-      pageWindow.addEventListener("keydown", (event) => {
-        if (!event.altKey || event.code !== "KeyR" || event.repeat) return;
-        event.preventDefault();
-        setAutoRotationOn(!COMBAT_ASSIST_STATE.rotationOn);
-      }, true);
-    } catch {
-      // hotkey optional
-    }
   }
 
   function collectIncomingWarningOverlayEntities(runtime) {
@@ -20004,8 +19873,6 @@
               <div class="group-title">전투 보조</div>
               <div class="feature-grid">
                 <button id="toggleAutoInterrupt" class="action" type="button"></button>
-                <button id="toggleAutoDefense" class="action" type="button"></button>
-                <button id="toggleAutoRotation" class="action" type="button"></button>
                 <button id="toggleTeamSync" class="action" type="button"></button>
               </div>
             </div>
@@ -20351,8 +20218,6 @@
     setFeatureToggleButton(shadow, "toggle", "번역", enabled);
     setFeatureToggleButton(shadow, "toggleHighlight", "강조", HIGHLIGHT_CONFIG.enabled);
     setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
-    setFeatureToggleButton(shadow, "toggleAutoRotation", "자동시전", COMBAT_ASSIST_STATE.rotationOn);
-    setFeatureToggleButton(shadow, "toggleAutoDefense", "자동방어", FEATURE_CONFIG.autoDefenseEnabled);
     setFeatureToggleButton(shadow, "toggleAutoInterrupt", "자동끊기", FEATURE_CONFIG.autoInterruptEnabled);
     setFeatureToggleButton(shadow, "toggleTeamSync", "팀공유", FEATURE_CONFIG.teamSyncEnabled);
     renderFeatureToggles(shadow);
@@ -20371,8 +20236,6 @@
       toggleChatTranslation: () => pageWindow.HordesKrMod.toggleChatTranslation(),
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
-      toggleAutoRotation: () => pageWindow.HordesKrMod.toggleAutoRotation(),
-      toggleAutoDefense: () => pageWindow.HordesKrMod.toggleAutoDefense(),
       toggleAutoInterrupt: () => pageWindow.HordesKrMod.toggleAutoInterrupt(),
       toggleTeamSync: () => pageWindow.HordesKrMod.toggleTeamSync(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
