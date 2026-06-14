@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.174-local
+// @version      0.9.175-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.174-local";
+  const BOOT_VERSION = "0.9.175-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -14330,7 +14330,7 @@
   // Scan highlighted enemies in range for a live cast of a trigger skill; target the
   // caster and fire the first off-cooldown interrupt slot. One enemy cast = one castKey
   // (entity id + skill id + cast start), max AUTO_INTERRUPT_MAX_TRIES fires per cast.
-  function autoInterruptTick(runtime, engine, me, now) {
+  function autoInterruptTick(runtime, engine, me, now, fromWs) {
     if (!FEATURE_CONFIG.autoInterruptEnabled) return;
     const slots = FEATURE_CONFIG.autoInterruptSlots;
     if (!slots.length) return;
@@ -14430,7 +14430,8 @@
       COMBAT_ASSIST_STATE.lastInterruptInfo = `${name} ${skillLabel} → ${slot}번`;
       const castOk = !castResult || typeof castResult !== "object" || castResult.ok !== false;
       const slotName = slots.length && slot === slots[slots.length - 1] && slot !== slots[0] ? "블라인드" : "뱀프";
-      pushDamageLogNote(`⚔ 끊기 ${name} · ${skillLabel} → ${slotName}(${slot})${castOk ? "" : " ✖실패"}`, "dmg-interrupt");
+      const srcTag = fromWs ? "WS" : "폴";
+      pushDamageLogNote(`⚔ 끊기[${srcTag}] ${name} · ${skillLabel} → ${slotName}(${slot})${castOk ? "" : " ✖실패"}`, "dmg-interrupt");
       try { showGearPresetProgressOverlay(`⚔ 끊기: ${name} ${skillLabel} → ${slot}번`, "running", 1600); } catch { /* toast optional */ }
       return; // one interrupt attempt per pulse
     }
@@ -14445,7 +14446,7 @@
       const me = engine && engine.player;
       if (!me) return;
       const before = COMBAT_ASSIST_STATE.interruptHits;
-      autoInterruptTick(runtime, engine, me, Date.now());
+      autoInterruptTick(runtime, engine, me, Date.now(), fromWs === true);
       if (fromWs && COMBAT_ASSIST_STATE.interruptHits > before) COMBAT_ASSIST_STATE.wsHookFires++;
     } catch (error) {
       COMBAT_ASSIST_STATE.lastError = (error && error.message) || String(error);
