@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.178-local
+// @version      0.9.179-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.178-local";
+  const BOOT_VERSION = "0.9.179-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -711,6 +711,7 @@
     dashboardEnabled: true,
     threatHudEnabled: true,
     watchBeepEnabled: true,
+    dangerOverlayEnabled: true,
     autoInterruptEnabled: false,
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
@@ -736,6 +737,7 @@
   FEATURE_CONFIG.dashboardEnabled = FEATURE_CONFIG.dashboardEnabled !== false;
   FEATURE_CONFIG.threatHudEnabled = FEATURE_CONFIG.threatHudEnabled !== false;
   FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled !== false;
+  FEATURE_CONFIG.dangerOverlayEnabled = FEATURE_CONFIG.dangerOverlayEnabled !== false;
   FEATURE_CONFIG.autoInterruptEnabled = FEATURE_CONFIG.autoInterruptEnabled === true;
   FEATURE_CONFIG.autoInterruptSlots = Array.isArray(FEATURE_CONFIG.autoInterruptSlots)
     ? FEATURE_CONFIG.autoInterruptSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4)
@@ -3281,6 +3283,15 @@
       FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled === false;
       saveFeatureConfig();
       return FEATURE_CONFIG.watchBeepEnabled ? "주시 경고음 켜짐" : "주시 경고음 꺼짐";
+    },
+    toggleDangerOverlay() {
+      FEATURE_CONFIG.dangerOverlayEnabled = !isDangerOverlayEnabled();
+      saveFeatureConfig();
+      renderStatusUi();
+      if (FEATURE_CONFIG.dangerOverlayEnabled) startDangerOverlayLoop(); else clearDangerOverlay();
+      return FEATURE_CONFIG.dangerOverlayEnabled
+        ? "장판경고 켜짐 — 적 지면 AoE(텔레그래프)를 화면에 빨간 원으로 표시 (빈 곳=세이프존)"
+        : "장판경고 꺼짐";
     },
     toggleAutoInterrupt() {
       FEATURE_CONFIG.autoInterruptEnabled = !FEATURE_CONFIG.autoInterruptEnabled;
@@ -14804,6 +14815,7 @@
     if (COMBAT_ASSIST_STATE.interruptTimer) return;
     COMBAT_ASSIST_STATE.interruptTimer = setInterval(autoInterruptFastTick, AUTO_INTERRUPT_TICK_MS);
     scheduleTeamSync();
+    startDangerOverlayLoop();
   }
 
   function collectIncomingWarningOverlayEntities(runtime) {
@@ -15854,6 +15866,137 @@
   function isVisibleCanvasElement(value) {
     const CanvasElement = pageWindow.HTMLCanvasElement;
     return !!(CanvasElement && value instanceof CanvasElement && value.isConnected && value.getBoundingClientRect().width > 0);
+  }
+
+  // ===== Danger-zone overlay (boss floor AoE on the 3D screen) =====
+  // Enemy ground AoEs are type-11 mesh decals carrying a netDeletion timer (~2s) before
+  // they resolve. We project each pending decal's ground position onto the screen and draw
+  // a red ring — so a wall pattern shows as a row of rings and the SAFE GAP is the empty
+  // spot you can move into. No safe-spot guessing; you read it directly off the screen.
+  const DANGER_OVERLAY_STATE = { host: null, rafId: null, styleInstalled: false, markers: new Map() };
+  const DANGER_OVERLAY_MAX = 80;          // marker cap per frame
+  const DANGER_OVERLAY_LEAD_S = 4;        // show decals resolving within this many seconds
+  const DANGER_OVERLAY_RANGE_M = 55;      // ignore decals farther than this (cuts decor/noise)
+  const DANGER_OVERLAY_WORLD_RADIUS = 3;  // fallback AoE radius (world units) for ring sizing
+
+  function isDangerOverlayEnabled() {
+    return FEATURE_CONFIG.dangerOverlayEnabled !== false;
+  }
+
+  function ensureDangerOverlayStyle() {
+    if (DANGER_OVERLAY_STATE.styleInstalled || document.getElementById("hordes-kr-danger-style")) {
+      DANGER_OVERLAY_STATE.styleInstalled = true;
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "hordes-kr-danger-style";
+    style.textContent = [
+      "#hordes-kr-danger-overlay{position:fixed;inset:0;pointer-events:none;z-index:2147483540;overflow:hidden}",
+      "#hordes-kr-danger-overlay .hkr-danger{position:absolute;transform:translate(-50%,-50%);border-radius:50%;border:3px solid rgba(255,45,45,0.95);background:radial-gradient(closest-side,rgba(255,30,30,0.30),rgba(255,30,30,0.12) 70%,transparent);box-shadow:0 0 11px rgba(255,30,30,0.65),inset 0 0 14px rgba(255,70,70,0.5)}",
+      "#hordes-kr-danger-overlay .hkr-danger.soon{border-color:rgba(255,210,40,0.95);background:radial-gradient(closest-side,rgba(255,200,40,0.22),rgba(255,200,40,0.08) 70%,transparent);box-shadow:0 0 9px rgba(255,200,40,0.55)}",
+      "#hordes-kr-danger-overlay .hkr-danger.imminent{animation:hkrDangerPulse 0.3s ease-in-out infinite}",
+      "@keyframes hkrDangerPulse{0%,100%{border-color:rgba(255,45,45,1);box-shadow:0 0 11px rgba(255,30,30,0.7),inset 0 0 14px rgba(255,70,70,0.5)}50%{border-color:rgba(255,255,255,0.98);box-shadow:0 0 18px rgba(255,90,90,0.95),inset 0 0 16px rgba(255,120,120,0.6)}}",
+    ].join("");
+    (document.head || document.documentElement).appendChild(style);
+    DANGER_OVERLAY_STATE.styleInstalled = true;
+  }
+
+  function ensureDangerOverlayHost() {
+    if (DANGER_OVERLAY_STATE.host && document.contains(DANGER_OVERLAY_STATE.host)) return DANGER_OVERLAY_STATE.host;
+    if (!document.body) return null;
+    ensureDangerOverlayStyle();
+    const host = document.createElement("div");
+    host.id = "hordes-kr-danger-overlay";
+    host.setAttribute("aria-hidden", "true");
+    document.body.appendChild(host);
+    DANGER_OVERLAY_STATE.host = host;
+    DANGER_OVERLAY_STATE.markers = new Map();
+    return host;
+  }
+
+  function clearDangerOverlay() {
+    if (DANGER_OVERLAY_STATE.host) DANGER_OVERLAY_STATE.host.replaceChildren();
+    if (DANGER_OVERLAY_STATE.markers) DANGER_OVERLAY_STATE.markers.clear();
+  }
+
+  function updateDangerOverlay() {
+    if (!isDangerOverlayEnabled()) {
+      if (DANGER_OVERLAY_STATE.markers && DANGER_OVERLAY_STATE.markers.size) clearDangerOverlay();
+      return;
+    }
+    const runtime = getExposedRuntime();
+    const engine = runtime && runtime.engine;
+    const me = engine && engine.player;
+    if (!me || !getRuntimeProjectionMatrix(runtime)) {
+      if (DANGER_OVERLAY_STATE.markers && DANGER_OVERLAY_STATE.markers.size) clearDangerOverlay();
+      return;
+    }
+    const arr = engine.entities && engine.entities.array;
+    const now = typeof engine.time === "number" ? engine.time : null;
+    if (!arr || now === null) return;
+    const host = ensureDangerOverlayHost();
+    if (!host) return;
+
+    const mp = me.pos || me.visualPosition;
+    const markers = DANGER_OVERLAY_STATE.markers;
+    const live = new Set();
+    let shown = 0;
+    for (const e of arr) {
+      if (!e || e.type !== 11) continue;
+      const del = e.netDeletion;
+      const end = del && typeof del.end === "number" ? del.end : null;
+      if (end === null) continue;
+      const remain = end - now;
+      if (remain <= 0 || remain > DANGER_OVERLAY_LEAD_S) continue;
+      const pos = e.pos;
+      if (!pos) continue;
+      if (mp) {
+        const d = Math.hypot(pos[0] - mp[0], pos[2] - mp[2]);
+        if (d > DANGER_OVERLAY_RANGE_M) continue;
+      }
+      const pt = projectRuntimePointToScreen(pos, runtime);
+      if (!pt) continue;
+      // perspective-correct ring size: project points offset by the AoE world radius on
+      // both ground axes and take the larger screen delta.
+      const wr = Math.max(Number(e.radius) || 0, DANGER_OVERLAY_WORLD_RADIUS);
+      let rad = 0;
+      const px1 = projectRuntimePointToScreen([pos[0] + wr, pos[1], pos[2]], runtime);
+      const px2 = projectRuntimePointToScreen([pos[0], pos[1], pos[2] + wr], runtime);
+      if (px1) rad = Math.max(rad, Math.hypot(px1.x - pt.x, px1.y - pt.y));
+      if (px2) rad = Math.max(rad, Math.hypot(px2.x - pt.x, px2.y - pt.y));
+      const size = rad > 0 ? Math.max(18, Math.min(520, rad * 2)) : 36;
+
+      const key = String(e.id);
+      live.add(key);
+      let mk = markers.get(key);
+      if (!mk) {
+        mk = document.createElement("div");
+        mk.className = "hkr-danger";
+        host.appendChild(mk);
+        markers.set(key, mk);
+      }
+      const cls = remain < 0.6 ? "hkr-danger imminent" : (remain > 2 ? "hkr-danger soon" : "hkr-danger");
+      if (mk.className !== cls) mk.className = cls;
+      mk.style.left = `${Math.round(pt.x)}px`;
+      mk.style.top = `${Math.round(pt.y)}px`;
+      mk.style.width = `${Math.round(size)}px`;
+      mk.style.height = `${Math.round(size)}px`;
+      if (++shown >= DANGER_OVERLAY_MAX) break;
+    }
+    for (const [key, mk] of markers) {
+      if (live.has(key)) continue;
+      mk.remove();
+      markers.delete(key);
+    }
+  }
+
+  function startDangerOverlayLoop() {
+    if (DANGER_OVERLAY_STATE.rafId) return;
+    const tick = () => {
+      DANGER_OVERLAY_STATE.rafId = pageWindow.requestAnimationFrame(tick);
+      try { updateDangerOverlay(); } catch { /* overlay best-effort */ }
+    };
+    DANGER_OVERLAY_STATE.rafId = pageWindow.requestAnimationFrame(tick);
   }
 
   function getExposedRuntime() {
@@ -19873,6 +20016,7 @@
               <div class="group-title">전투 보조</div>
               <div class="feature-grid">
                 <button id="toggleAutoInterrupt" class="action" type="button"></button>
+                <button id="toggleDangerOverlay" class="action" type="button"></button>
                 <button id="toggleTeamSync" class="action" type="button"></button>
               </div>
             </div>
@@ -20219,6 +20363,7 @@
     setFeatureToggleButton(shadow, "toggleHighlight", "강조", HIGHLIGHT_CONFIG.enabled);
     setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
     setFeatureToggleButton(shadow, "toggleAutoInterrupt", "자동끊기", FEATURE_CONFIG.autoInterruptEnabled);
+    setFeatureToggleButton(shadow, "toggleDangerOverlay", "장판경고", isDangerOverlayEnabled());
     setFeatureToggleButton(shadow, "toggleTeamSync", "팀공유", FEATURE_CONFIG.teamSyncEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
@@ -20237,6 +20382,7 @@
       toggleHighlightList: () => pageWindow.HordesKrMod.toggleMinimapHighlightList(),
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
       toggleAutoInterrupt: () => pageWindow.HordesKrMod.toggleAutoInterrupt(),
+      toggleDangerOverlay: () => pageWindow.HordesKrMod.toggleDangerOverlay(),
       toggleTeamSync: () => pageWindow.HordesKrMod.toggleTeamSync(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
