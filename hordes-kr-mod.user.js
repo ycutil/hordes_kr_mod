@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.181-local
+// @version      0.9.182-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.181-local";
+  const BOOT_VERSION = "0.9.182-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -16104,21 +16104,138 @@
         }
       }
     }
-    if (total < 30) return; // not a wall — leave cleared
+    if (total < 25) return; // no magenta — leave cleared
+
+    // Cells with magenta; dilate to bridge the discrete rings of the chain into one line.
+    const NC = GC * GR;
+    const cells = ringScanBuf("cells", NC);
+    const dilA = ringScanBuf("dilA", NC);
+    const dilB = ringScanBuf("dilB", NC);
+    for (let k = 0; k < NC; k++) cells[k] = grid[k] >= 2 ? 1 : 0;
+    ringScanDilate(cells, dilA, GC, GR);
+    ringScanDilate(dilA, dilB, GC, GR);
+
+    // Connected components on the dilated mask; keep only LINE-shaped ones (the chain),
+    // dropping compact blobs (the boss body and circular AoEs) — fixes false positives.
+    const label = ringScanBuf32("label", NC); label.fill(0);
+    const stack = RINGSCAN_STATE.stack || (RINGSCAN_STATE.stack = new Int32Array(NC));
+    const chainMask = ringScanBuf("chainMask", NC); chainMask.fill(0);
+    const chX = RINGSCAN_STATE.chX || (RINGSCAN_STATE.chX = new Int16Array(NC));
+    const chY = RINGSCAN_STATE.chY || (RINGSCAN_STATE.chY = new Int16Array(NC));
+    let chCount = 0;
+    let csx = 0, csy = 0, csxx = 0, csyy = 0, csxy = 0, cn = 0;
+    let comp = 0;
+
+    for (let start = 0; start < NC; start++) {
+      if (!dilB[start] || label[start]) continue;
+      comp++;
+      let sp = 0; stack[sp++] = start; label[start] = comp;
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, n = 0;
+      const memberStart = chCount;
+      while (sp > 0) {
+        const idx = stack[--sp];
+        const r = (idx / GC) | 0, c = idx - r * GC;
+        if (cells[idx]) {
+          sx += c; sy += r; sxx += c * c; syy += r * r; sxy += c * r; n++;
+          if (chCount < NC) { chX[chCount] = c; chY[chCount] = r; chCount++; }
+        }
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = r + dy; if (ny < 0 || ny >= GR) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = c + dx; if (nx < 0 || nx >= GC) continue;
+            const nidx = ny * GC + nx;
+            if (dilB[nidx] && !label[nidx]) { label[nidx] = comp; stack[sp++] = nidx; }
+          }
+        }
+      }
+      // covariance eigenvalues -> elongation; keep only long thin components
+      let keep = false;
+      if (n >= 5) {
+        const mx = sx / n, my = sy / n;
+        const a = sxx / n - mx * mx, b = sxy / n - mx * my, cc = syy / n - my * my;
+        const tr = a + cc, disc = Math.sqrt(Math.max(0, tr * tr - 4 * (a * cc - b * b)));
+        const length = Math.sqrt(Math.max(0, (tr + disc) / 2));
+        const width = Math.sqrt(Math.max(0.25, (tr - disc) / 2));
+        if (length / width >= 3.3 && length >= 3.2) keep = true;
+      }
+      if (keep) {
+        for (let m = memberStart; m < chCount; m++) chainMask[chY[m] * GC + chX[m]] = 1;
+        csx += sx; csy += sy; csxx += sxx; csyy += syy; csxy += sxy; cn += n;
+      } else {
+        chCount = memberStart;
+      }
+    }
 
     const rect = RINGSCAN_STATE.glCanvas.getBoundingClientRect();
     const cw = rect.width / GC, ch = rect.height / GR;
+    if (cn < 8) return; // no line-shaped chain present — don't highlight blobs
+
+    // Highlight the chain (cyan glow) so it pops out of the chaos.
     c2.save();
     c2.fillStyle = "rgba(90,240,255,0.5)";
     c2.shadowColor = "rgba(90,240,255,0.95)";
     c2.shadowBlur = 7;
     for (let r = 0; r < GR; r++) {
-      const yb = rect.top + r * ch;
-      for (let cc = 0; cc < GC; cc++) {
-        if (grid[r * GC + cc] >= 2) c2.fillRect(rect.left + cc * cw, yb, cw + 1, ch + 1);
-      }
+      const yb = rect.top + r * ch, rb = r * GC;
+      for (let c = 0; c < GC; c++) if (chainMask[rb + c]) c2.fillRect(rect.left + c * cw, yb, cw + 1, ch + 1);
     }
     c2.restore();
+
+    // Gap = safe spot: project the chain onto its principal axis, find the largest interior
+    // empty run (the missing ring). Best-effort — only marked when clearly prominent.
+    const mx = csx / cn, my = csy / cn;
+    const a = csxx / cn - mx * mx, b = csxy / cn - mx * my, cc = csyy / cn - my * my;
+    const tr = a + cc, disc = Math.sqrt(Math.max(0, tr * tr - 4 * (a * cc - b * b)));
+    const l1 = (tr + disc) / 2;
+    let ax, ay;
+    if (Math.abs(b) > 1e-6) { ax = l1 - cc; ay = b; } else if (a >= cc) { ax = 1; ay = 0; } else { ax = 0; ay = 1; }
+    const al = Math.hypot(ax, ay) || 1; ax /= al; ay /= al;
+    let tmin = Infinity, tmax = -Infinity;
+    for (let m = 0; m < chCount; m++) { const t = (chX[m] - mx) * ax + (chY[m] - my) * ay; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
+    const span = (tmax - tmin) || 1;
+    const NB = Math.max(12, Math.min(48, Math.round(span)));
+    const hist = ringScanBuf("hist", 64); for (let k = 0; k < NB; k++) hist[k] = 0;
+    for (let m = 0; m < chCount; m++) { const t = (chX[m] - mx) * ax + (chY[m] - my) * ay; let bi = (((t - tmin) / span) * NB) | 0; if (bi >= NB) bi = NB - 1; hist[bi] = Math.min(255, hist[bi] + 1); }
+    let bestLen = 0, bestMid = -1, i2 = 0;
+    while (i2 < NB) {
+      if (hist[i2] === 0) { let j = i2; while (j < NB && hist[j] === 0) j++; if (i2 > 0 && j < NB && (j - i2) > bestLen) { bestLen = j - i2; bestMid = (i2 + j) / 2; } i2 = j; }
+      else i2++;
+    }
+    if (bestLen >= 3 && bestMid >= 0) {
+      const tg = tmin + (bestMid / NB) * span;
+      const sxp = rect.left + (mx + ax * tg + 0.5) * cw, syp = rect.top + (my + ay * tg + 0.5) * ch;
+      c2.save();
+      c2.strokeStyle = "rgba(60,255,90,0.98)"; c2.lineWidth = 4;
+      c2.shadowColor = "rgba(60,255,90,0.95)"; c2.shadowBlur = 12;
+      c2.beginPath(); c2.arc(sxp, syp, 28, 0, Math.PI * 2); c2.stroke();
+      c2.fillStyle = "rgba(60,255,90,0.95)"; c2.font = "bold 16px -apple-system,sans-serif"; c2.textAlign = "center";
+      c2.fillText("SAFE", sxp, syp - 34);
+      c2.restore();
+    }
+  }
+
+  function ringScanBuf(name, n) {
+    let b = RINGSCAN_STATE[name];
+    if (!b || b.length !== n) b = RINGSCAN_STATE[name] = new Uint8Array(n);
+    return b;
+  }
+  function ringScanBuf32(name, n) {
+    let b = RINGSCAN_STATE[name];
+    if (!b || b.length !== n) b = RINGSCAN_STATE[name] = new Int32Array(n);
+    return b;
+  }
+  function ringScanDilate(src, dst, GC, GR) {
+    for (let r = 0; r < GR; r++) {
+      const rb = r * GC;
+      for (let c = 0; c < GC; c++) {
+        const idx = rb + c;
+        dst[idx] = (src[idx]
+          || (c > 0 && src[idx - 1])
+          || (c < GC - 1 && src[idx + 1])
+          || (r > 0 && src[idx - GC])
+          || (r < GR - 1 && src[idx + GC])) ? 1 : 0;
+      }
+    }
   }
 
   function startRingScanLoop() {
