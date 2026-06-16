@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.182-local
+// @version      0.9.183-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.182-local";
+  const BOOT_VERSION = "0.9.183-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -3307,6 +3307,7 @@
     toggleWallScan(on) {
       FEATURE_CONFIG.ringScanEnabled = on === undefined ? !FEATURE_CONFIG.ringScanEnabled : on === true;
       saveFeatureConfig();
+      renderStatusUi();
       if (FEATURE_CONFIG.ringScanEnabled) startRingScanLoop();
       return FEATURE_CONFIG.ringScanEnabled
         ? "벽 인식 켜짐 — 화면 픽셀에서 보라색 Runefire 링 체인을 청록색으로 하이라이트(빈 곳=세이프). 보스전에서만 켜세요(성능)."
@@ -16024,10 +16025,13 @@
   // 888 frames. It's a pure client visual. So we read the rendered WebGL frame pixels,
   // detect the bright magenta ring color, and paint a bright cyan highlight over it so the
   // chain pops out of the combat chaos and you can see the empty gap (safe spot) yourself.
-  const RINGSCAN_INTERVAL_MS = 200;       // ~5 scans/sec (readPixels is a GPU->CPU stall)
+  const RINGSCAN_INTERVAL_MS = 140;       // ~7 scans/sec (readPixels is a GPU->CPU stall)
   const RINGSCAN_SAMPLE_STEP = 4;         // subsample buffer for the scan
   const RINGSCAN_GRID_COLS = 128;
   const RINGSCAN_GRID_ROWS = 72;
+  const RINGSCAN_HOLD_MS = 360;           // keep showing the last detection this long (anti-flicker)
+  const RINGSCAN_MIN_SPAN = 26;           // the wall chain spans this many grid cells edge-ward
+  const RINGSCAN_MIN_CELLS = 18;          // min chain cells — short Runedisk/boss FX won't qualify
 
   function isRingScanEnabled() {
     return FEATURE_CONFIG.ringScanEnabled === true;
@@ -16064,67 +16068,65 @@
   }
 
   function updateRingScan() {
-    const cv = RINGSCAN_STATE.host, ctx = RINGSCAN_STATE.ctx;
+    const host0 = RINGSCAN_STATE.host, ctx0 = RINGSCAN_STATE.ctx;
     if (!isRingScanEnabled()) {
-      if (cv && ctx && cv.__hkrDrawn) { ctx.clearRect(0, 0, cv.width, cv.height); cv.__hkrDrawn = false; }
+      if (host0 && ctx0 && host0.__hkrDrawn) { ctx0.clearRect(0, 0, host0.width, host0.height); host0.__hkrDrawn = false; }
       return;
     }
-    const now = (pageWindow.performance && pageWindow.performance.now) ? pageWindow.performance.now() : Date.now();
-    if (now - RINGSCAN_STATE.lastAt < RINGSCAN_INTERVAL_MS) return;
-    RINGSCAN_STATE.lastAt = now;
-    const gl = ensureRingScanGl(); if (!gl) return;
     const host = ensureRingScanHost(); if (!host) return;
-    const c2 = RINGSCAN_STATE.ctx;
-    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
-    if (!bw || !bh) return;
     const vw = pageWindow.innerWidth, vh = pageWindow.innerHeight;
-    if (host.width !== vw || host.height !== vh) { host.width = vw; host.height = vh; }
-    c2.clearRect(0, 0, vw, vh); host.__hkrDrawn = true;
+    if (host.width !== vw || host.height !== vh) { host.width = vw; host.height = vh; host.__hkrDrawn = false; }
+    const now = (pageWindow.performance && pageWindow.performance.now) ? pageWindow.performance.now() : Date.now();
+    if (now - RINGSCAN_STATE.lastAt < RINGSCAN_INTERVAL_MS) return; // throttle; between scans the canvas holds its last frame (no flicker)
+    RINGSCAN_STATE.lastAt = now;
+    let drew = false;
+    try { drew = ringScanDetect(now); } catch { /* scan best-effort */ }
+    if (drew) { RINGSCAN_STATE.detectedAt = now; host.__hkrDrawn = true; return; }
+    // No fresh detection this scan: keep the last drawing until it expires (bridges flickery
+    // frames), then clear.
+    if (host.__hkrDrawn && now - (RINGSCAN_STATE.detectedAt || 0) > RINGSCAN_HOLD_MS) {
+      RINGSCAN_STATE.ctx.clearRect(0, 0, host.width, host.height);
+      host.__hkrDrawn = false;
+    }
+  }
 
+  // One scan: read the frame, find the magenta ring chain (only long thin line components —
+  // not the boss blob or short Runedisk patterns), and draw it + the SAFE gap. Returns true
+  // only when the SWEEPING WALL is present (a long chain), so other purple FX never trigger it.
+  function ringScanDetect(now) {
+    const gl = ensureRingScanGl(); if (!gl) return false;
+    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
+    if (!bw || !bh) return false;
     const need = bw * bh * 4;
     if (!RINGSCAN_STATE.buf || RINGSCAN_STATE.buf.length !== need) RINGSCAN_STATE.buf = new Uint8Array(need);
     const px = RINGSCAN_STATE.buf;
-    try { gl.readPixels(0, 0, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch { return; }
+    try { gl.readPixels(0, 0, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch { return false; }
 
-    // Coarse-grid density of the magenta ring color. readPixels is bottom-up, so flip Y.
-    const GC = RINGSCAN_GRID_COLS, GR = RINGSCAN_GRID_ROWS;
-    const grid = new Uint16Array(GC * GR);
+    const GC = RINGSCAN_GRID_COLS, GR = RINGSCAN_GRID_ROWS, NC = GC * GR;
+    const grid = new Uint16Array(NC);
     const S = RINGSCAN_SAMPLE_STEP;
     let total = 0;
     for (let y = 0; y < bh; y += S) {
-      const gy = (((bh - 1 - y) * GR / bh) | 0);
-      const rowBase = gy * GC;
+      const rowBase = (((bh - 1 - y) * GR / bh) | 0) * GC;
       for (let x = 0; x < bw; x += S) {
         const i = (y * bw + x) * 4;
         const R = px[i], G = px[i + 1], B = px[i + 2];
-        // bright pink/magenta Runefire ring: high R & B, low G
-        if (B > 150 && R > 130 && G < 150 && (B - G) > 60 && (R - G) > 35) {
-          grid[rowBase + ((x * GC / bw) | 0)]++;
-          total++;
-        }
+        if (B > 150 && R > 130 && G < 150 && (B - G) > 60 && (R - G) > 35) { grid[rowBase + ((x * GC / bw) | 0)]++; total++; }
       }
     }
-    if (total < 25) return; // no magenta — leave cleared
+    if (total < 30) return false;
 
-    // Cells with magenta; dilate to bridge the discrete rings of the chain into one line.
-    const NC = GC * GR;
-    const cells = ringScanBuf("cells", NC);
-    const dilA = ringScanBuf("dilA", NC);
-    const dilB = ringScanBuf("dilB", NC);
+    const cells = ringScanBuf("cells", NC), dilA = ringScanBuf("dilA", NC), dilB = ringScanBuf("dilB", NC);
     for (let k = 0; k < NC; k++) cells[k] = grid[k] >= 2 ? 1 : 0;
     ringScanDilate(cells, dilA, GC, GR);
     ringScanDilate(dilA, dilB, GC, GR);
 
-    // Connected components on the dilated mask; keep only LINE-shaped ones (the chain),
-    // dropping compact blobs (the boss body and circular AoEs) — fixes false positives.
     const label = ringScanBuf32("label", NC); label.fill(0);
     const stack = RINGSCAN_STATE.stack || (RINGSCAN_STATE.stack = new Int32Array(NC));
     const chainMask = ringScanBuf("chainMask", NC); chainMask.fill(0);
     const chX = RINGSCAN_STATE.chX || (RINGSCAN_STATE.chX = new Int16Array(NC));
     const chY = RINGSCAN_STATE.chY || (RINGSCAN_STATE.chY = new Int16Array(NC));
-    let chCount = 0;
-    let csx = 0, csy = 0, csxx = 0, csyy = 0, csxy = 0, cn = 0;
-    let comp = 0;
+    let chCount = 0, csx = 0, csy = 0, csxx = 0, csyy = 0, csxy = 0, cn = 0, comp = 0;
 
     for (let start = 0; start < NC; start++) {
       if (!dilB[start] || label[start]) continue;
@@ -16148,15 +16150,14 @@
           }
         }
       }
-      // covariance eigenvalues -> elongation; keep only long thin components
       let keep = false;
-      if (n >= 5) {
-        const mx = sx / n, my = sy / n;
-        const a = sxx / n - mx * mx, b = sxy / n - mx * my, cc = syy / n - my * my;
-        const tr = a + cc, disc = Math.sqrt(Math.max(0, tr * tr - 4 * (a * cc - b * b)));
-        const length = Math.sqrt(Math.max(0, (tr + disc) / 2));
-        const width = Math.sqrt(Math.max(0.25, (tr - disc) / 2));
-        if (length / width >= 3.3 && length >= 3.2) keep = true;
+      if (n >= 6) {
+        const mx0 = sx / n, my0 = sy / n;
+        const a0 = sxx / n - mx0 * mx0, b0 = sxy / n - mx0 * my0, c0 = syy / n - my0 * my0;
+        const tr0 = a0 + c0, disc0 = Math.sqrt(Math.max(0, tr0 * tr0 - 4 * (a0 * c0 - b0 * b0)));
+        const length = Math.sqrt(Math.max(0, (tr0 + disc0) / 2));
+        const width = Math.sqrt(Math.max(0.25, (tr0 - disc0) / 2));
+        if (length / width >= 3.6 && length >= 4) keep = true; // long thin line only
       }
       if (keep) {
         for (let m = memberStart; m < chCount; m++) chainMask[chY[m] * GC + chX[m]] = 1;
@@ -16165,24 +16166,9 @@
         chCount = memberStart;
       }
     }
+    if (cn < RINGSCAN_MIN_CELLS) return false; // no substantial line
 
-    const rect = RINGSCAN_STATE.glCanvas.getBoundingClientRect();
-    const cw = rect.width / GC, ch = rect.height / GR;
-    if (cn < 8) return; // no line-shaped chain present — don't highlight blobs
-
-    // Highlight the chain (cyan glow) so it pops out of the chaos.
-    c2.save();
-    c2.fillStyle = "rgba(90,240,255,0.5)";
-    c2.shadowColor = "rgba(90,240,255,0.95)";
-    c2.shadowBlur = 7;
-    for (let r = 0; r < GR; r++) {
-      const yb = rect.top + r * ch, rb = r * GC;
-      for (let c = 0; c < GC; c++) if (chainMask[rb + c]) c2.fillRect(rect.left + c * cw, yb, cw + 1, ch + 1);
-    }
-    c2.restore();
-
-    // Gap = safe spot: project the chain onto its principal axis, find the largest interior
-    // empty run (the missing ring). Best-effort — only marked when clearly prominent.
+    // Principal axis of the merged chain.
     const mx = csx / cn, my = csy / cn;
     const a = csxx / cn - mx * mx, b = csxy / cn - mx * my, cc = csyy / cn - my * my;
     const tr = a + cc, disc = Math.sqrt(Math.max(0, tr * tr - 4 * (a * cc - b * b)));
@@ -16193,7 +16179,9 @@
     let tmin = Infinity, tmax = -Infinity;
     for (let m = 0; m < chCount; m++) { const t = (chX[m] - mx) * ax + (chY[m] - my) * ay; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
     const span = (tmax - tmin) || 1;
-    const NB = Math.max(12, Math.min(48, Math.round(span)));
+    if (span < RINGSCAN_MIN_SPAN) return false; // too short for the sweeping wall (Runedisk/boss FX)
+
+    const NB = Math.max(16, Math.min(48, Math.round(span)));
     const hist = ringScanBuf("hist", 64); for (let k = 0; k < NB; k++) hist[k] = 0;
     for (let m = 0; m < chCount; m++) { const t = (chX[m] - mx) * ax + (chY[m] - my) * ay; let bi = (((t - tmin) / span) * NB) | 0; if (bi >= NB) bi = NB - 1; hist[bi] = Math.min(255, hist[bi] + 1); }
     let bestLen = 0, bestMid = -1, i2 = 0;
@@ -16201,9 +16189,29 @@
       if (hist[i2] === 0) { let j = i2; while (j < NB && hist[j] === 0) j++; if (i2 > 0 && j < NB && (j - i2) > bestLen) { bestLen = j - i2; bestMid = (i2 + j) / 2; } i2 = j; }
       else i2++;
     }
+
+    // Draw: clear, chain highlight, then the SAFE gap (smoothed across scans).
+    const c2 = RINGSCAN_STATE.ctx;
+    const rect = RINGSCAN_STATE.glCanvas.getBoundingClientRect();
+    const cw = rect.width / GC, ch = rect.height / GR;
+    c2.clearRect(0, 0, RINGSCAN_STATE.host.width, RINGSCAN_STATE.host.height);
+    c2.save();
+    c2.fillStyle = "rgba(90,240,255,0.5)";
+    c2.shadowColor = "rgba(90,240,255,0.95)";
+    c2.shadowBlur = 7;
+    for (let r = 0; r < GR; r++) {
+      const yb = rect.top + r * ch, rb = r * GC;
+      for (let c = 0; c < GC; c++) if (chainMask[rb + c]) c2.fillRect(rect.left + c * cw, yb, cw + 1, ch + 1);
+    }
+    c2.restore();
     if (bestLen >= 3 && bestMid >= 0) {
       const tg = tmin + (bestMid / NB) * span;
-      const sxp = rect.left + (mx + ax * tg + 0.5) * cw, syp = rect.top + (my + ay * tg + 0.5) * ch;
+      let sxp = rect.left + (mx + ax * tg + 0.5) * cw, syp = rect.top + (my + ay * tg + 0.5) * ch;
+      const lg = RINGSCAN_STATE.gap; // smooth toward the new gap to kill jitter
+      if (lg && now - lg.at < 600 && Math.hypot(lg.x - sxp, lg.y - syp) < rect.width * 0.5) {
+        sxp = lg.x * 0.55 + sxp * 0.45; syp = lg.y * 0.55 + syp * 0.45;
+      }
+      RINGSCAN_STATE.gap = { x: sxp, y: syp, at: now };
       c2.save();
       c2.strokeStyle = "rgba(60,255,90,0.98)"; c2.lineWidth = 4;
       c2.shadowColor = "rgba(60,255,90,0.95)"; c2.shadowBlur = 12;
@@ -16212,6 +16220,7 @@
       c2.fillText("SAFE", sxp, syp - 34);
       c2.restore();
     }
+    return true;
   }
 
   function ringScanBuf(name, n) {
@@ -20265,6 +20274,7 @@
               <div class="feature-grid">
                 <button id="toggleAutoInterrupt" class="action" type="button"></button>
                 <button id="toggleDangerOverlay" class="action" type="button"></button>
+                <button id="toggleWallScan" class="action" type="button"></button>
                 <button id="toggleTeamSync" class="action" type="button"></button>
               </div>
             </div>
@@ -20612,6 +20622,7 @@
     setFeatureToggleButton(shadow, "toggleSelfHighlight", "내이름", HIGHLIGHT_CONFIG.selfHighlight);
     setFeatureToggleButton(shadow, "toggleAutoInterrupt", "자동끊기", FEATURE_CONFIG.autoInterruptEnabled);
     setFeatureToggleButton(shadow, "toggleDangerOverlay", "장판경고", isDangerOverlayEnabled());
+    setFeatureToggleButton(shadow, "toggleWallScan", "벽인식", isRingScanEnabled());
     setFeatureToggleButton(shadow, "toggleTeamSync", "팀공유", FEATURE_CONFIG.teamSyncEnabled);
     renderFeatureToggles(shadow);
     renderChatApiKeyUi(shadow);
@@ -20631,6 +20642,7 @@
       toggleSelfHighlight: () => pageWindow.HordesKrMod.toggleSelfHighlight(),
       toggleAutoInterrupt: () => pageWindow.HordesKrMod.toggleAutoInterrupt(),
       toggleDangerOverlay: () => pageWindow.HordesKrMod.toggleDangerOverlay(),
+      toggleWallScan: () => pageWindow.HordesKrMod.toggleWallScan(),
       toggleTeamSync: () => pageWindow.HordesKrMod.toggleTeamSync(),
       togglePartyUi: () => pageWindow.HordesKrMod.togglePartyUi(),
       togglePartyCommandPanel: () => pageWindow.HordesKrMod.togglePartyCommandPanel(),
