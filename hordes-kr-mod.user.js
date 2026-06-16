@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.179-local
+// @version      0.9.180-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.179-local";
+  const BOOT_VERSION = "0.9.180-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -1076,6 +1076,10 @@
     wsHookFires: 0,              // interrupts fired from the WS-hook path
     lastWsHookAt: 0,
   };
+
+  // Declared before installCombatAssist() runs at init — startDangerOverlayLoop() reads it
+  // synchronously, so it must not be in the temporal dead zone.
+  const DANGER_OVERLAY_STATE = { host: null, rafId: null, styleInstalled: false, markers: new Map() };
 
   // Declared before installCombatAssist() runs at init — scheduleTeamSync() reads it
   // synchronously, so it must not be in the temporal dead zone.
@@ -15873,7 +15877,7 @@
   // they resolve. We project each pending decal's ground position onto the screen and draw
   // a red ring — so a wall pattern shows as a row of rings and the SAFE GAP is the empty
   // spot you can move into. No safe-spot guessing; you read it directly off the screen.
-  const DANGER_OVERLAY_STATE = { host: null, rafId: null, styleInstalled: false, markers: new Map() };
+  // DANGER_OVERLAY_STATE is declared up near COMBAT_ASSIST_STATE (needed before boot).
   const DANGER_OVERLAY_MAX = 80;          // marker cap per frame
   const DANGER_OVERLAY_LEAD_S = 4;        // show decals resolving within this many seconds
   const DANGER_OVERLAY_RANGE_M = 55;      // ignore decals farther than this (cuts decor/noise)
