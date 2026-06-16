@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.183-local
+// @version      0.9.184-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.183-local";
+  const BOOT_VERSION = "0.9.184-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -16039,19 +16039,23 @@
 
   function ensureRingScanGl() {
     if (RINGSCAN_STATE.gl && RINGSCAN_STATE.glCanvas && document.contains(RINGSCAN_STATE.glCanvas)) return RINGSCAN_STATE.gl;
-    const best = Array.from(document.querySelectorAll("canvas"))
+    // Largest canvas that actually has a WebGL context — EXCLUDING our own overlay canvas
+    // (a 2D canvas of the same size; if we picked it, getContext('webgl2') returns null and
+    // the scanner silently never draws).
+    const overlay = RINGSCAN_STATE.host;
+    const candidates = Array.from(document.querySelectorAll("canvas"))
+      .filter((c) => c !== overlay && !(c.id && /^(hordes-kr|hkr-)/.test(c.id)))
       .map((c) => ({ c, r: c.getBoundingClientRect() }))
       .filter((x) => x.r.width > 200 && x.r.height > 200)
-      .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height)[0];
-    if (!best) return null;
-    let gl = null;
-    for (const t of ["webgl2", "webgl", "experimental-webgl"]) {
-      try { const g = best.c.getContext(t); if (g) { gl = g; break; } } catch { /* try next */ }
+      .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height);
+    for (const { c } of candidates) {
+      for (const t of ["webgl2", "webgl", "experimental-webgl"]) {
+        let g = null;
+        try { g = c.getContext(t); } catch { g = null; }
+        if (g) { RINGSCAN_STATE.gl = g; RINGSCAN_STATE.glCanvas = c; return g; }
+      }
     }
-    if (!gl) return null;
-    RINGSCAN_STATE.gl = gl;
-    RINGSCAN_STATE.glCanvas = best.c;
-    return gl;
+    return null;
   }
 
   function ensureRingScanHost() {
