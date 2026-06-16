@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hordes KR Custom Mod
 // @namespace    https://hordes.io/
-// @version      0.9.180-local
+// @version      0.9.181-local
 // @description  Korean localization and utility overlay for Hordes.io.
 // @author       Siri
 // @match        https://hordes.io/*
@@ -19,7 +19,7 @@
 (function hordesKrModBootstrap() {
   "use strict";
 
-  const BOOT_VERSION = "0.9.180-local";
+  const BOOT_VERSION = "0.9.181-local";
   markUserscriptStarted("entry");
   installUserscriptOpenAiBridge();
   installEarlyClientScriptGate();
@@ -712,6 +712,7 @@
     threatHudEnabled: true,
     watchBeepEnabled: true,
     dangerOverlayEnabled: true,
+    ringScanEnabled: false, // experimental: image-recognition wall (Runefire) highlighter
     autoInterruptEnabled: false,
     autoInterruptSlots: [5, 9],
     autoInterruptRangeM: 30,
@@ -738,6 +739,7 @@
   FEATURE_CONFIG.threatHudEnabled = FEATURE_CONFIG.threatHudEnabled !== false;
   FEATURE_CONFIG.watchBeepEnabled = FEATURE_CONFIG.watchBeepEnabled !== false;
   FEATURE_CONFIG.dangerOverlayEnabled = FEATURE_CONFIG.dangerOverlayEnabled !== false;
+  FEATURE_CONFIG.ringScanEnabled = FEATURE_CONFIG.ringScanEnabled === true;
   FEATURE_CONFIG.autoInterruptEnabled = FEATURE_CONFIG.autoInterruptEnabled === true;
   FEATURE_CONFIG.autoInterruptSlots = Array.isArray(FEATURE_CONFIG.autoInterruptSlots)
     ? FEATURE_CONFIG.autoInterruptSlots.map((slot) => Math.round(Number(slot))).filter((slot) => slot >= 1 && slot <= 12).slice(0, 4)
@@ -1080,6 +1082,11 @@
   // Declared before installCombatAssist() runs at init — startDangerOverlayLoop() reads it
   // synchronously, so it must not be in the temporal dead zone.
   const DANGER_OVERLAY_STATE = { host: null, rafId: null, styleInstalled: false, markers: new Map() };
+
+  // Image-recognition wall scanner (Runefire ring chain is a pure visual with no entity
+  // data, so we read the WebGL frame pixels and highlight the magenta ring chain). Declared
+  // early — startRingScanLoop() runs at boot from installCombatAssist().
+  const RINGSCAN_STATE = { gl: null, glCanvas: null, host: null, ctx: null, rafId: null, lastAt: 0, buf: null };
 
   // Declared before installCombatAssist() runs at init — scheduleTeamSync() reads it
   // synchronously, so it must not be in the temporal dead zone.
@@ -3296,6 +3303,14 @@
       return FEATURE_CONFIG.dangerOverlayEnabled
         ? "장판경고 켜짐 — 적 지면 AoE(텔레그래프)를 화면에 빨간 원으로 표시 (빈 곳=세이프존)"
         : "장판경고 꺼짐";
+    },
+    toggleWallScan(on) {
+      FEATURE_CONFIG.ringScanEnabled = on === undefined ? !FEATURE_CONFIG.ringScanEnabled : on === true;
+      saveFeatureConfig();
+      if (FEATURE_CONFIG.ringScanEnabled) startRingScanLoop();
+      return FEATURE_CONFIG.ringScanEnabled
+        ? "벽 인식 켜짐 — 화면 픽셀에서 보라색 Runefire 링 체인을 청록색으로 하이라이트(빈 곳=세이프). 보스전에서만 켜세요(성능)."
+        : "벽 인식 꺼짐";
     },
     toggleAutoInterrupt() {
       FEATURE_CONFIG.autoInterruptEnabled = !FEATURE_CONFIG.autoInterruptEnabled;
@@ -14820,6 +14835,7 @@
     COMBAT_ASSIST_STATE.interruptTimer = setInterval(autoInterruptFastTick, AUTO_INTERRUPT_TICK_MS);
     scheduleTeamSync();
     startDangerOverlayLoop();
+    startRingScanLoop();
   }
 
   function collectIncomingWarningOverlayEntities(runtime) {
@@ -16001,6 +16017,117 @@
       try { updateDangerOverlay(); } catch { /* overlay best-effort */ }
     };
     DANGER_OVERLAY_STATE.rafId = pageWindow.requestAnimationFrame(tick);
+  }
+
+  // ===== Image-recognition wall highlighter (experimental) =====
+  // The boss wall (Runefire purple ring chain) has NO entity/packet data — verified over
+  // 888 frames. It's a pure client visual. So we read the rendered WebGL frame pixels,
+  // detect the bright magenta ring color, and paint a bright cyan highlight over it so the
+  // chain pops out of the combat chaos and you can see the empty gap (safe spot) yourself.
+  const RINGSCAN_INTERVAL_MS = 200;       // ~5 scans/sec (readPixels is a GPU->CPU stall)
+  const RINGSCAN_SAMPLE_STEP = 4;         // subsample buffer for the scan
+  const RINGSCAN_GRID_COLS = 128;
+  const RINGSCAN_GRID_ROWS = 72;
+
+  function isRingScanEnabled() {
+    return FEATURE_CONFIG.ringScanEnabled === true;
+  }
+
+  function ensureRingScanGl() {
+    if (RINGSCAN_STATE.gl && RINGSCAN_STATE.glCanvas && document.contains(RINGSCAN_STATE.glCanvas)) return RINGSCAN_STATE.gl;
+    const best = Array.from(document.querySelectorAll("canvas"))
+      .map((c) => ({ c, r: c.getBoundingClientRect() }))
+      .filter((x) => x.r.width > 200 && x.r.height > 200)
+      .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height)[0];
+    if (!best) return null;
+    let gl = null;
+    for (const t of ["webgl2", "webgl", "experimental-webgl"]) {
+      try { const g = best.c.getContext(t); if (g) { gl = g; break; } } catch { /* try next */ }
+    }
+    if (!gl) return null;
+    RINGSCAN_STATE.gl = gl;
+    RINGSCAN_STATE.glCanvas = best.c;
+    return gl;
+  }
+
+  function ensureRingScanHost() {
+    if (RINGSCAN_STATE.host && document.contains(RINGSCAN_STATE.host)) return RINGSCAN_STATE.host;
+    if (!document.body) return null;
+    const cv = document.createElement("canvas");
+    cv.id = "hordes-kr-ringscan";
+    cv.setAttribute("aria-hidden", "true");
+    cv.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:2147483541";
+    document.body.appendChild(cv);
+    RINGSCAN_STATE.host = cv;
+    RINGSCAN_STATE.ctx = cv.getContext("2d");
+    return cv;
+  }
+
+  function updateRingScan() {
+    const cv = RINGSCAN_STATE.host, ctx = RINGSCAN_STATE.ctx;
+    if (!isRingScanEnabled()) {
+      if (cv && ctx && cv.__hkrDrawn) { ctx.clearRect(0, 0, cv.width, cv.height); cv.__hkrDrawn = false; }
+      return;
+    }
+    const now = (pageWindow.performance && pageWindow.performance.now) ? pageWindow.performance.now() : Date.now();
+    if (now - RINGSCAN_STATE.lastAt < RINGSCAN_INTERVAL_MS) return;
+    RINGSCAN_STATE.lastAt = now;
+    const gl = ensureRingScanGl(); if (!gl) return;
+    const host = ensureRingScanHost(); if (!host) return;
+    const c2 = RINGSCAN_STATE.ctx;
+    const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight;
+    if (!bw || !bh) return;
+    const vw = pageWindow.innerWidth, vh = pageWindow.innerHeight;
+    if (host.width !== vw || host.height !== vh) { host.width = vw; host.height = vh; }
+    c2.clearRect(0, 0, vw, vh); host.__hkrDrawn = true;
+
+    const need = bw * bh * 4;
+    if (!RINGSCAN_STATE.buf || RINGSCAN_STATE.buf.length !== need) RINGSCAN_STATE.buf = new Uint8Array(need);
+    const px = RINGSCAN_STATE.buf;
+    try { gl.readPixels(0, 0, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch { return; }
+
+    // Coarse-grid density of the magenta ring color. readPixels is bottom-up, so flip Y.
+    const GC = RINGSCAN_GRID_COLS, GR = RINGSCAN_GRID_ROWS;
+    const grid = new Uint16Array(GC * GR);
+    const S = RINGSCAN_SAMPLE_STEP;
+    let total = 0;
+    for (let y = 0; y < bh; y += S) {
+      const gy = (((bh - 1 - y) * GR / bh) | 0);
+      const rowBase = gy * GC;
+      for (let x = 0; x < bw; x += S) {
+        const i = (y * bw + x) * 4;
+        const R = px[i], G = px[i + 1], B = px[i + 2];
+        // bright pink/magenta Runefire ring: high R & B, low G
+        if (B > 150 && R > 130 && G < 150 && (B - G) > 60 && (R - G) > 35) {
+          grid[rowBase + ((x * GC / bw) | 0)]++;
+          total++;
+        }
+      }
+    }
+    if (total < 30) return; // not a wall — leave cleared
+
+    const rect = RINGSCAN_STATE.glCanvas.getBoundingClientRect();
+    const cw = rect.width / GC, ch = rect.height / GR;
+    c2.save();
+    c2.fillStyle = "rgba(90,240,255,0.5)";
+    c2.shadowColor = "rgba(90,240,255,0.95)";
+    c2.shadowBlur = 7;
+    for (let r = 0; r < GR; r++) {
+      const yb = rect.top + r * ch;
+      for (let cc = 0; cc < GC; cc++) {
+        if (grid[r * GC + cc] >= 2) c2.fillRect(rect.left + cc * cw, yb, cw + 1, ch + 1);
+      }
+    }
+    c2.restore();
+  }
+
+  function startRingScanLoop() {
+    if (RINGSCAN_STATE.rafId) return;
+    const tick = () => {
+      RINGSCAN_STATE.rafId = pageWindow.requestAnimationFrame(tick);
+      try { updateRingScan(); } catch { /* best-effort */ }
+    };
+    RINGSCAN_STATE.rafId = pageWindow.requestAnimationFrame(tick);
   }
 
   function getExposedRuntime() {
